@@ -31,6 +31,10 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # The macOS compile check has C code to build, and zig is a C compiler
+      # for macOS that runs on Linux.
+      - name: Install zig
+        run: pipx install ziglang==0.17.1
       - name: Format, lints, tests, targets
         run: cargo xtask ci
       - name: Install wasm-bindgen
@@ -41,6 +45,7 @@ jobs:
         run: cargo xtask web
 
   # Windows is the first host platform and one of the three tested by hand.
+  # This job is also the only check of the Windows build.
   windows:
     name: Tests (Windows)
     runs-on: windows-latest

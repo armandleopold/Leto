@@ -57,7 +57,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 | Web | Yes | No | Built in the pipeline, and by hand |
 | Android | Yes | No | Compile check for now, and by hand once the app exists |
 | Linux | Yes | Yes | Tests run on Linux in the pipeline |
-| macOS | Yes | Yes | Compile check on every change, tests on `main` |
+| macOS | Yes | Yes | Compile check on every change (with zig as the C compiler), tests on `main` |
 | iOS | Yes | No | Compile check only |
 
 The code asks `leto_core::platform::Platform` what the current platform can do

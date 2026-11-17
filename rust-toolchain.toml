@@ -3,7 +3,6 @@ channel = "1.97.0"
 components = ["clippy", "rustfmt"]
 # Everything `cargo xtask targets` and `cargo xtask web` compile for.
 targets = [
-    "x86_64-pc-windows-msvc",
     "aarch64-apple-darwin",
     "wasm32-unknown-unknown",
     "aarch64-linux-android",

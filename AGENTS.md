@@ -19,13 +19,21 @@ cargo xtask web            # the web client, into dist/web
 ```
 
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
-and `targets` (a compile check for Windows, macOS, the web, Android and iOS).
-Each is also a command of its own, for example `cargo xtask clippy`. Run
+and `targets` (a compile check for macOS, the web, Android and iOS). Each is
+also a command of its own, for example `cargo xtask clippy`. Run
 `cargo xtask ci` before opening a pull request.
 
 The toolchain version is pinned in `rust-toolchain.toml`, and rustup installs
-it together with the targets on first use. `cargo xtask web` also needs
-`wasm-bindgen`, and prints the exact install command when it is missing.
+it together with the targets on first use. Two commands need one more tool
+each, and say how to install it when it is missing:
+
+- `cargo xtask web` needs `wasm-bindgen`.
+- The macOS part of `cargo xtask targets` needs zig (`pipx install ziglang`),
+  as the C compiler for the TLS code. Without zig that part is skipped on your
+  machine. The pipeline always runs it.
+
+The Windows build is not part of `targets`: the Windows job of the pipeline
+builds and tests it for real.
 
 ## Where things go
 
