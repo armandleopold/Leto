@@ -1,0 +1,72 @@
+name: CI
+
+# Pull requests and `main` only, so a branch with an open pull request does not
+# run everything twice.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Format, lints, tests, the compile check for every target, and the web
+  # client. One job so they share a single build cache.
+  linux:
+    name: Checks (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Format, lints, tests, targets
+        run: cargo xtask ci
+      - name: Install wasm-bindgen
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - name: Build the web client
+        run: cargo xtask web
+
+  # Windows is the first host platform and one of the three tested by hand.
+  windows:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo xtask test
+
+  # macOS runners are the most expensive, so real tests there run on `main`
+  # and on demand. Pull requests still compile-check macOS from Linux.
+  macos:
+    name: Tests (macOS)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo xtask test
+
+  dependencies:
+    name: Licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
