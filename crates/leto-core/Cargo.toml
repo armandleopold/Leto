@@ -1,0 +1,16 @@
+[package]
+name = "leto-core"
+description = "Shared building blocks for every Leto app: brand, platform and common types."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
