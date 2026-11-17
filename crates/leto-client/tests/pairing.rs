@@ -3,8 +3,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod support;
-
 use std::{
     fs,
     path::PathBuf,
@@ -14,7 +12,7 @@ use std::{
 };
 
 use leto_client::{Client, Error, HostKind, Pin, Reachability};
-use support::{COVER_PNG, FakeHost, HOST_ID, HOST_NAME};
+use leto_testhost::{COVER_PNG, FakeHost, HOST_ID, HOST_NAME};
 
 /// A fresh settings folder per test.
 struct Settings(PathBuf);

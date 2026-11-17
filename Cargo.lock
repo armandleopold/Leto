@@ -1606,8 +1606,10 @@ name = "leto-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "leto-client",
  "leto-core",
  "leto-protocol",
+ "leto-testhost",
  "serde",
  "serde_json",
 ]
@@ -1620,6 +1622,7 @@ dependencies = [
  "gethostname",
  "httparse",
  "leto-core",
+ "leto-testhost",
  "log",
  "mdns-sd",
  "moonlight-common",
@@ -1642,6 +1645,18 @@ name = "leto-protocol"
 version = "0.0.1"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "leto-testhost"
+version = "0.0.1"
+dependencies = [
+ "image",
+ "leto-core",
+ "mdns-sd",
+ "moonlight-common",
+ "pem",
+ "rustls",
 ]
 
 [[package]]

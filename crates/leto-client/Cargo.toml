@@ -27,5 +27,4 @@ serde_json = { workspace = true }
 thiserror = "2"
 
 [dev-dependencies]
-# The tests announce a stand-in host and serve TLS from it.
-mdns-sd = "0.13"
+leto-testhost = { workspace = true }

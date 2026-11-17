@@ -1,13 +1,17 @@
-//! A stand-in for a Sunshine or Apollo host, for tests.
+//! A stand-in for a Sunshine or Apollo host.
 //!
-//! It runs on the loopback interface and implements the part of a real host
-//! the client talks to before streaming: `serverinfo`, the five pairing steps,
-//! the app list and app covers, over plain HTTP and over HTTPS with client
-//! certificates. The pairing arithmetic follows `nvhttp.cpp` in Sunshine and
-//! Apollo, and the XML is written by hand the way those hosts write it, so the
-//! client's parsing is exercised too.
+//! The tests of the clients run against it, and `cargo run -p leto-testhost
+//! --example serve` keeps one running to try a client by hand without a
+//! gaming PC. It is not a host: it streams nothing.
+//!
+//! It implements the part of a real host a client talks to before streaming:
+//! `serverinfo`, the five pairing steps, the app list and app covers, over
+//! plain HTTP and over HTTPS with client certificates. The pairing arithmetic
+//! follows `nvhttp.cpp` in Sunshine and Apollo, and the XML is written by hand
+//! the way those hosts write it, so a client's parsing is exercised too.
 
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
+// Test support: a failed assumption should stop the test loudly.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{
     collections::HashMap,
@@ -49,8 +53,53 @@ pub const COVER_PNG: &[u8] = &[
 pub const HOST_NAME: &str = "Salon";
 pub const HOST_ID: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 
-/// How long the host waits for someone to type the PIN.
-const PIN_PATIENCE: Duration = Duration::from_secs(5);
+/// One app the host offers.
+#[derive(Debug, Clone)]
+pub struct App {
+    pub id: u32,
+    pub title: String,
+    pub hdr: bool,
+    /// The cover image, as the bytes of an image file.
+    pub cover: Vec<u8>,
+}
+
+impl App {
+    /// An app with the smallest possible cover.
+    pub fn new(id: u32, title: &str, hdr: bool) -> Self {
+        Self { id, title: title.to_owned(), hdr, cover: COVER_PNG.to_vec() }
+    }
+}
+
+/// How a [`FakeHost`] presents itself.
+#[derive(Debug, Clone)]
+pub struct Options {
+    pub name: String,
+    /// The unique id the host reports. Clients tell hosts apart by it.
+    pub id: String,
+    /// The interface to listen on: `"127.0.0.1"`, or `"0.0.0.0"` for all.
+    pub interface: String,
+    /// The port of the plain HTTP API, or 0 for any free port.
+    pub port: u16,
+    /// How long the host waits for someone to type the PIN.
+    pub pin_patience: Duration,
+    pub apps: Vec<App>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            name: HOST_NAME.to_owned(),
+            id: HOST_ID.to_owned(),
+            interface: "127.0.0.1".to_owned(),
+            port: 0,
+            pin_patience: Duration::from_secs(5),
+            apps: vec![
+                App::new(1, "Desktop", true),
+                App::new(881_448_767, "Steam Big Picture", false),
+            ],
+        }
+    }
+}
 
 /// The host's certificate and key, and the TLS setup made from them.
 struct HostIdentity {
@@ -79,7 +128,7 @@ struct Shared {
     pairing: Mutex<Pairing>,
     /// Certificates of paired clients, DER encoded.
     paired: Mutex<Vec<Vec<u8>>>,
-    apps: Vec<(u32, &'static str, bool)>,
+    options: Options,
     http_port: u16,
     https_port: u16,
     stop: AtomicBool,
@@ -94,19 +143,23 @@ pub struct FakeHost {
 impl FakeHost {
     /// A host reachable on the loopback interface only.
     pub fn start() -> Self {
-        Self::start_on("127.0.0.1")
+        Self::start_with(Options::default())
     }
 
     /// A host listening on `interface`, for example `"0.0.0.0"` for all.
     pub fn start_on(interface: &str) -> Self {
-        let http = TcpListener::bind((interface, 0)).unwrap();
-        let https = TcpListener::bind((interface, 0)).unwrap();
+        Self::start_with(Options { interface: interface.to_owned(), ..Options::default() })
+    }
+
+    pub fn start_with(options: Options) -> Self {
+        let http = TcpListener::bind((options.interface.as_str(), options.port)).unwrap();
+        let https = TcpListener::bind((options.interface.as_str(), 0)).unwrap();
         let shared = Arc::new(Shared {
             identity: Mutex::new(new_identity()),
             typed_pin: Mutex::new(None),
             pairing: Mutex::new(Pairing::default()),
             paired: Mutex::new(Vec::new()),
-            apps: vec![(1, "Desktop", true), (881_448_767, "Steam Big Picture", false)],
+            options,
             http_port: http.local_addr().unwrap().port(),
             https_port: https.local_addr().unwrap().port(),
             stop: AtomicBool::new(false),
@@ -330,13 +383,15 @@ fn respond(
 
     match path {
         "/serverinfo" => xml(&format!(
-            "<hostname>{HOST_NAME}</hostname><appversion>7.1.431.-1</appversion>\
-             <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{HOST_ID}</uniqueid>\
+            "<hostname>{}</hostname><appversion>7.1.431.-1</appversion>\
+             <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
              <HttpsPort>{}</HttpsPort><ExternalPort>{}</ExternalPort>\
              <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>00:11:22:33:44:55</mac>\
              <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>3</ServerCodecModeSupport>\
              <PairStatus>{}</PairStatus><currentgame>0</currentgame>\
              <state>SUNSHINE_SERVER_FREE</state>",
+            shared.options.name,
+            shared.options.id,
             shared.https_port,
             shared.http_port,
             u8::from(authorized),
@@ -348,19 +403,26 @@ fn respond(
         }
         "/applist" if secure => {
             let apps: String = shared
+                .options
                 .apps
                 .iter()
-                .map(|(id, title, hdr)| {
+                .map(|app| {
                     format!(
-                        "<App><IsHdrSupported>{}</IsHdrSupported><AppTitle>{title}</AppTitle>\
-                         <ID>{id}</ID></App>",
-                        u8::from(*hdr)
+                        "<App><IsHdrSupported>{}</IsHdrSupported><AppTitle>{}</AppTitle>\
+                         <ID>{}</ID></App>",
+                        u8::from(app.hdr),
+                        app.title,
+                        app.id
                     )
                 })
                 .collect();
             xml(&apps)
         }
-        "/appasset" if secure => ("image/png", COVER_PNG.to_vec()),
+        "/appasset" if secure => {
+            let wanted = query.get("appid").and_then(|id| id.parse::<u32>().ok());
+            let app = shared.options.apps.iter().find(|app| Some(app.id) == wanted);
+            ("image/png", app.map_or_else(|| COVER_PNG.to_vec(), |app| app.cover.clone()))
+        }
         _ => unauthorized(path),
     }
 }
@@ -391,7 +453,7 @@ fn pair(shared: &Shared, query: &HashMap<&str, &str>, secure: bool) -> (&'static
         };
         let Ok(certificate) = pem::parse(certificate) else { return failed() };
 
-        let deadline = Instant::now() + PIN_PATIENCE;
+        let deadline = Instant::now() + shared.options.pin_patience;
         let pin = loop {
             if let Some(pin) = shared.typed_pin.lock().unwrap().take() {
                 break pin;

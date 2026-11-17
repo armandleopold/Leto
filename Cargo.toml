@@ -16,6 +16,7 @@ publish = false
 leto-client = { path = "crates/leto-client" }
 leto-core = { path = "crates/leto-core" }
 leto-protocol = { path = "crates/leto-protocol" }
+leto-testhost = { path = "crates/leto-testhost" }
 
 # Third-party
 clap = { version = "4.6", features = ["derive"] }

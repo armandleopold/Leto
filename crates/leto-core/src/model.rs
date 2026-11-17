@@ -95,6 +95,31 @@ impl Pin {
     }
 }
 
+/// The text was not four digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidPin;
+
+impl fmt::Display for InvalidPin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a PIN is four digits")
+    }
+}
+
+impl std::error::Error for InvalidPin {}
+
+impl std::str::FromStr for Pin {
+    type Err = InvalidPin;
+
+    fn from_str(text: &str) -> Result<Self, InvalidPin> {
+        let bytes: [u8; 4] = text.trim().as_bytes().try_into().map_err(|_| InvalidPin)?;
+        if bytes.iter().all(u8::is_ascii_digit) {
+            Ok(Self(bytes.map(|byte| byte - b'0')))
+        } else {
+            Err(InvalidPin)
+        }
+    }
+}
+
 impl fmt::Display for Pin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let [a, b, c, d] = self.0;
@@ -177,6 +202,16 @@ mod tests {
     fn a_pin_is_always_four_digits() {
         assert_eq!(Pin::from_bytes([0, 9, 10, 255]).to_string(), "0905");
         assert_eq!(Pin::from_bytes([1, 2, 3, 4]).digits(), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_pin_is_read_from_text() {
+        assert_eq!("0905".parse::<Pin>().map(|pin| pin.digits()), Ok([0, 9, 0, 5]));
+        assert_eq!(" 1234\n".parse::<Pin>().map(|pin| pin.to_string()), Ok("1234".into()));
+        assert_eq!("123".parse::<Pin>(), Err(InvalidPin));
+        assert_eq!("12345".parse::<Pin>(), Err(InvalidPin));
+        assert_eq!("12a4".parse::<Pin>(), Err(InvalidPin));
+        assert_eq!("１２３４".parse::<Pin>(), Err(InvalidPin));
     }
 
     #[test]

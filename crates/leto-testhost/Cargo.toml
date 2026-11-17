@@ -1,0 +1,24 @@
+[package]
+name = "leto-testhost"
+description = "A stand-in for a Sunshine or Apollo host, for tests and for trying the clients without a gaming PC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+leto-core = { workspace = true }
+moonlight-common = { workspace = true }
+pem = "3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+# For the `serve` example: cover images, and the announcement on the network.
+image = { workspace = true }
+mdns-sd = "0.13"
