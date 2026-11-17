@@ -5,6 +5,7 @@
 //! web (WebAssembly).
 
 pub mod brand;
+pub mod model;
 pub mod platform;
 
 /// Version of the Leto workspace, shared by every app.

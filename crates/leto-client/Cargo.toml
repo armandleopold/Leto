@@ -1,0 +1,31 @@
+[package]
+name = "leto-client"
+description = "The client side of Leto: find hosts, pair with them and list their apps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+directories = "6"
+gethostname = "1"
+httparse = "1"
+leto-core = { workspace = true }
+log = { workspace = true }
+mdns-sd = "0.13"
+moonlight-common = { workspace = true }
+pem = "3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+# The tests announce a stand-in host and serve TLS from it.
+mdns-sd = "0.13"
