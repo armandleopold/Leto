@@ -1,11 +1,13 @@
 name: CI
 
 # Pull requests and `main` only, so a branch with an open pull request does not
-# run everything twice.
+# run everything twice. Changes to documentation alone run nothing.
 on:
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   workflow_dispatch:
 
 concurrency:

@@ -20,11 +20,10 @@ Windows, Android or the web, the three platforms available for manual tests.
 - Simple mode first. Advanced mode for the settings Moonlight users expect.
 - Capture of the microphone and the camera, sent over the return channel.
 
-Proposed change to the original plan: build the **companion** from
-[return-channel.md](return-channel.md) during this step instead of at the start
-of step 4. Without it there is nothing on the PC to receive the microphone and
-the camera, so the main acceptance criterion could not be tested before the
-very end.
+The receiver for microphone and camera on the PC (the companion in
+[return-channel.md](return-channel.md)) stays at the start of step 4. In this
+step, capture is checked with a preview and a level meter in the app, and the
+microphone can be tested end to end against the microphone build of Apollo.
 
 Questions to settle at the start of this step:
 

@@ -203,9 +203,10 @@ itself, the frames go straight to the virtual devices.
 ## Companion mode: the return channel next to Apollo
 
 The Leto host will take a long time to replace Apollo. The return channel must
-not wait for it. The first piece of host code is therefore a **companion**: a
-small Leto process that runs beside an unmodified Apollo and implements only
-the Leto API, the two receivers and the two virtual devices.
+not wait for all of it. The first piece of host code, at the start of step 4,
+is therefore a **companion**: a small Leto process that runs beside an
+unmodified Apollo and implements only the Leto API, the two receivers and the
+two virtual devices.
 
 - The client streams screen and sound from Apollo as usual, and sends
   microphone and camera to the companion.
@@ -214,8 +215,6 @@ the Leto API, the two receivers and the two virtual devices.
   the host certificate and key (`credentials/`). It can then present the same
   identity as Apollo and accept exactly the devices Apollo has paired.
 - When the Leto host is complete, the companion's code is simply part of it.
-
-This also gives the clients something to test against from the first day.
 
 ## What works with what
 
