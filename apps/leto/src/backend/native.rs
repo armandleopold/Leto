@@ -2,19 +2,22 @@
 
 use std::{
     cell::RefCell,
-    sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak, mpsc},
+    time::Duration,
 };
 
 use leto_client::{
-    Client, Service, Shell,
+    CameraSettings, Client, Service, Shell,
     engine::{self, ImageFile},
     input::Input,
     service::{explain, sentence},
 };
-use leto_media::{Camera, Microphone, VOICE_FRAME};
+use leto_media::{
+    Camera, CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Sending, VOICE_FRAME,
+};
 
 use super::{
-    Door, Picture, Seen, Unavailable, decode_cover, gamepad,
+    Door, Filming, Picture, Seen, Unavailable, decode_cover, gamepad,
     stream::{Outlet, Screen, Sound},
 };
 use crate::state::{Event, Request};
@@ -42,6 +45,11 @@ struct Tried {
 /// the app on a device that has none.
 const CAMERA: &str = "LETO_CAMERA";
 
+/// Whether the camera is the test card.
+fn is_card() -> bool {
+    std::env::var_os(CAMERA).is_some_and(|camera| camera == "card")
+}
+
 /// What the engine works for on the desktop: this window.
 struct Desk {
     events: mpsc::Sender<Event>,
@@ -49,6 +57,7 @@ struct Desk {
     /// Where the stream on screen leaves its pictures.
     outlet: Mutex<Arc<Outlet>>,
     voice: Mutex<Voice>,
+    film: Mutex<Film>,
 }
 
 /// The microphone of this device, which only ever captures for a stream
@@ -61,6 +70,54 @@ struct Voice {
     microphone: Option<Microphone>,
 }
 
+/// The camera of this device, which only ever captures for a stream that is
+/// connected to a PC that takes one.
+#[derive(Default)]
+struct Film {
+    /// The stream the person asked for last.
+    stream: Option<u64>,
+    /// How much of a camera the PC of that stream takes, once it said that
+    /// it takes one.
+    limits: Option<Limits>,
+    /// The camera on its way there, while the person has it on.
+    feed: Option<CameraFeed>,
+}
+
+/// Carries the pictures of the camera to the PC being watched.
+struct ToPc {
+    /// The engine outlives no camera: it must not be kept alive by one.
+    service: Weak<Service<Desk>>,
+    /// The number the engine gave this camera, once the PC agreed.
+    camera: Option<u64>,
+}
+
+impl Carrier for ToPc {
+    fn open(&mut self, sending: Sending) -> Result<(), String> {
+        let service = self.service.upgrade().ok_or("Leto is closing.")?;
+        let settings = CameraSettings {
+            width: sending.width,
+            height: sending.height,
+            fps: sending.fps,
+            bitrate_kbps: sending.bitrate_kbps,
+        };
+        self.camera = Some(service.camera_open(settings)?);
+        Ok(())
+    }
+
+    fn carry(&mut self, at: Duration, picture: Encoded<'_>) -> Option<bool> {
+        self.service.upgrade()?.camera(self.camera?, at, picture.key_frame, picture.data)
+    }
+}
+
+impl Drop for ToPc {
+    /// However the feed ended, the PC is told that the camera stopped.
+    fn drop(&mut self) {
+        if let (Some(service), Some(camera)) = (self.service.upgrade(), self.camera) {
+            service.camera_close(camera);
+        }
+    }
+}
+
 impl Desk {
     fn outlet(&self) -> Arc<Outlet> {
         Arc::clone(&self.outlet.lock().unwrap_or_else(PoisonError::into_inner))
@@ -70,6 +127,11 @@ impl Desk {
         // Whether a microphone captures stays true even if a thread
         // panicked meanwhile.
         self.voice.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn film(&self) -> MutexGuard<'_, Film> {
+        // The same goes for a camera.
+        self.film.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -82,13 +144,30 @@ impl Shell for Desk {
             engine::Event::Playing { attempt, microphone: true, .. } => {
                 self.voice().stream = Some(*attempt);
             }
-            // Nobody listens any more, so nothing is captured any more: at
-            // once, not when the window gets to hear of it.
+            // News of a stream the person left says nothing about the one
+            // on screen.
+            engine::Event::Camera { attempt, offer } => {
+                let mut film = self.film();
+                if film.stream == Some(*attempt) {
+                    film.limits = offer.map(|offer| Limits {
+                        width: offer.max_width,
+                        height: offer.max_height,
+                        fps: offer.max_fps,
+                    });
+                }
+            }
+            // Nobody listens or looks any more, so nothing is captured any
+            // more: at once, not when the window gets to hear of it.
             engine::Event::PlayFailed { attempt, .. }
             | engine::Event::StreamEnded { attempt, .. } => {
                 let mut voice = self.voice();
                 if voice.stream == Some(*attempt) {
                     *voice = Voice::default();
+                }
+                drop(voice);
+                let mut film = self.film();
+                if film.stream == Some(*attempt) {
+                    *film = Film::default();
                 }
             }
             _ => {}
@@ -106,6 +185,10 @@ impl Shell for Desk {
             Screen::new(&outlet, &self.ctx).map_err(|error| sentence(&error.to_string()))?;
         Ok((screen, Sound::new(&outlet)))
     }
+
+    fn sends_camera(&self) -> bool {
+        true
+    }
 }
 
 impl Backend {
@@ -116,6 +199,7 @@ impl Backend {
             ctx: ctx.clone(),
             outlet: Mutex::default(),
             voice: Mutex::default(),
+            film: Mutex::default(),
         };
         let service = Client::open_default()
             .map(|client| Arc::new(Service::new(Arc::new(client), desk)))
@@ -198,6 +282,42 @@ impl Backend {
         Ok(voice.microphone.as_ref().map(Microphone::level))
     }
 
+    /// Sends the camera of this device to the PC being watched while `on`,
+    /// and stops capturing when it is not. Returns how that is going while
+    /// it captures, or why it cannot, in words for the person.
+    ///
+    /// Asked every frame. The camera is opened the first time, and the PC
+    /// asked once it gave a picture: until then nothing leaves.
+    pub fn film(&self, on: bool) -> Result<Option<Filming>, String> {
+        let Ok(service) = &self.service else { return Ok(None) };
+        let mut film = service.shell().film();
+        let Some(limits) = film.limits.filter(|_| on) else {
+            film.feed = None;
+            return Ok(None);
+        };
+        let feed = film.feed.get_or_insert_with(|| {
+            let carrier = ToPc { service: Arc::downgrade(service), camera: None };
+            let ctx = self.ctx.clone();
+            let news = move || ctx.request_repaint();
+            if is_card() {
+                CameraFeed::test_card(limits, carrier, news)
+            } else {
+                CameraFeed::open(limits, carrier, news)
+            }
+        });
+        let problem = match feed.state() {
+            Feeding::Starting => return Ok(Some(Filming::Opening)),
+            Feeding::Sending(sending) => {
+                return Ok(Some(Filming::Sending([sending.width, sending.height])));
+            }
+            Feeding::Over => "The stream ended, and the camera with it.".to_owned(),
+            Feeding::Lost(why) => sentence(&why),
+            Feeding::Refused(why) => why,
+        };
+        film.feed = None;
+        Err(problem)
+    }
+
     /// Captures the camera of this device while `on`, for the person to
     /// look at, and stops capturing when it is not. Returns what it shows
     /// when that is news, or why it cannot be used, in words for the person.
@@ -214,11 +334,7 @@ impl Backend {
         let capturing = camera.get_or_insert_with(|| {
             let ctx = self.ctx.clone();
             let news = move || ctx.request_repaint();
-            if std::env::var_os(CAMERA).is_some_and(|camera| camera == "card") {
-                Camera::test_card(news)
-            } else {
-                Camera::open(news)
-            }
+            if is_card() { Camera::test_card(news) } else { Camera::open(news) }
         });
         match capturing.take(picture) {
             Ok(true) => {
@@ -273,8 +389,14 @@ impl Backend {
             *desk.outlet.lock().unwrap_or_else(PoisonError::into_inner) = Arc::default();
         }
         if matches!(request, Request::Play { .. } | Request::Leave) {
-            // No stream, or a new one: the microphone is off.
+            // No stream, or a new one: the microphone is off, and so is the
+            // camera.
             *desk.voice() = Voice::default();
+            let stream = match &request {
+                Request::Play { attempt, .. } => Some(*attempt),
+                _ => None,
+            };
+            *desk.film() = Film { stream, ..Film::default() };
         }
         service.ask(request);
     }

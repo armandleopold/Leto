@@ -76,6 +76,17 @@ pub struct Seen {
     pub size: [usize; 2],
 }
 
+/// How the camera of this device is doing on its way to a PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// A browser's camera does not reach a PC yet: the web build makes neither.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub enum Filming {
+    /// The camera is opening, or the PC is being asked: nothing leaves yet.
+    Opening,
+    /// Pictures of this width and height leave for the PC.
+    Sending([u32; 2]),
+}
+
 /// Turns the bytes of an image file into pixels, scaled down for the grid.
 fn decode_cover(bytes: &[u8]) -> Option<egui::ColorImage> {
     let image = image::load_from_memory(bytes).ok()?.into_rgba8();

@@ -11,9 +11,9 @@ use leto_core::input::Input;
 
 use super::{icons, widgets};
 use crate::{
-    backend::Picture,
+    backend::{Filming, Picture},
     input::{Controls, Shortcut},
-    state::{Mic, State, StreamView},
+    state::{Cam, Mic, State, StreamView},
     theme, window,
 };
 
@@ -89,8 +89,19 @@ pub struct Player {
     /// whether it was capturing.
     microphone_was: Option<Mic>,
     captured: bool,
-    /// The last thing worth a line in the bar was about the microphone.
-    talks_of_microphone: bool,
+    /// The same for the camera, and how it was doing.
+    camera_was: Option<Cam>,
+    filmed: Option<Filming>,
+    /// What the last thing worth a line in the bar was about, when it was
+    /// about something this device sends.
+    talks_of: Option<Told>,
+}
+
+/// What of this device the bar has something new to say about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Told {
+    Microphone,
+    Camera,
 }
 
 impl Player {
@@ -151,15 +162,18 @@ impl Player {
     }
 }
 
-/// What the backend says of the sound of a stream, both ways.
+/// What the backend says of a stream besides its pictures: its sound, and
+/// what of this device goes to the PC.
 #[derive(Clone, Copy)]
-pub struct Sound<'a> {
+pub struct Status<'a> {
     /// Why the stream has no sound, when it has none.
-    pub problem: Option<&'a str>,
+    pub sound_problem: Option<&'a str>,
     /// How loud the microphone is, from 0 to 1, while it captures. `None`
     /// with the switch on means it is still opening: a browser asks the
     /// person first.
     pub voice: Option<f32>,
+    /// How the camera is doing, while it captures.
+    pub film: Option<Filming>,
 }
 
 /// Draws the stream and returns what the person did since the last frame,
@@ -169,7 +183,7 @@ pub fn show(
     state: &mut State,
     view: &StreamView,
     player: &mut Player,
-    sound: Sound<'_>,
+    status: Status<'_>,
 ) -> Vec<Input> {
     let window = ui.max_rect();
     let (now, focused) = ui.input(|input| (input.time, input.focused));
@@ -214,6 +228,7 @@ pub fn show(
                 Some(Shortcut::FullScreen) => asked.fill = true,
                 Some(Shortcut::GameMouse) => asked.game_mouse = true,
                 Some(Shortcut::Microphone) => asked.microphone = true,
+                Some(Shortcut::Camera) => asked.camera = true,
                 None => {}
             }
         }
@@ -228,18 +243,29 @@ pub fn show(
         if refused {
             player.bar_until = Some(bar_until.max(now + BAR_RETURNS));
         }
-        let capturing = sound.voice.is_some();
+        let capturing = status.voice.is_some();
         if player.microphone_was.as_ref() != Some(&view.microphone) || player.captured != capturing
         {
             // The bar says what the microphone just did. That a PC takes
             // one is not news: its switch is there to see.
             let was_on = player.microphone_was == Some(Mic::On);
             if was_on || matches!(view.microphone, Mic::On | Mic::Failed(_)) {
-                player.talks_of_microphone = true;
+                player.talks_of = Some(Told::Microphone);
                 player.bar_until = Some(bar_until.max(now + BAR_RETURNS));
             }
             player.microphone_was = Some(view.microphone.clone());
             player.captured = capturing;
+        }
+        if player.camera_was.as_ref() != Some(&view.camera) || player.filmed != status.film {
+            // And what the camera just did.
+            let was_on = player.camera_was == Some(Cam::On);
+            if was_on || matches!(view.camera, Cam::On | Cam::Failed(_)) {
+                player.talks_of = Some(Told::Camera);
+                player.bar_until =
+                    Some(player.bar_until.unwrap_or(bar_until).max(now + BAR_RETURNS));
+            }
+            player.camera_was = Some(view.camera.clone());
+            player.filmed = status.film;
         }
         if view.microphone == Mic::On {
             // The meter moves, and a microphone that stops is noticed, even
@@ -258,16 +284,19 @@ pub fn show(
         }
     }
 
-    overlay(ui, window, view, player, sound, now, &mut asked);
+    overlay(ui, window, view, player, status, now, &mut asked);
 
     if asked.microphone {
         state.switch_microphone();
+    }
+    if asked.camera {
+        state.switch_camera();
     }
     if asked.game_mouse {
         player.game_mouse = !player.game_mouse;
         // The bar says what just changed, and how to change it back.
         player.bar_until = Some(now + BAR_RETURNS);
-        player.talks_of_microphone = false;
+        player.talks_of = None;
     }
     if player.pointer_kept && window::pointer_lost() {
         // A browser gives the pointer back when Escape is pressed, whoever
@@ -275,7 +304,7 @@ pub fn show(
         player.pointer_kept = false;
         player.game_mouse = false;
         player.bar_until = Some(now + BAR_RETURNS);
-        player.talks_of_microphone = false;
+        player.talks_of = None;
     }
     let keep = player.game_mouse && view.connected && focused && !asked.leave;
     if keep != player.pointer_kept {
@@ -303,6 +332,8 @@ struct Asked {
     game_mouse: bool,
     /// Turn the microphone on, or off again.
     microphone: bool,
+    /// Turn the camera on, or off again.
+    camera: bool,
 }
 
 /// Passes what the mouse did on to the controls. Returns whether a button
@@ -364,7 +395,7 @@ fn overlay(
     window: Rect,
     view: &StreamView,
     player: &mut Player,
-    sound: Sound<'_>,
+    status: Status<'_>,
     now: f64,
     asked: &mut Asked,
 ) {
@@ -382,8 +413,9 @@ fn overlay(
     });
     let timed = player.bar_until.is_some_and(|until| now < until);
     if !timed {
-        // What the bar said about the microphone has been said.
-        player.talks_of_microphone = false;
+        // What the bar said about the microphone or the camera has been
+        // said.
+        player.talks_of = None;
     }
     let wanted = !has_picture || timed || on_bar;
     let opacity = ui.ctx().animate_bool_with_time(Id::unique("stream-bar"), wanted, 0.2);
@@ -392,14 +424,18 @@ fn overlay(
         let content = Bar {
             view,
             picture: player.surface.as_ref().map(Surface::size),
-            sound_problem: sound.problem,
+            sound_problem: status.sound_problem,
             game_mouse: player.game_mouse,
-            voice: sound.voice.map(meter),
+            voice: status.voice.map(meter),
+            film: status.film,
             note: bar_note(
                 view,
                 player.game_mouse,
                 timed,
-                player.talks_of_microphone.then_some(sound.voice.is_some()),
+                player.talks_of.map(|told| match told {
+                    Told::Microphone => News::Microphone(status.voice.is_some()),
+                    Told::Camera => News::Camera(status.film),
+                }),
             ),
             opacity,
         };
@@ -412,12 +448,22 @@ fn overlay(
         player.bar = None;
     }
 
-    if let (Mic::On, Some(level)) = (&view.microphone, sound.voice)
+    // The PC hears this device, or sees it: that shows for as long as it
+    // does, whether the bar is there to say so or not.
+    let mut signs = 0;
+    if let (Mic::On, Some(level)) = (&view.microphone, status.voice)
         && opacity < 1.0
     {
-        // The PC hears this device: that shows for as long as it does,
-        // whether the bar is there to say so or not.
-        live(ui, window, meter(level), 1.0 - opacity);
+        let level = meter(level);
+        live(ui, window, signs, 1.0 - opacity, |painter, rect, color| {
+            icons::microphone(painter, rect, color, level);
+        });
+        signs += 1;
+    }
+    if let (Cam::On, Some(Filming::Sending(_))) = (&view.camera, status.film)
+        && opacity < 1.0
+    {
+        live(ui, window, signs, 1.0 - opacity, icons::camera);
     }
     if !view.connected || !has_picture {
         return;
@@ -441,15 +487,23 @@ fn grip(ui: &Ui, window: Rect) {
     painter.rect_filled(rect, 3, theme::MOON.gamma_multiply(0.55));
 }
 
-/// A small microphone in a corner of the picture, filled with what it
-/// hears: the sign that the PC is listening.
-fn live(ui: &Ui, window: Rect, level: f32, opacity: f32) {
-    let rect = Rect::from_center_size(window.right_top() + vec2(-28.0, 28.0), Vec2::splat(32.0));
+/// A small sign in a corner of the picture that the PC is listening, or
+/// looking: the microphone, filled with what it hears, or the camera. Signs
+/// stand side by side, `place` counting them from the corner.
+fn live(
+    ui: &Ui,
+    window: Rect,
+    place: usize,
+    opacity: f32,
+    icon: impl Fn(&egui::Painter, Rect, Color32),
+) {
+    let center = window.right_top() + vec2(-28.0 - 40.0 * place as f32, 28.0);
+    let rect = Rect::from_center_size(center, Vec2::splat(32.0));
     let painter =
         ui.ctx().layer_painter(egui::LayerId::new(Order::Foreground, Id::unique("stream-live")));
     let ground = Color32::from_black_alpha(170).gamma_multiply(opacity);
     painter.circle_filled(rect.center(), rect.width() / 2.0, ground);
-    icons::microphone(&painter, rect.shrink(8.0), theme::SUN.gamma_multiply(opacity), level);
+    icon(&painter, rect.shrink(8.0), theme::SUN.gamma_multiply(opacity));
 }
 
 /// How full the microphone's meter is for a level from 0 to 1. Ears hear in
@@ -491,6 +545,8 @@ struct Bar<'a> {
     game_mouse: bool,
     /// How full the microphone's meter is, while it captures.
     voice: Option<f32>,
+    /// How the camera is doing, while it captures.
+    film: Option<Filming>,
     note: Option<Note>,
     opacity: f32,
 }
@@ -527,7 +583,9 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 asked.leave |= widgets::back_button(ui, "Apps").clicked();
                             }
                             // Room for the names once everything else has its own.
-                            let others = if narrow { 210.0 } else { 330.0 };
+                            let has_camera = content.view.camera != Cam::Unknown;
+                            let others = if narrow { 210.0 } else { 330.0 }
+                                + if has_camera { 44.0 } else { 0.0 };
                             names(ui, content.view, (window.width() - others).clamp(80.0, 360.0));
                             if let Some([width, height]) = content.picture.filter(|_| !narrow) {
                                 let size = format!("{width} × {height}");
@@ -540,6 +598,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                             if usable && content.view.connected {
                                 asked.microphone |=
                                     microphone_switch(ui, content.view, content.voice);
+                                asked.camera |= camera_switch(ui, content.view, content.film);
                             }
                             if usable {
                                 let mouse = format!(
@@ -609,6 +668,45 @@ fn microphone_switch(ui: &mut Ui, view: &StreamView, voice: Option<f32>) -> bool
     widgets::state_button(ui, icon, &name, color, usable).clicked()
 }
 
+/// The switch of the camera, which also shows whether the PC sees this
+/// device. Returns whether the person pressed it. There is none until the
+/// PC said whether it takes a camera.
+fn camera_switch(ui: &mut Ui, view: &StreamView, film: Option<Filming>) -> bool {
+    let host = &view.host.name;
+    let keys = Shortcut::Camera.keys();
+    let (name, color) = match (&view.camera, film) {
+        (Cam::Unknown, _) => return false,
+        (Cam::NotTaken, _) => (
+            format!(
+                "{host} takes no camera. No Apollo or Sunshine does: it takes Leto on the PC, \
+                 which comes later."
+            ),
+            theme::LINE,
+        ),
+        (Cam::Off, _) => (format!("Camera: let {host} see this device ({keys})"), theme::DIM),
+        (Cam::On, Some(Filming::Sending([width, height]))) => (
+            format!("Camera on: {host} sees this device, {width} × {height} ({keys} turns it off)"),
+            theme::SUN,
+        ),
+        (Cam::On, _) => (
+            format!("Opening the camera: {host} sees nothing yet ({keys} turns it off)"),
+            theme::DIM,
+        ),
+        (Cam::Failed(why), _) => (format!("{why} Press to try again."), theme::PROBLEM),
+    };
+    let usable = view.camera != Cam::NotTaken;
+    widgets::state_button(ui, icons::camera, &name, color, usable).clicked()
+}
+
+/// What the bar has news about, and how that is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum News {
+    /// The microphone, and whether it captures.
+    Microphone(bool),
+    /// The camera, and how it is doing while it captures.
+    Camera(Option<Filming>),
+}
+
 /// The app and the PC on one line, cut short if the window is narrow.
 fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
     let font = FontId::proportional(theme::BODY);
@@ -628,35 +726,56 @@ fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
 
 /// The line under the buttons of the bar, when there is something to say:
 /// not every time the pointer passes. `timed` says the bar is there on its
-/// own, because something changed. `microphone` is set when the change was
-/// the microphone's, and says whether it captures.
-fn bar_note(
-    view: &StreamView,
-    game_mouse: bool,
-    timed: bool,
-    microphone: Option<bool>,
-) -> Option<Note> {
+/// own, because something changed. `news` is set when the change was the
+/// microphone's or the camera's.
+fn bar_note(view: &StreamView, game_mouse: bool, timed: bool, news: Option<News>) -> Option<Note> {
     let host = &view.host.name;
     if view.connected && !(view.input.keyboard && view.input.mouse) {
         // What does not work stays said for as long as the bar shows.
         return Some(note(view, game_mouse));
     }
-    let news = |text: String| Some(Note { text, problem: false });
-    match (&view.microphone, microphone.filter(|_| timed)) {
-        (Mic::Failed(why), _) => return Some(Note { text: why.clone(), problem: true }),
-        (Mic::On, Some(true)) => {
-            return news(format!(
-                "The microphone is on: {host} hears this device. {} turns it off.",
-                Shortcut::Microphone.keys()
-            ));
-        }
-        (Mic::On, Some(false)) => {
-            return news(format!("Opening the microphone: {host} hears nothing yet."));
-        }
-        (Mic::Off, Some(_)) => {
-            return news(format!("The microphone is off: {host} no longer hears this device."));
-        }
-        _ => {}
+    // So does what failed: the one that just did first.
+    let failed = match (&view.microphone, &view.camera, news) {
+        (_, Cam::Failed(why), Some(News::Camera(_))) => Some(why),
+        (Mic::Failed(why), _, _) | (_, Cam::Failed(why), _) => Some(why),
+        _ => None,
+    };
+    if let Some(why) = failed {
+        return Some(Note { text: why.clone(), problem: true });
+    }
+    let said = |text: String| Some(Note { text, problem: false });
+    match news.filter(|_| timed) {
+        Some(News::Microphone(captures)) => match (&view.microphone, captures) {
+            (Mic::On, true) => {
+                return said(format!(
+                    "The microphone is on: {host} hears this device. {} turns it off.",
+                    Shortcut::Microphone.keys()
+                ));
+            }
+            (Mic::On, false) => {
+                return said(format!("Opening the microphone: {host} hears nothing yet."));
+            }
+            (Mic::Off, _) => {
+                return said(format!("The microphone is off: {host} no longer hears this device."));
+            }
+            _ => {}
+        },
+        Some(News::Camera(film)) => match (&view.camera, film) {
+            (Cam::On, Some(Filming::Sending(_))) => {
+                return said(format!(
+                    "The camera is on: {host} sees this device. {} turns it off.",
+                    Shortcut::Camera.keys()
+                ));
+            }
+            (Cam::On, _) => {
+                return said(format!("Opening the camera: {host} sees nothing yet."));
+            }
+            (Cam::Off, _) => {
+                return said(format!("The camera is off: {host} no longer sees this device."));
+            }
+            _ => {}
+        },
+        None => {}
     }
     timed.then(|| note(view, game_mouse))
 }
@@ -782,6 +901,7 @@ mod tests {
             connected: true,
             input,
             microphone: Mic::Off,
+            camera: Cam::Off,
         }
     }
 
@@ -810,7 +930,8 @@ mod tests {
         assert_eq!(bar_note(&view, false, true, None), Some(note(&view, false)));
 
         view.microphone = Mic::On;
-        let said = bar_note(&view, false, true, Some(true)).expect("a line about the microphone");
+        let said = bar_note(&view, false, true, Some(News::Microphone(true)))
+            .expect("a line about the microphone");
         assert_eq!(
             said.text,
             "The microphone is on: Salon hears this device. Ctrl+Alt+Shift+T turns it off."
@@ -822,8 +943,50 @@ mod tests {
         assert_eq!(bar_note(&view, false, false, None), None);
 
         view.microphone = Mic::Off;
-        let said = bar_note(&view, false, true, Some(false)).expect("a line about the microphone");
+        let said = bar_note(&view, false, true, Some(News::Microphone(false)))
+            .expect("a line about the microphone");
         assert_eq!(said.text, "The microphone is off: Salon no longer hears this device.");
+    }
+
+    #[test]
+    fn the_bar_says_what_the_camera_just_did() {
+        let mut view = view(InputAllowed::ALL);
+        view.camera = Cam::On;
+        // The camera opens and the PC is asked before anything leaves.
+        let opening = [Some(News::Camera(None)), Some(News::Camera(Some(Filming::Opening)))];
+        for news in opening {
+            let said = bar_note(&view, false, true, news).expect("a line about the camera");
+            assert_eq!(said.text, "Opening the camera: Salon sees nothing yet.");
+            assert!(!said.problem);
+        }
+        let sending = Some(News::Camera(Some(Filming::Sending([1280, 720]))));
+        let said = bar_note(&view, false, true, sending).expect("a line about the camera");
+        assert_eq!(
+            said.text,
+            "The camera is on: Salon sees this device. Ctrl+Alt+Shift+C turns it off."
+        );
+        // Later on, the lit switch says it.
+        assert_eq!(bar_note(&view, false, false, sending), None);
+
+        view.camera = Cam::Off;
+        let said = bar_note(&view, false, true, Some(News::Camera(None)))
+            .expect("a line about the camera");
+        assert_eq!(said.text, "The camera is off: Salon no longer sees this device.");
+    }
+
+    #[test]
+    fn a_camera_that_failed_stays_said_and_the_one_that_just_failed_comes_first() {
+        let mut view = view(InputAllowed::ALL);
+        view.camera = Cam::Failed("This device has no camera.".into());
+        let said = bar_note(&view, false, false, None).expect("a problem is always said");
+        assert_eq!(said, Note { text: "This device has no camera.".into(), problem: true });
+
+        view.microphone = Mic::Failed("This device has no microphone.".into());
+        let said = bar_note(&view, false, false, None).expect("a problem is always said");
+        assert_eq!(said.text, "This device has no microphone.");
+        let said = bar_note(&view, false, true, Some(News::Camera(None)))
+            .expect("a problem is always said");
+        assert_eq!(said.text, "This device has no camera.");
     }
 
     #[test]
@@ -831,7 +994,8 @@ mod tests {
         // A browser asks the person before it hands a microphone over.
         let mut view = view(InputAllowed::ALL);
         view.microphone = Mic::On;
-        let said = bar_note(&view, false, true, Some(false)).expect("a line about the microphone");
+        let said = bar_note(&view, false, true, Some(News::Microphone(false)))
+            .expect("a line about the microphone");
         assert_eq!(said.text, "Opening the microphone: Salon hears nothing yet.");
         assert!(!said.problem);
     }

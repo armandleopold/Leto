@@ -5,14 +5,14 @@ use leto_core::{brand, platform::Platform};
 
 use crate::{
     backend::{Backend, Door, Unavailable},
-    state::{Device, Devices, Event, Mic, Screen, State, Trial},
+    state::{Cam, Device, Devices, Event, Mic, Screen, State, Trial},
     theme,
     ui::{
         self,
         apps::Covers,
         devices::Preview,
         gate, icons,
-        stream::{Player, Sound},
+        stream::{Player, Status},
         widgets,
     },
 };
@@ -151,13 +151,20 @@ impl eframe::App for LetoApp {
                     self.state.microphone_failed(problem);
                     None
                 });
+                // The same goes for the camera.
+                let filming = view.connected && view.camera == Cam::On;
+                let film = self.backend.film(filming).unwrap_or_else(|problem| {
+                    self.state.camera_failed(problem);
+                    None
+                });
                 // The stream screen paints its own ground: on the web the
                 // pictures show through the window.
                 let inputs = egui::CentralPanel::default()
                     .frame(egui::Frame::new())
                     .show(ui, |ui| {
-                        let sound = Sound { problem: sound_problem.as_deref(), voice };
-                        ui::stream::show(ui, &mut self.state, &view, &mut self.player, sound)
+                        let status =
+                            Status { sound_problem: sound_problem.as_deref(), voice, film };
+                        ui::stream::show(ui, &mut self.state, &view, &mut self.player, status)
                     })
                     .inner;
                 // Before anything else is asked of the backend: what was
