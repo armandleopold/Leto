@@ -63,6 +63,13 @@ certificate the bridge made itself, so the browser warns once. With `--local`
 only this computer can reach it. The bridge keeps its certificate and the
 browsers it knows in a `bridge` folder next to the client's settings.
 
+To check the browser's microphone without one, start Chromium with
+`--use-fake-device-for-media-stream --use-fake-ui-for-media-stream
+--use-file-for-fake-audio-capture=<a WAV file>`: the file plays as the
+microphone, and `voice` on the stand-in host saves what arrived. The browser
+treats a steady tone as noise and turns it down, so use a voice, or a tone
+only to check the pitch.
+
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
 and `targets` (a compile check for macOS, the web, Android and iOS). Each is
 also a command of its own, for example `cargo xtask clippy`. Run

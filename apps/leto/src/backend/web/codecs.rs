@@ -1,10 +1,11 @@
-//! The browser's own decoders, as far as Leto uses them.
+//! The browser's own decoders, and its encoder for the microphone, as far
+//! as Leto uses them.
 //!
 //! This is WebCodecs. `web-sys` only offers it behind a flag that makes its
 //! API unstable, for the whole build, so the few calls Leto makes are
 //! declared here.
 
-use js_sys::{Float32Array, Object, Reflect};
+use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -86,8 +87,39 @@ extern "C" {
     #[wasm_bindgen(constructor, catch)]
     pub fn new(packet: &Object) -> Result<EncodedAudioChunk, JsValue>;
 
-    /// One decoded piece of sound.
+    /// Its size in bytes.
+    #[wasm_bindgen(method, getter, js_name = byteLength)]
+    pub fn length(this: &EncodedAudioChunk) -> u32;
+
+    /// Copies it out. `bytes` must have room for all of it.
+    #[wasm_bindgen(method, js_name = copyTo, catch)]
+    pub fn copy_to(this: &EncodedAudioChunk, bytes: &Uint8Array) -> Result<(), JsValue>;
+
+    /// Turns sound into encoded pieces.
+    #[derive(Clone)]
+    pub type AudioEncoder;
+
+    /// `callbacks` has `output`, called with each [`EncodedAudioChunk`], and
+    /// `error`.
+    #[wasm_bindgen(constructor, catch)]
+    pub fn new(callbacks: &Object) -> Result<AudioEncoder, JsValue>;
+
+    #[wasm_bindgen(method, catch)]
+    pub fn configure(this: &AudioEncoder, format: &Object) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(method, catch)]
+    pub fn encode(this: &AudioEncoder, sound: &AudioData) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(method, catch)]
+    pub fn close(this: &AudioEncoder) -> Result<(), JsValue>;
+
+    /// One piece of sound that is not encoded: what a decoder makes, and
+    /// what an encoder takes.
     pub type AudioData;
+
+    /// `sound` has the samples and says what they are.
+    #[wasm_bindgen(constructor, catch)]
+    pub fn new(sound: &Object) -> Result<AudioData, JsValue>;
 
     /// Samples per channel.
     #[wasm_bindgen(method, getter, js_name = numberOfFrames)]

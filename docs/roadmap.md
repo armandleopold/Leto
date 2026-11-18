@@ -31,11 +31,11 @@ Progress:
 - Done: the same in the browser. `leto-cli bridge` serves the web client and
   relays the stream, which the browser decodes itself. See
   [architecture.md](architecture.md#the-web-client-and-its-bridge).
-- Done: the microphone, from the desktop app, to a PC that takes one (the
-  microphone build of Apollo, Foundation Sunshine). One switch in the bar
-  over the picture, off at the start of every stream. See
+- Done: the microphone, from the desktop app and from the browser, to a PC
+  that takes one (the microphone build of Apollo, Foundation Sunshine). One
+  switch in the bar over the picture, off at the start of every stream. See
   [architecture.md](architecture.md#the-microphone).
-- Next: the microphone from the browser, then capture of the camera.
+- Next: capture of the camera, and its preview.
 - Later in this step: decoding on the graphics card, H.265, HDR, surround
   sound, and the settings of Advanced mode (size, pictures per second, bit
   rate).
@@ -59,15 +59,20 @@ What the microphone does not do yet:
 
 - It was never sent to a real host. The stand-in host follows the Apollo
   microphone build and Foundation Sunshine as read in their source, and what
-  it hears was checked there. The microphone itself was a made-up one on
-  Linux: no real microphone was captured, on any system.
-- It is the system's default microphone, as the system gives it: no choice of
-  device, no noise suppression, no echo cancellation. With loudspeakers
-  instead of a headset, the PC hears its own sound again.
+  it hears was checked there. The microphone itself was a made-up one, on
+  Linux and in Chromium: no real microphone was captured, on any system.
+- In the desktop app it is the system's default microphone, as the system
+  gives it: no choice of device, no noise suppression, no echo cancellation.
+  With loudspeakers instead of a headset, the PC hears its own sound again.
+  A browser is asked for its own echo cancellation and noise suppression,
+  and chooses the microphone. Whether that keeps the PC's sound out of a
+  real room was not tried.
+- In a browser it needs the browser's own sound encoder, which Firefox and
+  Safari got later than Chrome and Edge. A browser without it says so when
+  the switch is turned on. It was checked in Chromium only.
 - Sent to a stock Apollo or Sunshine it would go nowhere, so the switch is
   dimmed there. The receiver that changes this is the companion of step 4.
 - Nothing remembers that it was on: it is off at the start of every stream.
-- The web client has no switch for it yet.
 
 What input does not do yet:
 

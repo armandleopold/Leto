@@ -1,9 +1,10 @@
 # The return channel: microphone and camera, from client to host
 
 Status: **design draft**, except the client side of the microphone, which the
-desktop app has (see [architecture.md](architecture.md#the-microphone)). The
-microphone part follows an existing protocol; the camera part is new and
-marked as such. Nothing of the host side exists yet.
+desktop app and the web client have (see
+[architecture.md](architecture.md#the-microphone)). The microphone part
+follows an existing protocol; the camera part is new and marked as such.
+Nothing of the host side exists yet.
 
 ## Goal
 

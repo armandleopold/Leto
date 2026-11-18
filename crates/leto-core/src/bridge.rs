@@ -4,7 +4,10 @@
 //! bridge, which runs the client engine next to the PC. What they say to
 //! each other is the engine's own vocabulary ([`crate::engine`]) wrapped in
 //! [`Up`] and [`Down`], as JSON text messages. Pictures and sound are too
-//! large for text and travel as binary messages, one [`Frame`] each.
+//! large for text and travel as binary messages, one [`Frame`] each. So
+//! does the browser's microphone, the other way.
+
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +21,13 @@ pub const PATH: &str = "/link";
 
 /// Digits in the code that makes a browser known to the bridge.
 pub const CODE_DIGITS: usize = 8;
+
+/// The rate a browser sends its microphone at, in samples per second, on
+/// one channel: what a PC takes, so that the bridge passes it on as it is.
+pub const VOICE_RATE: u32 = 48_000;
+
+/// How much of the microphone one [`Frame::Voice`] carries.
+pub const VOICE_PACKET: Duration = Duration::from_millis(20);
 
 /// What a browser says to the bridge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,11 +92,13 @@ pub struct AudioFormat {
 
 const PICTURE: u8 = 1;
 const SOUND: u8 = 2;
+const VOICE: u8 = 3;
 const KEYFRAME: u8 = 1;
 /// Bytes before the data of a picture: kind, flags and number.
 const PICTURE_HEAD: usize = 6;
 
-/// One binary message from the bridge: a piece of the stream, still encoded.
+/// One binary message: a piece of the stream, still encoded. Pictures and
+/// sound come from the bridge, the microphone goes to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame<'a> {
     Picture {
@@ -99,6 +111,10 @@ pub enum Frame<'a> {
     },
     /// One Opus packet.
     Sound(&'a [u8]),
+    /// The browser's microphone for the PC being watched: one Opus packet
+    /// of [`VOICE_PACKET`], one channel at [`VOICE_RATE`]. They follow each
+    /// other without a gap.
+    Voice(&'a [u8]),
 }
 
 impl<'a> Frame<'a> {
@@ -113,12 +129,8 @@ impl<'a> Frame<'a> {
                 message.extend_from_slice(data);
                 message
             }
-            Self::Sound(packet) => {
-                let mut message = Vec::with_capacity(1 + packet.len());
-                message.push(SOUND);
-                message.extend_from_slice(packet);
-                message
-            }
+            Self::Sound(packet) => tagged(SOUND, packet),
+            Self::Voice(packet) => tagged(VOICE, packet),
         }
     }
 
@@ -132,9 +144,18 @@ impl<'a> Frame<'a> {
                 Some(Self::Picture { number, keyframe: flags & KEYFRAME != 0, data })
             }
             SOUND => Some(Self::Sound(message.get(1..)?)),
+            VOICE => Some(Self::Voice(message.get(1..)?)),
             _ => None,
         }
     }
+}
+
+/// A message that is its kind, then `packet`.
+fn tagged(kind: u8, packet: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(1 + packet.len());
+    message.push(kind);
+    message.extend_from_slice(packet);
+    message
 }
 
 #[cfg(test)]
@@ -156,6 +177,10 @@ mod tests {
         let sound = Frame::Sound(&[0xFC, 1, 2]);
         assert_eq!(sound.encode(), [2, 0xFC, 1, 2]);
         assert_eq!(Frame::parse(&sound.encode()), Some(sound));
+
+        let voice = Frame::Voice(&[0xF8, 3, 4]);
+        assert_eq!(voice.encode(), [3, 0xF8, 3, 4]);
+        assert_eq!(Frame::parse(&voice.encode()), Some(voice));
     }
 
     #[test]

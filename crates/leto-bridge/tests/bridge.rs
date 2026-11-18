@@ -25,7 +25,7 @@ use leto_core::{
     bridge::{Down, Frame, Up},
     model::HostId,
 };
-use leto_testhost::FakeHost;
+use leto_testhost::{FakeHost, quiet_voice};
 use rustls::{
     ClientConfig, RootCertStore,
     pki_types::{CertificateDer, ServerName, pem::PemObject as _},
@@ -421,6 +421,7 @@ async fn a_stream_reaches_the_browser_and_input_reaches_the_pc() {
                     assert!(!packet.is_empty());
                     sounds += 1;
                 }
+                Frame::Voice(_) => panic!("the bridge sent a microphone down"),
             },
         }
     }
@@ -440,6 +441,15 @@ async fn a_stream_reaches_the_browser_and_input_reaches_the_pc() {
         sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(host.inputs(), [key, Input::MouseMove { dx: 3, dy: -4 }]);
+
+    // So does the microphone, packet by packet.
+    let voice = Frame::Voice(&quiet_voice()).encode();
+    let start = Instant::now();
+    while host.stream_report().is_none_or(|report| report.microphone_packets < 3) {
+        assert!(start.elapsed() < PATIENCE, "the microphone never reached the host");
+        browser.socket.send(Message::binary(voice.clone())).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
 
     // A browser that lost a picture gets a fresh keyframe. The engine asks
     // for some of its own while a stream starts: wait until those are

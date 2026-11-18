@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use leto_client::{Client, Service, Shell, engine::Event};
-use leto_core::bridge::{Down, Up};
+use leto_core::bridge::{Down, Frame, Up, VOICE_PACKET};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     time::{Instant, MissedTickBehavior, interval, sleep},
@@ -30,6 +30,9 @@ const GONE_AFTER: Duration = Duration::from_secs(20);
 /// The longest message a browser has reason to send. What a person does in
 /// one frame is far below it.
 const LONGEST_MESSAGE: usize = 64 * 1024;
+
+/// No Opus packet with one frame in it is longer than this.
+const LONGEST_VOICE: usize = 1275;
 
 /// What every browser's link shares.
 pub struct Shared {
@@ -72,6 +75,8 @@ where
     let (outbox, mut parcels) = Outbox::new();
     // The engine at work for this browser, once it is let in.
     let mut service: Option<Service<Browser>> = None;
+    // Packets of this browser's microphone that left for a PC.
+    let mut voices: u32 = 0;
     let mut heard = Instant::now();
     let mut asking = interval(ASKED_EVERY);
     asking.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -89,6 +94,18 @@ where
                             break;
                         };
                         hear(said, &shared, &outbox, &mut service);
+                    }
+                    Message::Binary(bytes) => {
+                        // The microphone, which goes the way input does:
+                        // from a browser the gate let in, to the PC it is
+                        // watching, if that PC takes one.
+                        if let Some(service) = &service
+                            && let Some(Frame::Voice(packet)) = Frame::parse(&bytes)
+                            && (1..=LONGEST_VOICE).contains(&packet.len())
+                            && service.microphone(VOICE_PACKET * voices, packet)
+                        {
+                            voices = voices.wrapping_add(1);
+                        }
                     }
                     Message::Close(_) => break,
                     // Answers to "still there?" count as heard, and the
