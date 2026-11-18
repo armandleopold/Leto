@@ -157,6 +157,7 @@ mod tests {
             paired: false,
             reachability: Reachability::Online,
             busy: false,
+            running_app: None,
         }
     }
 

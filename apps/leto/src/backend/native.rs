@@ -198,6 +198,10 @@ fn explain(error: &Error) -> String {
             "This PC no longer knows this device. Pair again to continue.".to_owned()
         }
         Error::UnknownHost => "Leto no longer knows this PC.".to_owned(),
+        Error::OtherAppRunning => {
+            "Another app is running on this PC. Close it first, then start this one.".to_owned()
+        }
+        Error::Unsupported(reason) => format!("This PC cannot stream to Leto yet: {reason}."),
         Error::Storage(error) => format!("Leto could not read or write its settings: {error}"),
         Error::Discovery(_) | Error::Protocol(_) => {
             let text = error.to_string();
@@ -223,6 +227,8 @@ mod tests {
             Error::PairingFailed,
             Error::NotPaired,
             Error::UnknownHost,
+            Error::OtherAppRunning,
+            Error::Unsupported("the host is too old".into()),
             Error::Discovery("no network interface".into()),
             Error::Protocol("unexpected answer".into()),
         ];

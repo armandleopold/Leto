@@ -2,21 +2,26 @@
 //!
 //! The tests of the clients run against it, and `cargo run -p leto-testhost
 //! --example serve` keeps one running to try a client by hand without a
-//! gaming PC. It is not a host: it streams nothing.
+//! gaming PC. It is not a host: it captures no screen and runs no app. What
+//! it streams is a test card and a melody.
 //!
-//! It implements the part of a real host a client talks to before streaming:
+//! It implements what a client sees of a real host. Before streaming:
 //! `serverinfo`, the five pairing steps, the app list and app covers, over
 //! plain HTTP and over HTTPS with client certificates. The pairing arithmetic
 //! follows `nvhttp.cpp` in Sunshine and Apollo, and the XML is written by hand
-//! the way those hosts write it, so a client's parsing is exercised too.
+//! the way those hosts write it, so a client's parsing is exercised too. Then
+//! `launch`, `resume` and `cancel`, and the stream itself, in [`stream`].
 
 // Test support: a failed assumption should stop the test loudly.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod media;
+mod stream;
+
 use std::{
     collections::HashMap,
     io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{IpAddr, Ipv4Addr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -32,6 +37,7 @@ use moonlight_common::{
         ClientIdentifier, ClientSecret, ServerIdentifier,
         pair::{HashAlgorithm, PairingCryptoBackend},
     },
+    stream::{AesIv, AesKey},
 };
 use rustls::{
     DigitallySignedStruct, DistinguishedName, ServerConfig, ServerConnection, SignatureScheme,
@@ -40,6 +46,8 @@ use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, UnixTime},
     server::danger::{ClientCertVerified, ClientCertVerifier},
 };
+
+pub use stream::StreamReport;
 
 /// A tiny valid PNG: one transparent pixel.
 pub const COVER_PNG: &[u8] = &[
@@ -83,6 +91,10 @@ pub struct Options {
     /// How long the host waits for someone to type the PIN.
     pub pin_patience: Duration,
     pub apps: Vec<App>,
+    /// Encrypt the RTSP handshake for clients that can, as a real host does
+    /// by default. Without it the handshake is in clear text, as a host
+    /// configured to never encrypt does it.
+    pub encrypt_rtsp: bool,
 }
 
 impl Default for Options {
@@ -97,6 +109,7 @@ impl Default for Options {
                 App::new(1, "Desktop", true),
                 App::new(881_448_767, "Steam Big Picture", false),
             ],
+            encrypt_rtsp: true,
         }
     }
 }
@@ -128,10 +141,31 @@ struct Shared {
     pairing: Mutex<Pairing>,
     /// Certificates of paired clients, DER encoded.
     paired: Mutex<Vec<Vec<u8>>>,
+    playing: Mutex<Playing>,
     options: Options,
     http_port: u16,
     https_port: u16,
     stop: AtomicBool,
+}
+
+/// The app the host is running, and the stream to the client watching it.
+#[derive(Default)]
+struct Playing {
+    /// The running app. It keeps running when the client leaves.
+    app: Option<u32>,
+    session: Option<stream::Session>,
+    /// What the last stream that ended had done.
+    last: Option<StreamReport>,
+}
+
+impl Playing {
+    /// Ends the stream, if there is one, and keeps its report.
+    fn end_stream(&mut self, tell_client: bool) {
+        if let Some(mut session) = self.session.take() {
+            session.stop(tell_client);
+            self.last = Some(session.report());
+        }
+    }
 }
 
 /// A running fake host. Stops when dropped.
@@ -159,6 +193,7 @@ impl FakeHost {
             typed_pin: Mutex::new(None),
             pairing: Mutex::new(Pairing::default()),
             paired: Mutex::new(Vec::new()),
+            playing: Mutex::new(Playing::default()),
             options,
             http_port: http.local_addr().unwrap().port(),
             https_port: https.local_addr().unwrap().port(),
@@ -194,6 +229,31 @@ impl FakeHost {
         self.shared.paired.lock().unwrap().len()
     }
 
+    /// The app the host is running, whether or not a client is watching.
+    pub fn running_app(&self) -> Option<u32> {
+        self.shared.playing.lock().unwrap().app
+    }
+
+    /// What the current stream has done so far, or the last one if it ended.
+    pub fn stream_report(&self) -> Option<StreamReport> {
+        let playing = self.shared.playing.lock().unwrap();
+        playing.session.as_ref().map(stream::Session::report).or(playing.last)
+    }
+
+    /// The app closes on the host: the host tells the client and the stream
+    /// ends.
+    pub fn close_app(&self) {
+        let mut playing = self.shared.playing.lock().unwrap();
+        playing.end_stream(true);
+        playing.app = None;
+    }
+
+    /// The host ends the stream but the app keeps running, as when the
+    /// host's owner stops the session from the host's own interface.
+    pub fn drop_stream(&self) {
+        self.shared.playing.lock().unwrap().end_stream(true);
+    }
+
     /// Something else now answers on this address with the same name and id
     /// but another certificate and key: an impostor, or a reinstalled host.
     pub fn become_impostor(&self) {
@@ -204,6 +264,7 @@ impl FakeHost {
 impl Drop for FakeHost {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::SeqCst);
+        self.shared.playing.lock().unwrap().end_stream(false);
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
@@ -301,7 +362,7 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, secure: bool) -> thread::Jo
 
 fn handle_plain(mut stream: TcpStream, shared: &Shared) {
     let Some(target) = read_request(&mut stream) else { return };
-    let (kind, body) = respond(shared, &target, None);
+    let (kind, body) = respond(shared, &target, None, local_ip(&stream));
     write_response(&mut stream, kind, &body);
 }
 
@@ -313,10 +374,15 @@ fn handle_secure(stream: TcpStream, shared: &Shared) {
     let Some(target) = read_request(&mut stream) else { return };
     let client =
         stream.conn.peer_certificates().and_then(|chain| chain.first()).map(|c| c.to_vec());
-    let (kind, body) = respond(shared, &target, Some(client));
+    let (kind, body) = respond(shared, &target, Some(client), local_ip(&stream.sock));
     write_response(&mut stream, kind, &body);
     stream.conn.send_close_notify();
     let _ = stream.flush();
+}
+
+/// The address of this machine the client reached.
+fn local_ip(stream: &TcpStream) -> IpAddr {
+    stream.local_addr().map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |address| address.ip())
 }
 
 /// Reads one request and returns its target (path and query).
@@ -354,6 +420,15 @@ fn xml(inner: &str) -> (&'static str, Vec<u8>) {
     (XML, text.into_bytes())
 }
 
+/// An error the way Sunshine reports one: in the root element.
+fn failure(code: u16, message: &str) -> (&'static str, Vec<u8>) {
+    let text = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<root status_code=\"{code}\" \
+         status_message=\"{message}\"><gamesession>0</gamesession></root>"
+    );
+    (XML, text.into_bytes())
+}
+
 fn unauthorized(path: &str) -> (&'static str, Vec<u8>) {
     let text = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<root status_code=\"401\" query=\"{path}\" \
@@ -368,6 +443,7 @@ fn respond(
     shared: &Shared,
     target: &str,
     client: Option<Option<Vec<u8>>>,
+    local: IpAddr,
 ) -> (&'static str, Vec<u8>) {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let query: HashMap<&str, &str> =
@@ -382,20 +458,33 @@ fn respond(
     }
 
     match path {
-        "/serverinfo" => xml(&format!(
-            "<hostname>{}</hostname><appversion>7.1.431.-1</appversion>\
+        "/serverinfo" => {
+            let running = {
+                let mut playing = shared.playing.lock().unwrap();
+                // A client that left without a word: the app keeps running.
+                if playing.session.as_ref().is_some_and(|session| !session.alive()) {
+                    playing.end_stream(false);
+                }
+                playing.app
+            };
+            xml(&format!(
+                "<appversion>{}</appversion><hostname>{}</hostname>\
              <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
              <HttpsPort>{}</HttpsPort><ExternalPort>{}</ExternalPort>\
              <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>00:11:22:33:44:55</mac>\
              <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>3</ServerCodecModeSupport>\
-             <PairStatus>{}</PairStatus><currentgame>0</currentgame>\
-             <state>SUNSHINE_SERVER_FREE</state>",
-            shared.options.name,
-            shared.options.id,
-            shared.https_port,
-            shared.http_port,
-            u8::from(authorized),
-        )),
+             <PairStatus>{}</PairStatus><currentgame>{}</currentgame>\
+             <state>{}</state>",
+                stream::APP_VERSION,
+                shared.options.name,
+                shared.options.id,
+                shared.https_port,
+                shared.http_port,
+                u8::from(authorized),
+                running.unwrap_or(0),
+                if running.is_some() { "SUNSHINE_SERVER_BUSY" } else { "SUNSHINE_SERVER_FREE" },
+            ))
+        }
         "/pair" => pair(shared, &query, secure),
         "/unpair" => {
             shared.paired.lock().unwrap().clear();
@@ -418,12 +507,70 @@ fn respond(
                 .collect();
             xml(&apps)
         }
+        "/launch" | "/resume" if secure => launch(shared, path == "/resume", &query, local),
+        "/cancel" if secure => {
+            let mut playing = shared.playing.lock().unwrap();
+            playing.end_stream(true);
+            playing.app = None;
+            xml("<cancel>1</cancel>")
+        }
         "/appasset" if secure => {
             let wanted = query.get("appid").and_then(|id| id.parse::<u32>().ok());
             let app = shared.options.apps.iter().find(|app| Some(app.id) == wanted);
             ("image/png", app.map_or_else(|| COVER_PNG.to_vec(), |app| app.cover.clone()))
         }
         _ => unauthorized(path),
+    }
+}
+
+/// Starts an app, or goes back to the one that is running, and opens the
+/// ports of a new stream. Answers as `nvhttp.cpp` does.
+fn launch(
+    shared: &Shared,
+    resume: bool,
+    query: &HashMap<&str, &str>,
+    local: IpAddr,
+) -> (&'static str, Vec<u8>) {
+    let mut playing = shared.playing.lock().unwrap();
+    let app = match (resume, playing.app) {
+        (true, Some(app)) => app,
+        (true, None) => return failure(503, "No running app to resume"),
+        (false, Some(_)) => return failure(400, "An app is already running on this host"),
+        (false, None) => {
+            let wanted = query.get("appid").and_then(|id| id.parse::<u32>().ok());
+            match shared.options.apps.iter().find(|app| Some(app.id) == wanted) {
+                Some(app) => app.id,
+                None => return failure(404, "Cannot find requested application"),
+            }
+        }
+    };
+
+    // The key and the number every part of the stream is encrypted with.
+    let key = query.get("rikey").and_then(|key| unhex(key)).and_then(|key| key.try_into().ok());
+    let key_id = query.get("rikeyid").and_then(|id| id.parse::<i64>().ok());
+    let (Some(key), Some(key_id)) = (key, key_id) else {
+        return failure(400, "Missing a required launch parameter");
+    };
+    let launch = stream::Launch {
+        key: AesKey(key),
+        key_id: AesIv(key_id as u32),
+        // Clients that can encrypt RTSP say so with `corever`.
+        encrypt_rtsp: shared.options.encrypt_rtsp
+            && query.get("corever").and_then(|version| version.parse::<u32>().ok()) >= Some(1),
+    };
+
+    playing.end_stream(false);
+    let session = match stream::Session::start(local, launch) {
+        Ok(session) => session,
+        Err(error) => return failure(503, &format!("Failed to start the stream: {error}")),
+    };
+    let url = session.url(local);
+    playing.app = Some(app);
+    playing.session = Some(session);
+    if resume {
+        xml(&format!("<sessionUrl0>{url}</sessionUrl0><resume>1</resume>"))
+    } else {
+        xml(&format!("<sessionUrl0>{url}</sessionUrl0><gamesession>1</gamesession>"))
     }
 }
 

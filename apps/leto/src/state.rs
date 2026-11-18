@@ -337,6 +337,7 @@ mod tests {
             paired,
             reachability,
             busy: false,
+            running_app: None,
         }
     }
 

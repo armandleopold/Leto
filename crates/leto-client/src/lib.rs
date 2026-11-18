@@ -1,14 +1,18 @@
-//! The client side of Leto: find hosts, pair with them, list their apps.
+//! The client side of Leto: find hosts, pair with them, list their apps and
+//! stream one.
 //!
 //! This crate is the engine behind every native client shell. It speaks the
 //! Moonlight protocol through `moonlight-common`, so it works with Sunshine
 //! and Apollo hosts as they are. All calls block; a shell with an interface
 //! runs them on worker threads.
 //!
+//! A stream arrives still encoded. See [`session`] for where it goes.
+//!
 //! It does not compile for the web: browsers have no sockets. The web client
 //! reaches hosts through a bridge instead.
 
 pub mod discovery;
+pub mod session;
 pub mod store;
 mod transport;
 
@@ -32,6 +36,11 @@ use moonlight_common::{
         ClientIdentifier, ClientSecret, ServerIdentifier,
         pair::{PairPin, PairingCryptoBackend},
     },
+    stream::{AesIv, AesKey, std::MoonlightStream},
+};
+pub use session::{
+    AudioSetup, AudioSink, Counter, Decoded, Ended, Session, StreamSettings, Tally, VideoFrame,
+    VideoSetup, VideoSink,
 };
 use store::{Identity, Saved, SavedHost, Store};
 use transport::Transport;
@@ -58,6 +67,10 @@ pub enum Error {
     NotPaired,
     #[error("Leto does not know this PC")]
     UnknownHost,
+    #[error("another app is running on the PC")]
+    OtherAppRunning,
+    #[error("the PC cannot stream with these settings: {0}")]
+    Unsupported(String),
     #[error("Leto could not read or write its settings: {0}")]
     Storage(#[from] io::Error),
     #[error("searching the network failed: {0}")]
@@ -76,6 +89,9 @@ impl From<ProtocolError> for Error {
             ProtocolError::Unauthenticated
             | ProtocolError::NotPaired
             | ProtocolError::StatusCode { code: 401, .. } => Self::NotPaired,
+            ProtocolError::SettingHdrNotSupported | ProtocolError::ServerVersionNotSupported(_) => {
+                Self::Unsupported(error.to_string())
+            }
             other => Self::Protocol(other.to_string()),
         }
     }
@@ -97,7 +113,8 @@ pub struct Client {
     store: Store,
     identifier: ClientIdentifier,
     secret: ClientSecret,
-    hosts: Mutex<BTreeMap<HostId, Entry>>,
+    /// Shared with the streams, which outlive the calls that start them.
+    hosts: Arc<Mutex<BTreeMap<HostId, Entry>>>,
 }
 
 impl Client {
@@ -145,6 +162,7 @@ impl Client {
                     paired: host.certificate.is_some(),
                     reachability: Reachability::Unknown,
                     busy: false,
+                    running_app: None,
                 };
                 let entry =
                     Entry { summary, certificate: host.certificate, saved: true, handle: None };
@@ -152,7 +170,7 @@ impl Client {
             })
             .collect();
 
-        Ok(Self { store, identifier, secret, hosts: Mutex::new(hosts) })
+        Ok(Self { store, identifier, secret, hosts: Arc::new(Mutex::new(hosts)) })
     }
 
     /// Every host the client knows, sorted by name.
@@ -285,6 +303,91 @@ impl Client {
         Ok(self.handle(id)?.request_app_image(AppId(app))?)
     }
 
+    /// Starts `app` on a paired host, or goes back to it when it is already
+    /// running, and connects the stream. Blocks until pictures can flow.
+    ///
+    /// The stream arrives on threads of its own: pictures at `video`, sound at
+    /// `audio`. `ended` is called once if the stream ends without
+    /// [`Session::stop`], for example when the app closes on the PC.
+    pub fn play(
+        &self,
+        id: &HostId,
+        app: u32,
+        settings: StreamSettings,
+        video: impl VideoSink,
+        audio: impl AudioSink,
+        ended: impl FnOnce(Ended) + Send + 'static,
+    ) -> Result<Session, Error> {
+        let handle = self.handle(id)?;
+        if !handle.is_paired()? {
+            return Err(Error::NotPaired);
+        }
+        // A host runs one app at a time. Resuming would show the other one.
+        handle.update()?;
+        let running = handle.current_game()?;
+        if running != 0 && running != app {
+            return Err(Error::OtherAppRunning);
+        }
+
+        let mut protocol = settings.to_protocol();
+        protocol
+            .adjust_for_server(
+                handle.version()?,
+                &handle.gfe_version()?,
+                handle.server_codec_mode_support()?,
+            )
+            .map_err(|error| Error::Unsupported(error.to_string()))?;
+
+        // A fresh key for every stream. The host learns it over the paired
+        // HTTPS connection, and both sides encrypt the stream with it.
+        let key = AesKey::new_random(&RustCryptoBackend)?;
+        let key_id = AesIv::new_random(&RustCryptoBackend)?;
+        let config = handle.start_stream(
+            AppId(app),
+            &protocol,
+            key,
+            key_id,
+            MoonlightStream::launch_query_parameters(),
+        )?;
+        let witness = {
+            let mut hosts = self.lock();
+            let entry = hosts.get_mut(id).ok_or(Error::UnknownHost)?;
+            entry.summary.busy = true;
+            entry.summary.running_app = Some(app);
+            Witness {
+                hosts: Arc::clone(&self.hosts),
+                id: id.clone(),
+                app,
+                address: entry.summary.address.clone(),
+                port: entry.summary.port,
+                identifier: self.identifier.clone(),
+                secret: self.secret.clone(),
+                certificate: entry.certificate.clone(),
+            }
+        };
+        let ended = move |reason| ended(witness.confirm(reason));
+        Ok(Session::connect(config, protocol, video, audio, ended)?)
+    }
+
+    /// Closes the app running on a paired host.
+    pub fn quit_app(&self, id: &HostId) -> Result<HostSummary, Error> {
+        let (address, port, certificate) = {
+            let hosts = self.lock();
+            let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
+            (entry.summary.address.clone(), entry.summary.port, entry.certificate.clone())
+        };
+        // Closing needs a handle of its own: the shared one cannot be changed.
+        let mut handle = paired_handle(
+            &address,
+            port,
+            &self.identifier,
+            &self.secret,
+            &certificate.ok_or(Error::NotPaired)?,
+        )?;
+        handle.cancel()?;
+        self.probe(&address, port)
+    }
+
     /// Forgets a host, and tells it to forget this device when it can.
     pub fn forget(&self, id: &HostId) -> Result<(), Error> {
         let entry = self.lock().remove(id).ok_or(Error::UnknownHost)?;
@@ -335,6 +438,7 @@ impl Client {
             paired,
             reachability: Reachability::Online,
             busy: handle.state()? == ServerState::Busy,
+            running_app: Some(handle.current_game()?).filter(|app| *app != 0),
         };
 
         let mut hosts = self.lock();
@@ -372,6 +476,7 @@ impl Client {
         if entry.saved {
             entry.summary.reachability = Reachability::Offline;
             entry.summary.busy = false;
+            entry.summary.running_app = None;
             entry.handle = None;
         } else {
             hosts.remove(id);
@@ -405,6 +510,73 @@ impl Client {
         // The map stays consistent even if a thread panicked while holding it.
         self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// What a stream needs to find out why it ended, after the call that started
+/// it has returned.
+struct Witness {
+    hosts: Arc<Mutex<BTreeMap<HostId, Entry>>>,
+    id: HostId,
+    app: u32,
+    address: String,
+    port: u16,
+    identifier: ClientIdentifier,
+    secret: ClientSecret,
+    certificate: Option<String>,
+}
+
+impl Witness {
+    /// Corrects the reason a stream gave for its ending by asking the host.
+    ///
+    /// The stream cannot tell a closed app from a lost connection:
+    /// `moonlight-common` drops the host's goodbye (see `docs/inventory.md`).
+    /// The host can: it says over HTTPS which app it is running.
+    fn confirm(self, reason: Ended) -> Ended {
+        if reason != Ended::ConnectionLost {
+            return reason;
+        }
+        let running = self.certificate.as_deref().ok_or(Error::NotPaired).and_then(|certificate| {
+            let handle = paired_handle(
+                &self.address,
+                self.port,
+                &self.identifier,
+                &self.secret,
+                certificate,
+            )?;
+            Ok(handle.current_game()?)
+        });
+        match running {
+            Ok(running) if running != self.app => {
+                let mut hosts = self.hosts.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(entry) = hosts.get_mut(&self.id) {
+                    entry.summary.busy = running != 0;
+                    entry.summary.running_app = Some(running).filter(|app| *app != 0);
+                }
+                Ended::ByHost
+            }
+            Ok(_) => Ended::ConnectionLost,
+            Err(error) => {
+                log::debug!("{} did not say why the stream ended: {error}", self.address);
+                Ended::ConnectionLost
+            }
+        }
+    }
+}
+
+/// A connection of its own to a host this device is paired with, for what
+/// the shared one cannot do.
+fn paired_handle(
+    address: &str,
+    port: u16,
+    identifier: &ClientIdentifier,
+    secret: &ClientSecret,
+    certificate: &str,
+) -> Result<Host, Error> {
+    let server = ServerIdentifier::from_pem(parse_pem(certificate)?);
+    let handle = Host::new(address.to_owned(), port, None)?;
+    handle.update()?;
+    handle.set_identity(identifier.clone(), secret.clone(), server)?;
+    Ok(handle)
 }
 
 /// The name this device shows in the host's list of paired devices.
