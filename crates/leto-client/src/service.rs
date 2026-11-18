@@ -57,8 +57,11 @@ struct Watching {
     /// The PC the stream comes from.
     host: Option<HostId>,
     session: Option<Session>,
-    /// The way of this device's camera to that PC, while it sends one.
-    camera: Option<CameraLink>,
+    /// The way of this device's camera to that PC, while it sends one, and
+    /// its number.
+    camera: Option<(u64, CameraLink)>,
+    /// How many cameras were sent so far: each has its number.
+    cameras: u64,
 }
 
 /// The engine, working for one interface.
@@ -179,8 +182,10 @@ impl<S: Shell> Service<S> {
     /// PC takes. Blocks until the PC has answered, so not for a thread that
     /// draws. When the PC does not agree, says why in words for the person.
     ///
-    /// The camera stops with the stream, or with [`Service::camera_close`].
-    pub fn camera_open(&self, sending: CameraSettings) -> Result<(), String> {
+    /// Returns the number of this camera, to send its pictures and to stop
+    /// it with. It stops with the stream too, and when the camera is asked
+    /// for again.
+    pub fn camera_open(&self, sending: CameraSettings) -> Result<u64, String> {
         const NO_STREAM: &str = "The camera goes along with a stream, and none is playing.";
         let (attempt, host) = {
             let watching = lock(&self.watching);
@@ -192,8 +197,9 @@ impl<S: Shell> Service<S> {
         let link = self.client.send_camera(&host, sending).map_err(|error| explain(&error))?;
         let mut watching = lock(&self.watching);
         if watching.session.is_some() && watching.wanted == Some(attempt) {
-            watching.camera = Some(link);
-            Ok(())
+            watching.cameras += 1;
+            watching.camera = Some((watching.cameras, link));
+            Ok(watching.cameras)
         } else {
             // The person left while the PC was answering. Dropping the way
             // there tells the PC.
@@ -201,18 +207,29 @@ impl<S: Shell> Service<S> {
         }
     }
 
-    /// Passes a picture of this device's camera on to the PC that agreed to
-    /// take it, as [`CameraLink::send`] takes it. Says whether all of it
-    /// left, or `None` when no camera is being sent: the PC was not asked,
-    /// or the stream is over.
-    pub fn camera(&self, at: Duration, key_frame: bool, picture: &[u8]) -> Option<bool> {
+    /// Passes a picture of the camera of this number on to the PC that
+    /// agreed to take it, as [`CameraLink::send`] takes it. Says whether
+    /// all of it left, or `None` when that camera is not being sent any
+    /// more: it was stopped, or the stream is over.
+    pub fn camera(
+        &self,
+        camera: u64,
+        at: Duration,
+        key_frame: bool,
+        picture: &[u8],
+    ) -> Option<bool> {
         let mut watching = lock(&self.watching);
-        watching.camera.as_mut().map(|link| link.send(at, key_frame, picture))
+        let (_, link) = watching.camera.as_mut().filter(|(number, _)| *number == camera)?;
+        Some(link.send(at, key_frame, picture))
     }
 
-    /// Stops sending this device's camera, and tells the PC. Does not wait.
-    pub fn camera_close(&self) {
-        lock(&self.watching).camera = None;
+    /// Stops sending the camera of this number, and tells the PC. Does not
+    /// wait. A camera that was asked for since goes on.
+    pub fn camera_close(&self, camera: u64) {
+        let mut watching = lock(&self.watching);
+        if watching.camera.as_ref().is_some_and(|(number, _)| *number == camera) {
+            watching.camera = None;
+        }
     }
 
     /// The attempt whose stream is connected, when one is.

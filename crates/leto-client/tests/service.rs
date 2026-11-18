@@ -307,7 +307,6 @@ fn a_camera_goes_along_with_a_stream_and_stops_when_it_is_left() {
     let id = desk.pair(&host);
     // The stand-in PC would take it, and the engine waits for a stream.
     assert!(desk.service.camera_open(CAMERA).is_err());
-    assert_eq!(desk.service.camera(Duration::ZERO, true, &[7; 3000]), None);
     assert!(!host.camera_report().open);
 
     desk.service.ask(Request::Play { host: id, app: 1, attempt: 4 });
@@ -327,16 +326,16 @@ fn a_camera_goes_along_with_a_stream_and_stops_when_it_is_left() {
     assert_eq!(offer, Some(CameraOffer { max_width: 1920, max_height: 1080, max_fps: 30 }));
     assert!(!host.camera_report().open, "nothing is sent until the person says so");
 
-    desk.service.camera_open(CAMERA).unwrap();
+    let camera = desk.service.camera_open(CAMERA).unwrap();
     assert_eq!(host.camera_report().asked, Some((320, 240, 30)));
     // Three packets of something: what the pictures are is not the
     // engine's business.
-    assert_eq!(desk.service.camera(Duration::ZERO, true, &[7; 3000]), Some(true));
+    assert_eq!(desk.service.camera(camera, Duration::ZERO, true, &[7; 3000]), Some(true));
     wait_for("the camera to arrive", || host.camera_report().packets == 3);
     assert_eq!(host.camera_report().refused, 0);
 
     desk.service.ask(Request::Leave);
-    assert_eq!(desk.service.camera(Duration::ZERO, true, &[7; 3000]), None);
+    assert_eq!(desk.service.camera(camera, Duration::ZERO, true, &[7; 3000]), None);
     wait_for("the PC to learn that the camera stopped", || !host.camera_report().open);
 }
 
@@ -348,16 +347,25 @@ fn a_camera_stops_with_a_stream_that_ends_and_when_asked() {
     desk.service.ask(Request::Play { host: id, app: 1, attempt: 2 });
     desk.wait(|event| matches!(event, Event::Camera { attempt: 2, .. }).then_some(()));
 
-    desk.service.camera_open(CAMERA).unwrap();
-    desk.service.camera_close();
-    assert_eq!(desk.service.camera(Duration::ZERO, true, b"a picture"), None);
+    let first = desk.service.camera_open(CAMERA).unwrap();
+    desk.service.camera_close(first);
+    assert_eq!(desk.service.camera(first, Duration::ZERO, true, b"a picture"), None);
     wait_for("the PC to learn that the camera stopped", || !host.camera_report().open);
 
-    desk.service.camera_open(CAMERA).unwrap();
+    // A camera that is asked for again takes the place of the one before,
+    // and whoever still holds that one neither sends through it nor stops
+    // it.
+    let second = desk.service.camera_open(CAMERA).unwrap();
+    let third = desk.service.camera_open(CAMERA).unwrap();
+    assert_eq!(desk.service.camera(second, Duration::ZERO, true, b"a picture"), None);
+    desk.service.camera_close(second);
+    assert_eq!(desk.service.camera(third, Duration::ZERO, true, b"a picture"), Some(true));
+    wait_for("the camera to arrive", || host.camera_report().packets == 1);
     assert!(host.camera_report().open);
+
     host.close_app();
     desk.wait(|event| matches!(event, Event::StreamEnded { attempt: 2, .. }).then_some(()));
-    assert_eq!(desk.service.camera(Duration::ZERO, true, b"a picture"), None);
+    assert_eq!(desk.service.camera(third, Duration::ZERO, true, b"a picture"), None);
     wait_for("the PC to learn that the camera stopped", || !host.camera_report().open);
 }
 
@@ -384,7 +392,7 @@ fn a_pc_that_takes_no_camera_says_so_and_one_that_refuses_is_explained() {
     let message = desk.service.camera_open(CAMERA).unwrap_err();
     assert!(message.contains("does not let this device send its camera"), "{message}");
     assert!(message.ends_with('.'), "{message}");
-    assert_eq!(desk.service.camera(Duration::ZERO, true, b"a picture"), None);
+    assert!(!host.camera_report().open);
 }
 
 #[test]

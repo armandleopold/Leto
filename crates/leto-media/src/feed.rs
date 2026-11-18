@@ -56,7 +56,7 @@ pub enum Feeding {
     /// Nobody takes pictures any more.
     Over,
     /// The camera could not be used, or its pictures not encoded: why, as
-    /// the end of a sentence.
+    /// a sentence without its capital and its full stop.
     Lost(String),
     /// The carrier did not open: why, in its own words.
     Refused(String),
@@ -150,7 +150,8 @@ impl CameraFeed {
         let thread = thread::Builder::new().name("camera feed".to_owned()).spawn(feed);
         let thread = thread
             .inspect_err(|error| {
-                shared.set(Feeding::Lost(format!("the system gave no thread to send it: {error}")));
+                let why = format!("the system gave no thread to send the camera: {error}");
+                shared.set(Feeding::Lost(why));
             })
             .ok();
         Self { shared, wake, thread }
@@ -224,7 +225,9 @@ fn run(
                 Sending::fit(picture.width, picture.height, CAMERA_FPS, largest, limits.fps)
             else {
                 let (width, height) = (picture.width, picture.height);
-                let why = format!("its pictures of {width} by {height} cannot be sent");
+                let why = format!(
+                    "the pictures of the camera, {width} by {height}, cannot be sent as they are"
+                );
                 return Some(Feeding::Lost(why));
             };
             let made = match PictureEncoder::new(sending) {

@@ -207,8 +207,7 @@ fn main() -> ExitCode {
             "camera" => {
                 let report = host.camera_report();
                 println!(
-                    "{} pictures received, {} of them whole on their own, {} lost; \
-                     {} packets, {} refused.",
+                    "{} pictures received, {} of them key frames, {} lost; {} packets, {} refused.",
                     report.pictures, report.key_frames, report.lost, report.packets, report.refused
                 );
                 let Some(seen) = host.seen() else {
