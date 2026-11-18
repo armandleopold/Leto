@@ -13,9 +13,16 @@ Super Artemis. Read `docs/architecture.md` first, then `docs/roadmap.md`.
 
 ```sh
 cargo run -p leto          # the app
-cargo run -p leto-cli -- about
+cargo run -p leto-cli -- pcs
 cargo xtask ci             # everything the pipeline checks
 cargo xtask web            # the web client, into dist/web
+```
+
+No gaming PC at hand? This keeps a stand-in host running on this machine. The
+app finds it, and you type the PIN the app shows into its terminal:
+
+```sh
+cargo run -p leto-testhost --example serve -- --port 47989 --announce
 ```
 
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
@@ -40,6 +47,8 @@ builds and tests it for real.
 - `crates/`: everything Leto can do. Libraries, tested, no user interface.
 - `apps/`: thin shells over the crates. If a shell contains logic another
   shell would need, move that logic into a crate.
+- In `apps/leto`, what the app does goes in `state.rs` with a test, the work
+  goes in `backend/`, and `ui/` only draws. See `docs/architecture.md`.
 - `xtask/`: automation. Add a command there instead of a shell script.
 - `docs/`: decisions and designs. Update them in the same pull request as the
   code they describe.
@@ -60,6 +69,8 @@ builds and tests it for real.
   message that says why it cannot fail, or return an error.
 - **Dependencies** must pass `cargo deny check` (licences in `deny.toml`).
   Leto is GPL-3.0-only.
+- **A paired PC is recognised by its certificate.** Never add a way to talk to
+  a paired PC that skips that check.
 - **Code ported from another project** says so in a comment at the top of the
   module: which project, which file, which commit.
 - Write code, comments, documentation and commit messages in English.

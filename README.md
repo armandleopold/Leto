@@ -19,13 +19,13 @@ Sunshine hosts.
 
 ## Status
 
-Very early. The repository, the checks and a first window exist. Streaming does
-not work yet.
+Very early. The app finds PCs that run Apollo or Sunshine, pairs with them and
+lists their apps. Streaming does not work yet.
 
 | Step | State |
 |---|---|
-| 1. Foundations | In progress |
-| 2. One client for Windows and the web | Not started |
+| 1. Foundations | Done |
+| 2. One client for Windows and the web | In progress |
 | 3. The Android client | Not started |
 | 4. The host, ported from Apollo | Not started |
 
@@ -45,9 +45,12 @@ You need [Rust](https://rustup.rs). The right version installs itself.
 
 ```sh
 cargo run -p leto                 # the app
-cargo run -p leto-cli -- about    # the command line
+cargo run -p leto-cli -- pcs      # the command line: the PCs on your network
 cargo xtask web                   # the web client, into dist/web
 ```
+
+The app looks for your PC on the network. Choose it, then type the PIN the app
+shows in Apollo or Sunshine on the PC.
 
 ## Documentation
 

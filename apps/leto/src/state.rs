@@ -27,6 +27,8 @@ pub enum Request {
 
 /// News from the backend.
 #[derive(Debug)]
+// The web build has no backend yet that would send any of these.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub enum Event {
     /// The list of PCs changed.
     Hosts(Vec<HostSummary>),

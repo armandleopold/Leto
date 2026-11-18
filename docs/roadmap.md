@@ -20,6 +20,13 @@ Windows, Android or the web, the three platforms available for manual tests.
 - Simple mode first. Advanced mode for the settings Moonlight users expect.
 - Capture of the microphone and the camera, sent over the return channel.
 
+Progress:
+
+- Done: find PCs on the network or by address, pair with a PIN, list the apps
+  and their covers, in the desktop app and on the command line.
+- Next: start a stream and show it, then input, then the same in the browser
+  through the bridge, then capture of the microphone and the camera.
+
 The receiver for microphone and camera on the PC (the companion in
 [return-channel.md](return-channel.md)) stays at the start of step 4. In this
 step, capture is checked with a preview and a level meter in the app, and the
