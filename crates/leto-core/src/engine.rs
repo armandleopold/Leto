@@ -75,10 +75,12 @@ pub enum Event<Image = ImageFile> {
         image: Option<Image>,
     },
     /// The stream is connected: pictures and sound are on their way, and
-    /// the PC accepts `input` from this device.
+    /// the PC accepts `input` from this device. `microphone` says whether
+    /// it takes this device's microphone too.
     Playing {
         attempt: u64,
         input: InputAllowed,
+        microphone: bool,
     },
     /// The stream did not start.
     PlayFailed {
@@ -113,7 +115,9 @@ impl<Image> Event<Image> {
             Self::PinChosen { attempt, pin } => Event::PinChosen { attempt, pin },
             Self::PairingEnded { attempt, result } => Event::PairingEnded { attempt, result },
             Self::Apps { host, result } => Event::Apps { host, result },
-            Self::Playing { attempt, input } => Event::Playing { attempt, input },
+            Self::Playing { attempt, input, microphone } => {
+                Event::Playing { attempt, input, microphone }
+            }
             Self::PlayFailed { attempt, message } => Event::PlayFailed { attempt, message },
             Self::StreamEnded { attempt, why } => Event::StreamEnded { attempt, why },
             Self::QuitEnded { host, result } => Event::QuitEnded { host, result },
@@ -191,8 +195,9 @@ mod tests {
 
     #[test]
     fn news_survives_being_written_down_failures_included() {
-        let events: [Event; 5] = [
+        let events: [Event; 6] = [
             Event::Added(Err("The PC did not answer.".into())),
+            Event::Playing { attempt: 2, input: InputAllowed::ALL, microphone: true },
             Event::PinChosen { attempt: 1, pin: Pin::from_bytes([0, 9, 0, 5]) },
             Event::Apps {
                 host: HostId("salon".into()),

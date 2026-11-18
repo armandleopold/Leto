@@ -197,12 +197,13 @@ fn a_stream_starts_takes_input_and_is_left() {
     assert_eq!(desk.service.streaming(), None);
 
     desk.service.ask(Request::Play { host: id.clone(), app: 1, attempt: 7 });
-    let allowed = desk.wait(|event| match event {
-        Event::Playing { attempt: 7, input } => Some(input),
+    let (allowed, microphone) = desk.wait(|event| match event {
+        Event::Playing { attempt: 7, input, microphone } => Some((input, microphone)),
         Event::PlayFailed { message, .. } => panic!("{message}"),
         _ => None,
     });
     assert_eq!(allowed, InputAllowed::ALL);
+    assert!(microphone, "the stand-in PC takes a microphone");
     assert_eq!(desk.service.streaming(), Some(7));
 
     let key =
@@ -222,10 +223,48 @@ fn a_stream_starts_takes_input_and_is_left() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
+    // The microphone goes the other way.
+    let quiet = quiet_frame();
+    let start = Instant::now();
+    let mut frames = 0;
+    while host.stream_report().is_none_or(|report| report.microphone_packets == 0) {
+        assert!(start.elapsed() < PATIENCE, "the microphone never reached the host");
+        assert!(desk.service.microphone(Duration::from_millis(20) * frames, &quiet));
+        frames += 1;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
     desk.service.ask(Request::Leave);
     assert_eq!(desk.service.streaming(), None);
+    assert!(!desk.service.microphone(Duration::ZERO, &quiet), "nobody is listening any more");
     // Left, not ended: the app keeps running on the PC.
     assert_eq!(host.running_app(), Some(1));
+}
+
+/// Twenty milliseconds of silence, as a microphone would send them.
+fn quiet_frame() -> Vec<u8> {
+    use opus_rs::{Application, OpusEncoder};
+
+    let mut encoder = OpusEncoder::new(48_000, 1, Application::RestrictedLowDelay).unwrap();
+    let mut packet = vec![0u8; 1500];
+    let written = encoder.encode(&[0.0; 960], 960, &mut packet).unwrap();
+    packet.truncate(written);
+    packet
+}
+
+#[test]
+fn a_pc_that_takes_no_microphone_says_so_and_gets_none() {
+    let host = FakeHost::start_with(Options { microphone: false, ..Options::default() });
+    let desk = Desk::new();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play { host: id, app: 1, attempt: 3 });
+    let microphone = desk.wait(|event| match event {
+        Event::Playing { attempt: 3, microphone, .. } => Some(microphone),
+        Event::PlayFailed { message, .. } => panic!("{message}"),
+        _ => None,
+    });
+    assert!(!microphone);
+    assert!(!desk.service.microphone(Duration::ZERO, &quiet_frame()));
 }
 
 #[test]
