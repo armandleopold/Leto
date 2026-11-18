@@ -217,6 +217,12 @@ fn mouse(ui: &Ui, player: &mut Player, place: Rect, size: [usize; 2]) -> bool {
     let controls = &mut player.controls;
     let mut clicked = false;
 
+    if ui.ctx().current_pass_index() > 0 {
+        // egui is drawing this frame a second time, with the same events:
+        // the PC has heard of them already.
+        return false;
+    }
+
     ui.input(|input| {
         let mut pointer = input.pointer.latest_pos();
         for event in &input.events {
@@ -475,7 +481,7 @@ fn note(view: &StreamView, game_mouse: bool) -> Note {
                 )
             } else {
                 format!(
-                    "Your keyboard and mouse now go to {host}. {} brings you back.",
+                    "Keyboard and mouse now go to {host}. {} brings you back.",
                     Shortcut::Leave.keys()
                 )
             };
@@ -563,7 +569,7 @@ mod tests {
         let said = note(&view(InputAllowed::ALL), false);
         assert_eq!(
             said.text,
-            "Your keyboard and mouse now go to Salon. Ctrl+Alt+Shift+Q brings you back."
+            "Keyboard and mouse now go to Salon. Ctrl+Alt+Shift+Q brings you back."
         );
         assert!(!said.problem);
 

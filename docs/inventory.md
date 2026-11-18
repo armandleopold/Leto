@@ -178,6 +178,11 @@ upstream yet:
   recovery packets are on (the recovery buffers are 16 bytes longer than the
   data they protect). Only the stand-in host uses that code. It sends no audio
   recovery packets when audio is encrypted.
+- Its input queue holds mouse movement and the wheel back for up to a
+  millisecond, to merge them, while clicks and keys leave at once. A click
+  can therefore reach the host before the movement that came before it, and
+  land in the wrong place. `leto-client` sends movement and the wheel around
+  that queue, in the order they were made.
 
 ## The web client: moonlight-web-stream
 

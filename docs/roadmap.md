@@ -26,12 +26,27 @@ Progress:
   and their covers, in the desktop app and on the command line.
 - Done: start an app, see its picture and hear its sound, leave, resume and
   close it. H.264 in software and stereo sound for now.
-- Next: keyboard, mouse and gamepad, then the same in the browser through the
-  bridge, then capture of the microphone and the camera.
+- Done: play with the keyboard, the mouse and gamepads. Ctrl+Alt+Shift+Q
+  leaves a stream, as in Moonlight, because every other key is the PC's.
+- Next: the same in the browser through the bridge, then capture of the
+  microphone and the camera.
 - Later in this step: decoding on the graphics card, H.265, HDR, surround
   sound, and the settings of Advanced mode (size, pictures per second, bit
-  rate). Until input exists, Esc leaves a stream; once the keyboard is sent
-  to the PC, leaving moves to a key combination and the bar.
+  rate).
+
+What input does not do yet:
+
+- The numeric keypad is sent as the row of digits above the letters, because
+  egui reports both as the same keys. On a PC with a French layout its digits
+  therefore come out as the signs of that row. Fixing it means reading the
+  window's key events below egui.
+- Keys the system keeps for itself stay on this device: the Windows key,
+  Alt+Tab, Alt+F4, Ctrl+Alt+Del.
+- The keyboard and the mouse are read once per drawn frame, not at the
+  mouse's own rate. Fast games may want better.
+- Gamepads do not rumble, and their motion sensors and touchpads are not
+  sent. Touch screens act as a mouse. Pens are not sent.
+- The clipboard is not shared between this device and the PC.
 
 The receiver for microphone and camera on the PC (the companion in
 [return-channel.md](return-channel.md)) stays at the start of step 4. In this

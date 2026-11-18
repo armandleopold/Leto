@@ -121,13 +121,53 @@ What this first version does, and what it leaves for later:
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
   drifts behind the picture.
-- Keyboard, mouse and gamepad are not sent yet.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
 on every change without a gaming PC. The card is made to be judged at a
 glance: a sun passing behind a moon shows stutter, a marker crossing the top
 edge once a second shows dropped pictures, and colour bars show wrong colours.
+
+## Keyboard, mouse and gamepads
+
+What a person does is described once, in `leto_core::input`: a key by its
+Windows code, a mouse movement or position, a wheel turn, the state of a
+gamepad. The app produces these and `Session::send` turns them into Moonlight
+control messages, so the web client will reuse the first half as it is.
+
+- **Keys are named by where they sit**, not by what the layout prints on
+  them: the code sent is the one of the American keyboard for that place, and
+  the PC applies its own layout. A French keyboard types French on a French
+  PC. A key that is held is sent once, since the PC repeats on its own.
+- **Order is kept.** moonlight-common-rust holds mouse movement back for up
+  to a millisecond while clicks leave at once, so a click could overtake the
+  movement before it. The engine sends movement and the wheel around that
+  queue. The app merges movement that follows movement, never across a click.
+- **The mouse has two modes.** By default the pointer of the PC goes where
+  the pointer of this device is on the picture. The "game mouse" sends how
+  far the mouse moved instead, with the pointer kept inside the window, for
+  games that turn the view with it.
+- **While a stream is connected the keyboard is the PC's.** The app takes
+  the keys away from egui before it acts on them (`raw_input_hook`), Tab and
+  Escape included. Three combinations stay on this device, as in Moonlight:
+  Ctrl+Alt+Shift with Q leaves, with X fills the screen, with M switches the
+  mouse mode. Everything held down is let go of when the window loses the
+  keyboard and before leaving, so nothing stays stuck on the PC.
+- eframe would turn Ctrl+C, Ctrl+X and Ctrl+V into clipboard events and keep
+  those keys from the PC, so that is turned off, and `clipboard.rs` does it
+  for Leto's own text fields when no stream has the keyboard.
+- **Gamepads** are followed by one thread of the backend (`backend/gamepad.rs`,
+  on [gilrs](https://gitlab.com/gilrs-project/gilrs)). Each stream hears of
+  every gamepad once, then of each change. Buttons are named by place: A is
+  the lowest of the four.
+- Apollo decides per device which of keyboard, mouse and gamepad it accepts.
+  The engine reports it when the stream connects (`Session::input_allowed`),
+  and the bar over the picture says which permission to tick when one is
+  missing, again whenever a refused key or click is tried.
+
+The stand-in host records what it receives (`FakeHost::inputs`) and draws it
+on its test card: a disc where the pointer is, lit while a button is held, a
+square per key held, and a dial for the first gamepad.
 
 ## Trust between a client and a PC
 
