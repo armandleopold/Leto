@@ -2,9 +2,8 @@
 //! and the mouse of this device go to the PC.
 
 use egui::{
-    Align, Align2, Color32, CursorGrab, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order,
-    Pos2, Rect, RichText, Sense, Stroke, TextFormat, TextureHandle, TextureOptions, Ui, UiBuilder,
-    Vec2, ViewportCommand,
+    Align, Align2, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order, Pos2, Rect,
+    RichText, Sense, Stroke, TextFormat, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -15,7 +14,7 @@ use crate::{
     backend::Picture,
     input::{Controls, Shortcut},
     state::{State, StreamView},
-    theme,
+    theme, window,
 };
 
 /// Seconds the bar stays when a stream starts, to say how to get out of it.
@@ -29,13 +28,9 @@ const GRIP_ZONE: Vec2 = Vec2::new(150.0, 16.0);
 /// The pointer still counts as over the bar this close to it.
 const BAR_MARGIN: f32 = 10.0;
 
-/// How the pointer is kept in the window for the game mouse. Each system
-/// offers one way only.
-const KEEP_POINTER: CursorGrab = if cfg!(any(target_os = "macos", target_arch = "wasm32")) {
-    CursorGrab::Locked
-} else {
-    CursorGrab::Confined
-};
+/// A browser fills the screen with F11 on its own, without telling the
+/// page: there, F11 is not Leto's to act on.
+const F11_FILLS: bool = cfg!(not(target_arch = "wasm32"));
 
 /// A key that went down or came up while a stream had the keyboard.
 struct KeyStroke {
@@ -136,11 +131,12 @@ impl Player {
     /// back.
     pub fn clear(&mut self, ctx: &egui::Context) {
         if self.filled_screen {
-            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+            window::fill_screen(ctx, false);
         }
         if self.pointer_kept {
-            ctx.send_viewport_cmd(ViewportCommand::CursorGrab(CursorGrab::None));
+            window::keep_pointer(ctx, false);
         }
+        window::keep_keyboard(false);
         *self = Self::default();
     }
 }
@@ -155,9 +151,12 @@ pub fn show(
     sound_problem: Option<&str>,
 ) -> Vec<Input> {
     let window = ui.max_rect();
-    let (now, focused, fills_screen) =
-        ui.input(|input| (input.time, input.focused, input.viewport().fullscreen.unwrap_or(false)));
+    let (now, focused) = ui.input(|input| (input.time, input.focused));
+    let fills_screen = window::fills_screen(ui.ctx());
     let mut asked = Asked::default();
+    // Once connected, every key is the PC's, the system's shortcuts too
+    // where the system lets go of them.
+    window::keep_keyboard(view.connected);
 
     player.hole = None;
     let picture = player.surface.as_ref().map(|surface| {
@@ -212,7 +211,7 @@ pub fn show(
         player.strokes.clear();
         let (escape, f11) =
             ui.input(|input| (input.key_pressed(Key::Escape), input.key_pressed(Key::F11)));
-        asked.fill |= f11;
+        asked.fill |= f11 && F11_FILLS;
         // The way out of the full screen first, then out of the stream.
         if escape {
             if fills_screen { asked.fill = true } else { asked.leave = true }
@@ -226,15 +225,21 @@ pub fn show(
         // The bar says what just changed, and how to change it back.
         player.bar_until = Some(now + BAR_RETURNS);
     }
+    if player.pointer_kept && window::pointer_lost() {
+        // A browser gives the pointer back when Escape is pressed, whoever
+        // asked for it: the game mouse is over.
+        player.pointer_kept = false;
+        player.game_mouse = false;
+        player.bar_until = Some(now + BAR_RETURNS);
+    }
     let keep = player.game_mouse && view.connected && focused && !asked.leave;
     if keep != player.pointer_kept {
         player.pointer_kept = keep;
-        let grab = if keep { KEEP_POINTER } else { CursorGrab::None };
-        ui.ctx().send_viewport_cmd(ViewportCommand::CursorGrab(grab));
+        window::keep_pointer(ui.ctx(), keep);
     }
     if asked.fill {
         player.filled_screen = !fills_screen;
-        ui.ctx().send_viewport_cmd(ViewportCommand::Fullscreen(!fills_screen));
+        window::fill_screen(ui.ctx(), !fills_screen);
     }
     if asked.leave {
         player.controls.release_all();
@@ -457,8 +462,10 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 asked.game_mouse |= switch.clicked() && content.view.connected;
                                 let fill = if content.view.connected {
                                     format!("Full screen ({})", Shortcut::FullScreen.keys())
-                                } else {
+                                } else if F11_FILLS {
                                     "Full screen (F11)".to_owned()
+                                } else {
+                                    "Full screen".to_owned()
                                 };
                                 asked.fill |=
                                     widgets::icon_button(ui, icons::expand, &fill).clicked();

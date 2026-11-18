@@ -14,6 +14,7 @@ mod input;
 mod state;
 mod theme;
 mod ui;
+mod window;
 
 /// Id of the `<canvas>` element the web build draws into.
 #[cfg(target_arch = "wasm32")]
