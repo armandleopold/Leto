@@ -3,12 +3,13 @@
 //!
 //! A page cannot open the sockets the Moonlight protocol needs. It keeps a
 //! WebSocket to its bridge instead, in the language of
-//! [`leto_core::bridge`]: requests and input go up, news and the stream
-//! come down. Pictures and sound arrive still encoded, and the browser's
-//! own decoders turn them into something to see and hear.
+//! [`leto_core::bridge`]: requests, input and the microphone go up, news
+//! and the stream come down. Pictures and sound arrive still encoded, and
+//! the browser's own decoders turn them into something to see and hear.
 
 mod codecs;
 mod gamepad;
+mod microphone;
 mod screen;
 mod speaker;
 
@@ -24,10 +25,12 @@ use leto_core::{
     input::Input,
 };
 use wasm_bindgen::{JsCast as _, closure::Closure};
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{AudioContext, BinaryType, MessageEvent, WebSocket};
 
 use self::{
     gamepad::Gamepads,
+    microphone::Microphone,
     screen::{Canvas, Screen, Shown},
     speaker::Speaker,
 };
@@ -65,6 +68,8 @@ struct Inner {
     /// Made when first needed, then kept: a page gets few of each.
     canvas: Option<Rc<Canvas>>,
     speakers: Option<AudioContext>,
+    /// Times the browser was asked for the microphone.
+    asked: u32,
 }
 
 /// The WebSocket to the bridge, with what listens to it.
@@ -97,6 +102,21 @@ struct Stream {
     told: Option<[usize; 2]>,
     /// The gamepads, from the moment the PC takes input.
     gamepads: Option<Gamepads>,
+    /// The PC takes a microphone, and the stream is connected.
+    listens: bool,
+    voice: Voice,
+}
+
+/// The microphone of this browser, which only ever captures for a stream
+/// that is connected to a PC that takes one. It goes with the stream.
+enum Voice {
+    Off,
+    /// The browser was asked for it, for this many-th time, and has not
+    /// answered: it may be asking the person.
+    Asked(u32),
+    On(Microphone),
+    /// The browser gave none, and why.
+    Refused(String),
 }
 
 /// What is left to do once the page's state is let go of.
@@ -123,6 +143,7 @@ impl Backend {
                 stream: None,
                 canvas: None,
                 speakers: None,
+                asked: 0,
             }),
         });
         page.connect();
@@ -168,10 +189,60 @@ impl Backend {
         self.page.say(&Up::Ask(request));
     }
 
-    /// A browser's microphone does not reach the PC yet: nothing is ever
-    /// captured here, and the interface shows no switch for it.
-    pub fn microphone(&self, _on: bool) -> Result<Option<f32>, String> {
-        Ok(None)
+    /// Captures the microphone for the PC being watched while `on`, and
+    /// stops capturing when it is not. Returns how loud it is while it
+    /// captures, from 0 to 1, or why it cannot, in words for the person.
+    ///
+    /// Asked every frame. The browser is asked for the microphone the first
+    /// time, which is when it may ask the person. Until it answers nothing
+    /// is captured, and this returns `None`.
+    pub fn microphone(&self, on: bool) -> Result<Option<f32>, String> {
+        let mut inner = self.page.inner.borrow_mut();
+        let inner = &mut *inner;
+        let Some(stream) = &mut inner.stream else { return Ok(None) };
+        // Whatever it was: letting go of a microphone stops it.
+        let voice = std::mem::replace(&mut stream.voice, Voice::Off);
+        if !on || !stream.listens {
+            return Ok(None);
+        }
+        match voice {
+            Voice::Off => {
+                let Some(speakers) = inner.speakers.clone() else {
+                    return Err("This browser gave the page no sound, in or out.".to_owned());
+                };
+                // The microphone is heard at the pace of the page's sound.
+                speaker::wake(&speakers);
+                inner.asked += 1;
+                let asked = inner.asked;
+                stream.voice = Voice::Asked(asked);
+                let (page, listener) = (self.page.this.clone(), self.page.this.clone());
+                spawn_local(async move {
+                    let packet = move |packet: &[u8]| {
+                        if let Some(page) = listener.upgrade() {
+                            page.voice(packet);
+                        }
+                    };
+                    let answer = Microphone::open(speakers, packet).await;
+                    if let Some(page) = page.upgrade() {
+                        page.microphone_answered(asked, answer);
+                    }
+                });
+                Ok(None)
+            }
+            Voice::Asked(asked) => {
+                stream.voice = Voice::Asked(asked);
+                Ok(None)
+            }
+            Voice::On(microphone) => match microphone.stopped() {
+                Some(why) => Err(why.to_owned()),
+                None => {
+                    let level = microphone.level();
+                    stream.voice = Voice::On(microphone);
+                    Ok(Some(level))
+                }
+            },
+            Voice::Refused(why) => Err(why),
+        }
     }
 
     /// Passes what the person did on to the PC being watched, in order.
@@ -237,6 +308,8 @@ impl Inner {
             silent: None,
             told: None,
             gamepads: None,
+            listens: false,
+            voice: Voice::Off,
         });
     }
 
@@ -418,10 +491,11 @@ impl Page {
                 {
                     inner.end_stream();
                 }
-                if let engine::Event::Playing { attempt, .. } = &event
+                if let engine::Event::Playing { attempt, microphone, .. } = &event
                     && let Some(stream) = &mut inner.stream
                     && stream.attempt == *attempt
                 {
+                    stream.listens = *microphone;
                     // The PC takes input from now on.
                     let page = self.this.clone();
                     stream.gamepads = Some(Gamepads::watch(move || {
@@ -462,6 +536,33 @@ impl Page {
         Then::Nothing
     }
 
+    /// The browser answered the `asked`-th request for the microphone.
+    fn microphone_answered(&self, asked: u32, answer: Result<Microphone, String>) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(stream) = &mut inner.stream
+            && matches!(stream.voice, Voice::Asked(waiting) if waiting == asked)
+        {
+            stream.voice = match answer {
+                Ok(microphone) => Voice::On(microphone),
+                Err(why) => Voice::Refused(why),
+            };
+            self.ctx.request_repaint();
+        }
+        // Otherwise nobody waits for this microphone any more: the switch
+        // went off or the stream ended while the browser was asking. It is
+        // let go of here, unused.
+    }
+
+    /// Sends a packet of the microphone to the bridge, for the PC.
+    fn voice(&self, packet: &[u8]) {
+        let inner = self.inner.borrow();
+        let Some(line) = &inner.line else { return };
+        if line.socket.ready_state() == WebSocket::OPEN {
+            // A socket that just closed says so itself, in a moment.
+            let _ = line.socket.send_with_u8_array(&Frame::Voice(packet).encode());
+        }
+    }
+
     /// Looks at the gamepads and tells the PC what they did.
     fn gamepads(&self) {
         let inputs = {
@@ -496,7 +597,8 @@ impl Page {
                 }
                 Then::Nothing
             }
-            None => Then::Nothing,
+            // A microphone goes up, never down.
+            Some(Frame::Voice(_)) | None => Then::Nothing,
         }
     }
 }

@@ -32,10 +32,6 @@ const BAR_MARGIN: f32 = 10.0;
 /// page: there, F11 is not Leto's to act on.
 const F11_FILLS: bool = cfg!(not(target_arch = "wasm32"));
 
-/// A browser's microphone does not reach the PC yet: the web build shows no
-/// switch for it.
-const HAS_MICROPHONE: bool = cfg!(not(target_arch = "wasm32"));
-
 /// The quietest sound the microphone's meter shows, in decibels below the
 /// loudest a microphone captures.
 const METER_FLOOR: f32 = -50.0;
@@ -89,8 +85,10 @@ pub struct Player {
     bar_until: Option<f64>,
     /// Where the bar was in the last frame, when it was there.
     bar: Option<Rect>,
-    /// The microphone as it was in the last frame of this stream.
+    /// The microphone as it was in the last frame of this stream, and
+    /// whether it was capturing.
     microphone_was: Option<Mic>,
+    captured: bool,
     /// The last thing worth a line in the bar was about the microphone.
     talks_of_microphone: bool,
 }
@@ -158,7 +156,9 @@ impl Player {
 pub struct Sound<'a> {
     /// Why the stream has no sound, when it has none.
     pub problem: Option<&'a str>,
-    /// How loud the microphone is, from 0 to 1, while it captures.
+    /// How loud the microphone is, from 0 to 1, while it captures. `None`
+    /// with the switch on means it is still opening: a browser asks the
+    /// person first.
     pub voice: Option<f32>,
 }
 
@@ -213,7 +213,7 @@ pub fn show(
                 Some(Shortcut::Leave) => asked.leave = true,
                 Some(Shortcut::FullScreen) => asked.fill = true,
                 Some(Shortcut::GameMouse) => asked.game_mouse = true,
-                Some(Shortcut::Microphone) => asked.microphone = HAS_MICROPHONE,
+                Some(Shortcut::Microphone) => asked.microphone = true,
                 None => {}
             }
         }
@@ -228,7 +228,9 @@ pub fn show(
         if refused {
             player.bar_until = Some(bar_until.max(now + BAR_RETURNS));
         }
-        if player.microphone_was.as_ref() != Some(&view.microphone) {
+        let capturing = sound.voice.is_some();
+        if player.microphone_was.as_ref() != Some(&view.microphone) || player.captured != capturing
+        {
             // The bar says what the microphone just did. That a PC takes
             // one is not news: its switch is there to see.
             let was_on = player.microphone_was == Some(Mic::On);
@@ -237,6 +239,7 @@ pub fn show(
                 player.bar_until = Some(bar_until.max(now + BAR_RETURNS));
             }
             player.microphone_was = Some(view.microphone.clone());
+            player.captured = capturing;
         }
         if view.microphone == Mic::On {
             // The meter moves, and a microphone that stops is noticed, even
@@ -392,7 +395,12 @@ fn overlay(
             sound_problem: sound.problem,
             game_mouse: player.game_mouse,
             voice: sound.voice.map(meter),
-            note: bar_note(view, player.game_mouse, timed, player.talks_of_microphone),
+            note: bar_note(
+                view,
+                player.game_mouse,
+                timed,
+                player.talks_of_microphone.then_some(sound.voice.is_some()),
+            ),
             opacity,
         };
         player.bar = Some(bar(ui.ctx(), window, &content, asked));
@@ -404,10 +412,12 @@ fn overlay(
         player.bar = None;
     }
 
-    if view.microphone == Mic::On && opacity < 1.0 {
+    if let (Mic::On, Some(level)) = (&view.microphone, sound.voice)
+        && opacity < 1.0
+    {
         // The PC hears this device: that shows for as long as it does,
         // whether the bar is there to say so or not.
-        live(ui, window, sound.voice.map_or(0.0, meter), 1.0 - opacity);
+        live(ui, window, meter(level), 1.0 - opacity);
     }
     if !view.connected || !has_picture {
         return;
@@ -527,7 +537,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 let text = RichText::new("No sound").color(theme::PROBLEM);
                                 ui.label(text.size(theme::SMALL)).on_hover_text(problem);
                             }
-                            if usable && HAS_MICROPHONE && content.view.connected {
+                            if usable && content.view.connected {
                                 asked.microphone |=
                                     microphone_switch(ui, content.view, content.voice);
                             }
@@ -578,11 +588,18 @@ fn microphone_switch(ui: &mut Ui, view: &StreamView, voice: Option<f32>) -> bool
             0.0,
         ),
         Mic::Off => (format!("Microphone: let {host} hear this device ({keys})"), theme::DIM, 0.0),
-        Mic::On => (
-            format!("Microphone on: {host} hears this device ({keys} turns it off)"),
-            theme::SUN,
-            voice.unwrap_or(0.0),
-        ),
+        Mic::On => match voice {
+            Some(level) => (
+                format!("Microphone on: {host} hears this device ({keys} turns it off)"),
+                theme::SUN,
+                level,
+            ),
+            None => (
+                format!("Opening the microphone: {host} hears nothing yet ({keys} turns it off)"),
+                theme::DIM,
+                0.0,
+            ),
+        },
         Mic::Failed(why) => (format!("{why} Press to try again."), theme::PROBLEM, 0.0),
     };
     let usable = view.microphone != Mic::NotTaken;
@@ -611,35 +628,33 @@ fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
 
 /// The line under the buttons of the bar, when there is something to say:
 /// not every time the pointer passes. `timed` says the bar is there on its
-/// own, because something changed, and `about_microphone` that the change
-/// was the microphone's.
+/// own, because something changed. `microphone` is set when the change was
+/// the microphone's, and says whether it captures.
 fn bar_note(
     view: &StreamView,
     game_mouse: bool,
     timed: bool,
-    about_microphone: bool,
+    microphone: Option<bool>,
 ) -> Option<Note> {
     let host = &view.host.name;
     if view.connected && !(view.input.keyboard && view.input.mouse) {
         // What does not work stays said for as long as the bar shows.
         return Some(note(view, game_mouse));
     }
-    match &view.microphone {
-        Mic::Failed(why) => return Some(Note { text: why.clone(), problem: true }),
-        Mic::On if timed && about_microphone => {
-            return Some(Note {
-                text: format!(
-                    "The microphone is on: {host} hears this device. {} turns it off.",
-                    Shortcut::Microphone.keys()
-                ),
-                problem: false,
-            });
+    let news = |text: String| Some(Note { text, problem: false });
+    match (&view.microphone, microphone.filter(|_| timed)) {
+        (Mic::Failed(why), _) => return Some(Note { text: why.clone(), problem: true }),
+        (Mic::On, Some(true)) => {
+            return news(format!(
+                "The microphone is on: {host} hears this device. {} turns it off.",
+                Shortcut::Microphone.keys()
+            ));
         }
-        Mic::Off if timed && about_microphone => {
-            return Some(Note {
-                text: format!("The microphone is off: {host} no longer hears this device."),
-                problem: false,
-            });
+        (Mic::On, Some(false)) => {
+            return news(format!("Opening the microphone: {host} hears nothing yet."));
+        }
+        (Mic::Off, Some(_)) => {
+            return news(format!("The microphone is off: {host} no longer hears this device."));
         }
         _ => {}
     }
@@ -790,12 +805,12 @@ mod tests {
     fn the_bar_says_what_the_microphone_just_did() {
         let mut view = view(InputAllowed::ALL);
         // Nothing to say when the pointer merely passes.
-        assert_eq!(bar_note(&view, false, false, false), None);
+        assert_eq!(bar_note(&view, false, false, None), None);
         // A stream that starts says how to get out of it.
-        assert_eq!(bar_note(&view, false, true, false), Some(note(&view, false)));
+        assert_eq!(bar_note(&view, false, true, None), Some(note(&view, false)));
 
         view.microphone = Mic::On;
-        let said = bar_note(&view, false, true, true).expect("a line about the microphone");
+        let said = bar_note(&view, false, true, Some(true)).expect("a line about the microphone");
         assert_eq!(
             said.text,
             "The microphone is on: Salon hears this device. Ctrl+Alt+Shift+T turns it off."
@@ -803,23 +818,33 @@ mod tests {
         assert!(!said.problem);
         // Later on, the lit switch says it, and the bar has other things to
         // say.
-        assert_eq!(bar_note(&view, true, true, false), Some(note(&view, true)));
-        assert_eq!(bar_note(&view, false, false, false), None);
+        assert_eq!(bar_note(&view, true, true, None), Some(note(&view, true)));
+        assert_eq!(bar_note(&view, false, false, None), None);
 
         view.microphone = Mic::Off;
-        let said = bar_note(&view, false, true, true).expect("a line about the microphone");
+        let said = bar_note(&view, false, true, Some(false)).expect("a line about the microphone");
         assert_eq!(said.text, "The microphone is off: Salon no longer hears this device.");
+    }
+
+    #[test]
+    fn a_microphone_that_is_still_opening_is_not_said_to_be_heard() {
+        // A browser asks the person before it hands a microphone over.
+        let mut view = view(InputAllowed::ALL);
+        view.microphone = Mic::On;
+        let said = bar_note(&view, false, true, Some(false)).expect("a line about the microphone");
+        assert_eq!(said.text, "Opening the microphone: Salon hears nothing yet.");
+        assert!(!said.problem);
     }
 
     #[test]
     fn a_microphone_that_failed_stays_said_and_what_the_pc_ignores_comes_first() {
         let mut view = view(InputAllowed::ALL);
         view.microphone = Mic::Failed("This device has no microphone.".into());
-        let said = bar_note(&view, false, false, false).expect("a problem is always said");
+        let said = bar_note(&view, false, false, None).expect("a problem is always said");
         assert_eq!(said, Note { text: "This device has no microphone.".into(), problem: true });
 
         view.input = InputAllowed { keyboard: false, ..InputAllowed::ALL };
-        let said = bar_note(&view, false, false, false).expect("a problem is always said");
+        let said = bar_note(&view, false, false, None).expect("a problem is always said");
         assert!(said.text.contains("\"Keyboard Input\""), "{}", said.text);
     }
 

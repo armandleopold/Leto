@@ -104,7 +104,8 @@ pub enum Mic {
     NotTaken,
     /// The PC would take it and hears nothing: nobody turned it on.
     Off,
-    /// The PC hears this device.
+    /// It is on: the PC hears this device as soon as the microphone has
+    /// opened.
     On,
     /// It was turned on and cannot be used: why.
     Failed(String),
