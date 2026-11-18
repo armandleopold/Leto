@@ -29,7 +29,10 @@ use pem::Pem;
 use rustls::{
     CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme,
     StreamOwned,
-    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    client::{
+        Resumption,
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    },
     crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
     pki_types::{
         CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime,
@@ -142,6 +145,21 @@ impl Transport {
         path: &str,
         body: Option<&[u8]>,
     ) -> Result<Reply, Error> {
+        // Not the query, as for the GameStream API.
+        let shown = path.split('?').next().unwrap_or_default();
+        log::debug!("{method} https://{hostport}{shown}");
+        self.exchange_request(method, hostport, path, body).inspect_err(|error| {
+            log::debug!("{method} https://{hostport}{shown} failed: {error:?}")
+        })
+    }
+
+    fn exchange_request(
+        &self,
+        method: &str,
+        hostport: &str,
+        path: &str,
+        body: Option<&[u8]>,
+    ) -> Result<Reply, Error> {
         let config = self.tls.clone().ok_or(Error::Unauthenticated)?;
         let tcp = connect(hostport, self.timeout)?;
         let peer = tcp.peer_addr()?;
@@ -164,6 +182,15 @@ impl Transport {
 
     /// Sends `GET target` to `hostport` and returns the response body.
     fn get(&self, secure: bool, hostport: &str, target: &str) -> Result<Vec<u8>, Error> {
+        // Not the query: while pairing, it carries the challenges.
+        let path = target.split('?').next().unwrap_or_default();
+        let scheme = if secure { "https" } else { "http" };
+        log::debug!("GET {scheme}://{hostport}{path}");
+        self.exchange_get(secure, hostport, target)
+            .inspect_err(|error| log::debug!("GET {scheme}://{hostport}{path} failed: {error:?}"))
+    }
+
+    fn exchange_get(&self, secure: bool, hostport: &str, target: &str) -> Result<Vec<u8>, Error> {
         let tcp = connect(hostport, self.timeout)?;
         let request =
             format!("GET {target} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
@@ -390,6 +417,11 @@ fn tls_config(
         .map_err(other)?;
     // Hosts are reached by address and their certificate names nobody.
     config.enable_sni = false;
+    // Every connection shows the certificate again. Apollo asks for one
+    // without giving OpenSSL a session id context (Sunshine, whose code that
+    // is, most likely too), so OpenSSL answers a resumed session with an
+    // `internal_error` alert: every request to a PC after the first fails.
+    config.resumption = Resumption::disabled();
     Ok(config)
 }
 

@@ -401,8 +401,15 @@ fn lock(watching: &Mutex<Watching>) -> MutexGuard<'_, Watching> {
     watching.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Says what went wrong and what to do about it, for the person.
+/// Says what went wrong and what to do about it, for the person. The log
+/// gets the details too, which the words leave out.
 pub fn explain(error: &Error) -> String {
+    let words = words(error);
+    log::warn!("{words} ({error:?})");
+    words
+}
+
+fn words(error: &Error) -> String {
     match error {
         Error::BadAddress(address) => {
             format!("\"{address}\" does not look like an address. Try something like 192.168.1.20.")
