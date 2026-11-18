@@ -8,7 +8,7 @@ use leto_client::{Client, Service, Shell, engine::Event};
 use leto_core::bridge::{Down, Up};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    time::{Instant, MissedTickBehavior, interval},
+    time::{Instant, MissedTickBehavior, interval, sleep},
 };
 use tokio_tungstenite::{
     WebSocketStream,
@@ -16,7 +16,7 @@ use tokio_tungstenite::{
 };
 
 use crate::{
-    gate::Gate,
+    gate::{Gate, PAUSE},
     relay::{Outbox, Parcel, Pictures, Sound},
 };
 
@@ -146,7 +146,16 @@ fn hear(
         }
         Up::Code(code) => match shared.gate.try_code(&code) {
             Some(key) => welcome(Some(key)),
-            None => outbox.say(&Down::CodeNeeded { refused: true }),
+            None => {
+                // The refusal takes as long as the gate stays shut: whoever
+                // types the next code on reading it is not turned away
+                // unheard.
+                let outbox = Arc::clone(outbox);
+                tokio::spawn(async move {
+                    sleep(PAUSE).await;
+                    outbox.say(&Down::CodeNeeded { refused: true });
+                });
+            }
         },
         // Everything else is for browsers the gate let in. One that asks
         // without having been welcomed is told what it has to do first.

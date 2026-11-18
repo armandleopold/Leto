@@ -312,19 +312,21 @@ async fn a_browser_is_let_in_with_the_code_then_with_its_key() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_wrong_code_is_refused_and_slows_the_next_try() {
+async fn a_wrong_code_is_refused_slowly_and_nothing_is_looked_at_meanwhile() {
     let setup = Setup::new();
     let code = setup.bridge.code();
     let wrong = if code.starts_with('0') { "10000000" } else { "00000000" };
 
     let mut browser = setup.open().await;
+    let start = Instant::now();
     browser.say(&Up::Code(wrong.to_owned())).await;
-    assert_eq!(browser.hear().await, Down::CodeNeeded { refused: true });
-    // Right away, even the right code is not looked at.
+    // Right behind it, even the right code is not looked at.
     browser.say(&Up::Code(code.clone())).await;
     assert_eq!(browser.hear().await, Down::CodeNeeded { refused: true });
+    assert!(start.elapsed() >= Duration::from_millis(1900), "the refusal came at once");
+    assert_eq!(browser.hear().await, Down::CodeNeeded { refused: true });
 
-    sleep(Duration::from_millis(2200)).await;
+    // Whoever read the refusals is listened to again.
     browser.say(&Up::Code(code)).await;
     assert!(matches!(browser.hear().await, Down::Welcome { key: Some(_), .. }));
 }

@@ -28,8 +28,10 @@ use serde::{Deserialize, Serialize};
 /// The file that remembers which browsers are known.
 const FILE_NAME: &str = "browsers.json";
 
-/// How long nobody can try a code after a wrong one.
-const PAUSE: Duration = Duration::from_secs(2);
+/// How long nobody can try a code after a wrong one. Whoever answers a
+/// wrong code waits as long: by the time the person reads the answer, the
+/// next code is looked at.
+pub const PAUSE: Duration = Duration::from_secs(2);
 
 /// Wrong codes before the code is replaced by a new one.
 const TRIES_PER_CODE: u32 = 5;
