@@ -1,12 +1,19 @@
 # The return channel: microphone and camera, from client to host
 
-Status: **design draft**, except the client side of the microphone, which the
-desktop app and the web client have (see
-[architecture.md](architecture.md#the-microphone)), and the capture of the
-camera, which they have too without sending it yet (see
-[architecture.md](architecture.md#the-camera)). The microphone part follows
-an existing protocol; the camera part is new and marked as such. Nothing of
-the host side exists yet.
+Status: **design draft** for the host side, of which nothing exists yet. The
+client side is there:
+
+- the microphone, in the desktop app and the web client (see
+  [architecture.md](architecture.md#the-microphone)): an existing protocol,
+  followed as it is;
+- the camera, in the desktop app and the command line (see
+  [architecture.md](architecture.md#the-camera)): a protocol of Leto's own,
+  described below as the client and the stand-in host of the tests speak it
+  (`leto-return`). The web client captures the camera and does not send it
+  yet.
+
+No Sunshine or Apollo takes a camera, so until Leto's host exists the camera
+of a device reaches the stand-in host and nothing else.
 
 ## Goal
 
@@ -134,52 +141,97 @@ in every project read). The connection uses the certificates exchanged during
 normal Moonlight pairing, in both directions, so only paired devices can reach
 it and no second pairing is needed.
 
-A full Leto host also announces it in `serverinfo` with one extra element,
-`<LetoApiPort>`. Moonlight clients ignore elements they do not know, which is
-how Apollo already adds its own.
+A client finds out by asking: it sends `GET /leto/v1/info` to the port + 13
+of a PC it is paired with, once the stream plays so that the question never
+delays it, and waits three seconds at most. Whatever goes wrong there, a
+refused connection, another certificate, an answer that is not the one below,
+means that the PC takes no camera. (A full Leto host may also announce the API
+in `serverinfo` with one extra element, `<LetoApiPort>`: Moonlight clients
+ignore elements they do not know, which is how Apollo already adds its own.
+Nothing reads it yet.)
 
-Draft messages (JSON):
+Messages, with JSON bodies. A reader ignores the fields it does not know, so
+that either side can say more later.
 
-- `GET /leto/v1/info`: versions and capabilities, for example
+- `GET /leto/v1/info`: what the host takes, for example
   `{"api":1,"returnChannel":{"microphone":true,"camera":{"codecs":["h264"],"maxWidth":1920,"maxHeight":1080,"maxFps":30}}}`.
-- `POST /leto/v1/return-channel`: the client asks for what it wants
-  (`microphone`, `camera` with size, frame rate and bitrate). The host answers
-  with the UDP ports, a fresh AES-128 key and a key id for this session. The
-  host applies the per-client permissions here.
-- `DELETE /leto/v1/return-channel`: the client stops sending.
+  No `camera` means that it takes none.
+- `POST /leto/v1/return-channel`: the client asks for what it wants, for
+  example
+  `{"microphone":false,"camera":{"codec":"h264","width":1280,"height":720,"fps":30,"bitrateKbps":2500}}`.
+  The host applies the per-client permissions here, and answers with where the
+  packets go and what seals them:
+  `{"camera":{"port":48002,"key":"<32 hexadecimal digits>","keyId":7}}`. The
+  key is a fresh AES-128 key, made for this camera, and the packets go to the
+  address that answered.
+- `DELETE /leto/v1/return-channel?keyId=7`: the client stopped sending what
+  the key of that number sealed. The host leaves alone what it agreed to
+  since: a camera turned off and on again at once sends its goodbye and its
+  next ask on two connections, and the goodbye may arrive last. Without a
+  number, the goodbye ends whatever the device sends.
 
-A Leto client that reaches this API uses it for both microphone and camera.
-The microphone packets keep the format above, so the host has a single
-microphone receiver for Leto clients and for Super Artemis style clients.
+A host that will not agree answers with a status and nothing else:
+
+| Status | Meaning | What the client says |
+|---|---|---|
+| 403 | The owner of the PC does not let this device send its camera | "This PC does not let this device send its camera. Its owner can allow it on the PC." |
+| 409 | Another device is sending its camera | That another device is, and to try later |
+| 400 | The host cannot take pictures of this size, or this many | That it cannot take these pictures |
+| 404, 405 | Nothing here takes a camera | The same as a PC that takes none |
+
+One device sends at a time. The same device asking again replaces what was
+agreed, with a new key. A host that hears nothing from a camera for five
+seconds takes the device to be gone and lets another one in, so a client that
+vanished without a goodbye does not keep the place.
+
+The microphone is asked for on the same API by a Leto client that reaches it,
+and its packets keep the format above, so the host has a single microphone
+receiver for Leto clients and for Super Artemis style clients. This part is
+not written yet: the client still asks for the microphone inside the RTSP
+session.
 
 ### Camera packets
 
-UDP from client to host, on the base port + 13.
+UDP from client to host, to the port of the answer (the base port + 13 by
+default), at most 1400 bytes each. Numbers are little endian.
 
 | Offset | Size | Field | Value |
 |---|---|---|---|
 | 0 | 1 | flags | bit 0: key frame |
 | 1 | 1 | packet type | `0x62` |
-| 2 | 2 | sequence number | little endian |
-| 4 | 4 | timestamp | 90 kHz clock, little endian |
-| 8 | 4 | frame index | little endian, starts at 0, never wraps within a session |
-| 12 | 2 | fragment index | little endian |
-| 14 | 2 | fragment count | little endian |
-| 16 | n | payload | fragment of one H.264 access unit (Annex B), then a 16-byte tag |
+| 2 | 2 | sequence number | wraps |
+| 4 | 4 | timestamp | 90 kHz clock, from the first picture |
+| 8 | 4 | frame index | starts at 0, never wraps within a camera |
+| 12 | 2 | fragment index | starts at 0 |
+| 14 | 2 | fragment count | at most 4096 |
+| 16 | n | payload | fragment of one H.264 access unit (Annex B), sealed |
+| 16 + n | 16 | tag | the seal of the payload and of the header |
 
 - **Codec:** H.264, because every client has a hardware encoder for it
-  (MediaCodec on Android, Media Foundation on Windows, WebRTC in browsers) and
-  Windows decodes it without extra software. The `codecs` list leaves room for
-  H.265 and AV1.
-- **Default:** 1280 × 720 at 30 frames per second, about 2.5 Mbit/s.
-- **Encryption:** AES-128-GCM per packet with the key from the Leto API. The
-  nonce is built from the frame index and the fragment index, which never
-  repeat within a session. (The 16-bit sequence number would wrap after a few
-  minutes and must not be used for this.)
+  (MediaCodec on Android, Media Foundation on Windows, WebCodecs in browsers)
+  and Windows decodes it without extra software. The `codecs` list leaves room
+  for H.265 and AV1. The desktop client encodes in software for now, with
+  OpenH264, as it decodes.
+- **Default:** 1280 × 720 at 30 frames per second, about 2.5 Mbit/s. Smaller
+  pictures get less in proportion, never under 300 kbit/s; a camera larger
+  than what the host takes is halved until it fits.
+- **Encryption:** AES-128-GCM per packet with the key of the answer. The
+  12-byte nonce is the key id, the frame index and the fragment index, then
+  two zero bytes: it never repeats, because a frame index is never used twice
+  under one key. (The 16-bit sequence number would wrap after a few minutes
+  and must not be used for this.) The 16 bytes of the header are the
+  associated data of the seal, so nobody on the way can change what a packet
+  says about itself. A host drops what does not open, and what arrives under
+  the key of a camera that stopped.
 - **Loss:** version 1 has no forward error correction. An incomplete frame is
-  dropped, the host keeps showing the last good one, and the client sends a key
-  frame every 2 seconds. On-demand key frames and the Reed-Solomon scheme the
-  video stream already uses come later if tests over a poor link need them.
+  dropped with the ones that follow it until the next key frame, since each
+  builds on the one before; the host keeps showing the last good one, and the
+  client sends a key frame every 2 seconds. On-demand key frames and the
+  Reed-Solomon scheme the video stream already uses come later if tests over a
+  poor link need them.
+- **Late is lost:** a packet that finds no room on its way out within a tenth
+  of a second is left out, and the encoder leaves pictures out rather than
+  fall behind.
 
 ### On the host
 
@@ -211,8 +263,13 @@ signed camera extension and is out of scope until someone can test it.
 | Android | Already in Super Artemis (`AudioRecord`, native Opus) | CameraX into a `MediaCodec` H.264 encoder, front or back camera |
 | Web | `getUserMedia`, sent as a WebRTC audio track (already in moonlight-web-stream) | `getUserMedia`, sent as a WebRTC video track |
 
+This table is the plan. What exists is in
+[architecture.md](architecture.md#the-camera): the desktop app captures with
+what each system offers and encodes in software, and the web client sends its
+microphone to the bridge over its WebSocket.
+
 A browser cannot send UDP packets or present the pairing certificate, so on
-the web the bridge does it: the browser sends WebRTC tracks to the bridge, and
+the web the bridge does it: the browser sends its pictures to the bridge, and
 the bridge turns them into the packets above. When the bridge is the Leto host
 itself, the frames go straight to the virtual devices.
 
@@ -263,7 +320,11 @@ two virtual devices.
 
 1. **Port + 13** for the Leto API and the camera: free in the code read, but
    not reserved anywhere. To raise with the Apollo and Sunshine maintainers
-   before it ships.
+   before it ships. A client finds the API by asking there, so something else
+   that listens on that port costs a failed handshake, and a firewall that
+   lets the question fall without a word costs the three seconds of the
+   client's patience, after the stream plays. Neither was tried against a real
+   Apollo or Sunshine.
 2. **Reading Apollo's key** in companion mode is what avoids a second pairing.
    The alternative is a separate, explicit pairing with the companion.
 3. **Default permissions** for a newly paired device: allowed or blocked until

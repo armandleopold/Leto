@@ -34,7 +34,8 @@ crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
-  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers, the microphone, the camera. No networking
+  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers, the microphone, the camera and its encoder. No networking
+  leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
 xtask/            Project automation, run with `cargo xtask`
@@ -46,7 +47,6 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 
 | Crate | Purpose | Step |
 |---|---|---|
-| `leto-return` | The part of the return channel that is Leto's own: the camera, its packets, the Leto API. The microphone follows an existing protocol and lives in `leto-client` and `leto-media` | 2 |
 | `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 4 |
 | `apps/leto-android` | The Android app, started from Super Artemis | 3 |
 | `leto-host` | The host, ported from Apollo | 4 |
@@ -237,8 +237,10 @@ samples as `opus-decoder`.
 ## The camera
 
 The camera of the device that watches is meant to appear on the PC as a
-webcam: see [return-channel.md](return-channel.md). What exists is the first
-half, capturing it and showing it to the person. Nothing of it is sent yet.
+webcam: see [return-channel.md](return-channel.md). What exists is the side
+of the device: capturing it, showing it to the person, and sending it to a PC
+that takes one. No Sunshine or Apollo does, and Leto's own host is not written
+yet, so the only PC that takes it today is the stand-in host of the tests.
 
 - **A screen of its own.** "Camera and microphone", reached from the list of
   PCs, shows what the camera sees and how loud the microphone is, with no PC
@@ -267,11 +269,66 @@ half, capturing it and showing it to the person. Nothing of it is sent yet.
   captured exactly as for a PC, encoder included, so that what works there
   works in a stream.
 - **Shown as in a mirror,** which is how people expect to see themselves.
-  What a PC gets later is not mirrored.
+  What a PC gets is not mirrored.
 
 There is no choice of camera yet: the first one that fits is used. On Linux a
 camera that stops answering without an error holds the thread, and with it
 every later camera, until the app is restarted.
+
+### On its way to a PC
+
+- **Asked beside the stream.** GameStream has no word for a camera, so a PC
+  that takes one says so on an API of Leto's own, thirteen ports above the
+  GameStream one, and agrees there on where the pictures go and on the key
+  that seals them. `leto-return` holds what both sides say (`api`) and the
+  packets (`camera`): it does no networking, so that the host of step 4 and
+  the stand-in host of today read and write the same bytes as the client.
+- **Only the PC this device knows is asked.** `leto-client` talks to that API
+  with the certificates of the pairing, both ways, as it does for everything
+  else that concerns a paired PC (`transport.rs`, `camera.rs`). A PC that
+  forgot this device answers it nothing, and something else that answers at
+  the address of the PC is not even told what this device would like to send.
+- **The question never delays a stream.** The engine asks once the stream
+  plays, and tells the answer as news of its own (`Event::Camera`) up to
+  three seconds later. Until then the app shows no camera switch at all; a
+  PC that takes none gets a dimmed one, with the reason. Only a shell that
+  can send a camera has the engine ask (`Shell::sends_camera`): the bridge
+  does not yet, so a browser hears nothing about cameras.
+- **Never in clear.** Every packet is sealed with AES-128-GCM under a key the
+  PC made for this camera. There is no way to send one unsealed.
+- **Encoded in software,** as pictures are decoded: `PictureEncoder` in
+  `leto-media` wraps OpenH264. It is given a bit rate to keep (2.5 Mbit/s at
+  1280 by 720 and thirty pictures a second, less for smaller pictures),
+  leaves pictures out rather than exceed it, and makes one that decodes on
+  its own every two seconds. A camera larger than what the PC takes is
+  halved until it fits. At 1280 by 720 it takes about 3 ms a picture in a
+  release build on the four cores of the machine this was written on.
+- **One feed from the camera to whoever carries it.** `CameraFeed` in
+  `leto-media` opens the camera, encodes on a thread of its own and hands
+  each picture to a `Carrier`, which is the only thing it knows about where
+  they go. The app's carrier gives them to the engine
+  (`Service::camera_open`, `camera`, `camera_close`); `leto-cli` has one
+  that sends them itself. The feed keeps to thirty pictures a second
+  whatever the camera delivers.
+- **It belongs to the stream.** The engine lets go of the camera when the
+  stream is left, fails or ends, and when another one starts, without waiting
+  for the window. The PC is told that it stopped, and by which key, so a
+  goodbye that arrives late never ends the camera that followed. The cameras
+  of an engine are numbered for the same reason: a feed that was let go of
+  can neither send through, nor stop, the one that came after it.
+- **Off until the person turns it on,** in every stream, with one switch in
+  the bar over the picture and Ctrl+Alt+Shift+C. While pictures leave, the
+  switch is lit and a small camera stays in a corner of the picture when the
+  bar is away. A PC that refuses is explained in the bar: its owner does not
+  allow it, another device is sending, or it cannot take these pictures.
+
+The stand-in host takes a camera the way Leto's host will: it answers the
+API, opens and decodes what arrives, shows it in a corner of the picture it
+streams, counts what it received and lost, and saves the last picture when
+asked (`camera` in its terminal). `leto-cli play --camera` sends the camera
+without the window, and says whether a PC takes one at all. Both the app and
+the command line send a test card instead of a camera when `LETO_CAMERA=card`
+is set, which is how a machine without a camera checks the way there.
 
 ## The web client and its bridge
 

@@ -46,6 +46,12 @@ meter on the right of its test card rises with what the client sends, and
 `voice` saves the last ten seconds it heard to `leto-voice.wav`, to listen
 to. With `--no-microphone` it takes none, like a stock Sunshine or Apollo.
 
+It takes a camera too, as Leto's own host will and as no Sunshine or Apollo
+does: what a client sends shows in a corner of its test card. `camera` says
+what arrived and saves the last picture to `leto-camera.png`, `camera off`
+refuses new ones as an owner would, and `camera on` takes them again. With
+`--no-camera` it takes none.
+
 To check a stream without the window, `leto-cli play` streams an app for a few
 seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 
@@ -53,8 +59,8 @@ seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 cargo run -p leto-cli -- play Salon Desktop --seconds 10
 ```
 
-It also says whether the PC takes a microphone, and with `--microphone` it
-sends this device's meanwhile.
+It also says whether the PC takes a microphone and a camera, and with
+`--microphone` and `--camera` it sends this device's meanwhile.
 
 The web client needs its bridge: `cargo xtask web` builds the client, then
 `leto-cli bridge` serves it on port 5386 and prints the address to open and
@@ -73,7 +79,8 @@ camera.
 
 The desktop app has a made-up camera too: with `LETO_CAMERA=card` in its
 environment, the screen "Camera and microphone" shows a test card instead of
-the system's camera, read and converted as a camera's pictures are.
+the system's camera, read and converted as a camera's pictures are. The same
+card is what the app and `leto-cli play --camera` then send to a PC.
 
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
 and `targets` (a compile check for macOS, the web, Android and iOS). Each is
@@ -100,7 +107,13 @@ builds and tests it for real.
 - In `apps/leto`, what the app does goes in `state.rs` with a test, the work
   goes in `backend/`, and `ui/` only draws. See `docs/architecture.md`.
 - `leto-client` hands a stream over still encoded and `leto-media` decodes
-  it. Neither depends on the other: the app's backend joins them.
+  it. Neither depends on the other, outside the tests of `leto-client`: the
+  app's backend joins them. The camera goes the other way under the same
+  rule: `leto-media` encodes it and hands it to a `Carrier`, which the app
+  makes out of the engine.
+- What a client and a host say about the camera, and its packets, are in
+  `leto-return`, which does no networking. The client, the stand-in host and
+  later the host all use it: change it there, not at one end.
 - `leto-bridge` relays a stream to a browser still encoded, and the browser
   decodes it. What the two say to each other is in `leto_core::bridge`:
   change both ends together.
