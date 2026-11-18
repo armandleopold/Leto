@@ -86,7 +86,7 @@ impl Store {
 
 /// Writes a file only its owner can read, on systems with Unix permissions.
 /// On Windows the file inherits the profile folder's protection.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
 
     let mut options = fs::OpenOptions::new();
