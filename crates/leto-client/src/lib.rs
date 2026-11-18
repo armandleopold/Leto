@@ -19,6 +19,7 @@
 mod camera;
 mod describe;
 pub mod discovery;
+pub mod logs;
 pub mod service;
 pub mod session;
 pub mod store;
@@ -319,6 +320,7 @@ impl Client {
     /// host, which can take a while, or until the host gives up waiting.
     pub fn pair(&self, id: &HostId, pin: Pin) -> Result<HostSummary, Error> {
         let handle = self.handle(id)?;
+        log::info!("pairing with {}", self.for_log(id));
         let [a, b, c, d] = pin.digits();
         let pin = PairPin::new(a, b, c, d).expect("a Pin holds four digits below ten");
 
@@ -342,7 +344,19 @@ impl Client {
             entry.summary.clone()
         };
         self.persist()?;
+        log::info!("paired with {}", self.for_log(id));
         Ok(summary)
+    }
+
+    /// The name and address of a host, for the log.
+    fn for_log(&self, id: &HostId) -> String {
+        self.lock().get(id).map_or_else(
+            || "a PC Leto does not know".to_owned(),
+            |entry| {
+                let host = &entry.summary;
+                format!("{} at {}:{} ({:?})", host.name, host.address, host.port, host.kind)
+            },
+        )
     }
 
     /// The apps a paired host offers.

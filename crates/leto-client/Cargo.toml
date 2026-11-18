@@ -14,6 +14,8 @@ workspace = true
 
 [dependencies]
 directories = "6"
+# Writes the log, see `logs`.
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
 gethostname = "1"
 httparse = "1"
 leto-core = { workspace = true }
