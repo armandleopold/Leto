@@ -4,15 +4,15 @@
 //! bridge, which runs the client engine next to the PC. What they say to
 //! each other is the engine's own vocabulary ([`crate::engine`]) wrapped in
 //! [`Up`] and [`Down`], as JSON text messages. Pictures and sound are too
-//! large for text and travel as binary messages, one [`Frame`] each. So
-//! does the browser's microphone, the other way.
+//! large for text and travel as binary messages, one [`Frame`] each. So do
+//! the browser's microphone and its camera, the other way.
 
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    engine::{Event, Request},
+    engine::{CameraSettings, Event, Request},
     input::Input,
 };
 
@@ -28,6 +28,12 @@ pub const VOICE_RATE: u32 = 48_000;
 
 /// How much of the microphone one [`Frame::Voice`] carries.
 pub const VOICE_PACKET: Duration = Duration::from_millis(20);
+
+/// The longest picture of its camera a browser sends, in bytes: several
+/// times what a key frame of 1920 by 1080 weighs at the bit rates Leto asks
+/// for. A browser leaves out what is longer, and the bridge takes no longer
+/// message.
+pub const LONGEST_CAMERA_PICTURE: usize = 1024 * 1024;
 
 /// What a browser says to the bridge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +51,16 @@ pub enum Up {
     /// A picture could not be decoded. The following ones are useless until
     /// one comes that decodes on its own.
     KeyframeNeeded,
+    /// The browser would like to send its camera to the PC being watched,
+    /// like this: within what [`Event::Camera`] said the PC takes. The
+    /// bridge asks the PC and answers with [`Down::Camera`] and the same
+    /// `number`. Asking again replaces what was asked before.
+    CameraOn {
+        number: u32,
+        sending: CameraSettings,
+    },
+    /// The browser stopped sending its camera, or no longer wants to.
+    CameraOff,
 }
 
 /// What the bridge says to a browser.
@@ -68,6 +84,14 @@ pub enum Down {
     /// The sound about to arrive, or why the stream will have none, in
     /// words for the person.
     Sound(Result<AudioFormat, String>),
+    /// What became of [`Up::CameraOn`] of this `number`: the PC takes the
+    /// camera, and [`Frame::Camera`] may follow, or why it does not, in
+    /// words for the person. Said once more, as a refusal, for a camera
+    /// that the PC stops taking while the browser sends it.
+    Camera {
+        number: u32,
+        answer: Result<(), String>,
+    },
 }
 
 /// What a browser needs to know to decode the pictures of a stream.
@@ -93,12 +117,15 @@ pub struct AudioFormat {
 const PICTURE: u8 = 1;
 const SOUND: u8 = 2;
 const VOICE: u8 = 3;
+const CAMERA: u8 = 4;
 const KEYFRAME: u8 = 1;
 /// Bytes before the data of a picture: kind, flags and number.
 const PICTURE_HEAD: usize = 6;
+/// Bytes before the data of a picture of the camera: kind, flags and time.
+const CAMERA_HEAD: usize = 6;
 
 /// One binary message: a piece of the stream, still encoded. Pictures and
-/// sound come from the bridge, the microphone goes to it.
+/// sound come from the bridge, the microphone and the camera go to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame<'a> {
     Picture {
@@ -115,6 +142,17 @@ pub enum Frame<'a> {
     /// of [`VOICE_PACKET`], one channel at [`VOICE_RATE`]. They follow each
     /// other without a gap.
     Voice(&'a [u8]),
+    /// One picture of the browser's camera for the PC being watched, once
+    /// [`Down::Camera`] said that it takes them.
+    Camera {
+        /// When it was taken, in milliseconds since the first one. It wraps
+        /// after seven weeks, and may.
+        at: u32,
+        /// A picture that decodes on its own.
+        keyframe: bool,
+        /// An H.264 access unit with start codes.
+        data: &'a [u8],
+    },
 }
 
 impl<'a> Frame<'a> {
@@ -131,6 +169,14 @@ impl<'a> Frame<'a> {
             }
             Self::Sound(packet) => tagged(SOUND, packet),
             Self::Voice(packet) => tagged(VOICE, packet),
+            Self::Camera { at, keyframe, data } => {
+                let mut message = Vec::with_capacity(CAMERA_HEAD + data.len());
+                message.push(CAMERA);
+                message.push(if keyframe { KEYFRAME } else { 0 });
+                message.extend_from_slice(&at.to_be_bytes());
+                message.extend_from_slice(data);
+                message
+            }
         }
     }
 
@@ -145,6 +191,12 @@ impl<'a> Frame<'a> {
             }
             SOUND => Some(Self::Sound(message.get(1..)?)),
             VOICE => Some(Self::Voice(message.get(1..)?)),
+            CAMERA => {
+                let flags = *message.get(1)?;
+                let at = u32::from_be_bytes(message.get(2..CAMERA_HEAD)?.try_into().ok()?);
+                let data = message.get(CAMERA_HEAD..)?;
+                Some(Self::Camera { at, keyframe: flags & KEYFRAME != 0, data })
+            }
             _ => None,
         }
     }
@@ -181,12 +233,19 @@ mod tests {
         let voice = Frame::Voice(&[0xF8, 3, 4]);
         assert_eq!(voice.encode(), [3, 0xF8, 3, 4]);
         assert_eq!(Frame::parse(&voice.encode()), Some(voice));
+
+        let camera = Frame::Camera { at: 0x0001_0203, keyframe: true, data: &[0, 0, 1, 0x67] };
+        assert_eq!(camera.encode(), [4, 1, 0, 1, 2, 3, 0, 0, 1, 0x67]);
+        assert_eq!(Frame::parse(&camera.encode()), Some(camera));
+        let next = Frame::Camera { at: 33, keyframe: false, data: &[0, 0, 1, 0x41] };
+        assert_eq!(Frame::parse(&next.encode()), Some(next));
     }
 
     #[test]
     fn a_message_cut_short_or_unknown_is_not_a_frame() {
         assert_eq!(Frame::parse(&[]), None);
         assert_eq!(Frame::parse(&[1, 1, 0, 0]), None);
+        assert_eq!(Frame::parse(&[4, 1, 0, 0, 0]), None);
         assert_eq!(Frame::parse(&[9, 1, 2, 3]), None);
     }
 
@@ -209,6 +268,11 @@ mod tests {
                 },
             ]),
             Up::KeyframeNeeded,
+            Up::CameraOn {
+                number: 3,
+                sending: CameraSettings { width: 1280, height: 720, fps: 30, bitrate_kbps: 2500 },
+            },
+            Up::CameraOff,
         ];
         for message in up {
             let text = serde_json::to_string(&message).expect("messages are plain data");
@@ -231,6 +295,8 @@ mod tests {
                 samples_per_packet: 240,
             })),
             Down::Sound(Err("The PC sends six channels.".into())),
+            Down::Camera { number: 3, answer: Ok(()) },
+            Down::Camera { number: 4, answer: Err("Another device is sending.".into()) },
         ];
         for message in down {
             let text = serde_json::to_string(&message).expect("messages are plain data");

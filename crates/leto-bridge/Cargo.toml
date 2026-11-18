@@ -35,5 +35,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
+# Encodes the pictures the tests send as a browser's camera.
+leto-media = { workspace = true }
 leto-testhost = { workspace = true }
 

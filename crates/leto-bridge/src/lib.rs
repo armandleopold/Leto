@@ -10,11 +10,12 @@
 //! - `identity` is the certificate it shows them.
 //! - `pages` serves the web client's files, `http` speaks just enough HTTP.
 //! - `link` is one browser on its WebSocket, `relay` the stream on its way
-//!   there.
+//!   there, `camera` that browser's camera on its way to the PC.
 //!
 //! What a browser and the bridge say to each other is described in
 //! [`leto_core::bridge`].
 
+mod camera;
 pub mod gate;
 mod http;
 mod identity;

@@ -2109,6 +2109,7 @@ dependencies = [
  "httparse",
  "leto-client",
  "leto-core",
+ "leto-media",
  "leto-testhost",
  "log",
  "rcgen",
