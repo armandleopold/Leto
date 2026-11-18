@@ -18,9 +18,12 @@ egui = { workspace = true }
 egui_extras = { workspace = true }
 image = { workspace = true }
 leto-core = { workspace = true }
+leto-protocol = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The client engine needs sockets, which a browser page does not have.
+leto-client = { workspace = true }
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

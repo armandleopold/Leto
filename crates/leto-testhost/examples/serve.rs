@@ -98,7 +98,7 @@ fn main() -> ExitCode {
         match line.parse::<Pin>() {
             Ok(pin) => {
                 host.type_pin(pin);
-                println!("PIN {pin} entered. Paired devices so far: {}.", host.paired_clients());
+                println!("PIN {pin} entered.");
             }
             Err(error) => println!("{error}"),
         }

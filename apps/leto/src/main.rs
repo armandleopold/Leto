@@ -7,7 +7,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod backend;
+mod state;
 mod theme;
+mod ui;
 
 /// Id of the `<canvas>` element the web build draws into.
 #[cfg(target_arch = "wasm32")]
