@@ -140,7 +140,7 @@ impl<'a> Frame<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::HostId;
+    use crate::{input::GamepadState, model::HostId};
 
     #[test]
     fn frames_come_back_as_they_were_sent() {
@@ -172,7 +172,17 @@ mod tests {
             Up::Hello { key: Some("3f9a".into()) },
             Up::Code("1234 5678".into()),
             Up::Ask(Request::Apps(HostId("salon".into()))),
-            Up::Input(vec![Input::MouseMove { dx: -3, dy: 4 }]),
+            Up::Input(vec![
+                Input::MouseMove { dx: -3, dy: 4 },
+                Input::Gamepad {
+                    number: 1,
+                    state: GamepadState {
+                        left_trigger: 0.5,
+                        left_stick: [-1.0, 0.25],
+                        ..GamepadState::default()
+                    },
+                },
+            ]),
             Up::KeyframeNeeded,
         ];
         for message in up {
