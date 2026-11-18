@@ -119,6 +119,15 @@ impl RequestClient for Transport {
 impl Transport {
     /// Sends `GET target` to `hostport` and returns the response body.
     fn get(&self, secure: bool, hostport: &str, target: &str) -> Result<Vec<u8>, Error> {
+        // Not the query: while pairing, it carries the challenges.
+        let path = target.split('?').next().unwrap_or_default();
+        let scheme = if secure { "https" } else { "http" };
+        log::debug!("GET {scheme}://{hostport}{path}");
+        self.exchange_get(secure, hostport, target)
+            .inspect_err(|error| log::debug!("GET {scheme}://{hostport}{path} failed: {error:?}"))
+    }
+
+    fn exchange_get(&self, secure: bool, hostport: &str, target: &str) -> Result<Vec<u8>, Error> {
         let tcp = connect(hostport, self.timeout)?;
         let request =
             format!("GET {target} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");

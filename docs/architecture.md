@@ -321,6 +321,21 @@ The bridge adds nothing to this and takes nothing away: it is the paired
 device, and the check is the engine's. What it adds is the gate described
 above, between itself and browsers.
 
+## Logs
+
+The app, the command line and the bridge each write a log in the `logs`
+folder beside Leto's settings: `leto.txt`, `leto-cli.txt` and
+`leto-bridge.txt` (`leto_client::logs`). `leto-cli about` prints where. Each
+run adds to its file; a file that reached 10 MB is set aside as
+`*.previous.txt` the next time its program starts. A bug that stops a program
+is written there too, which matters on Windows, where the app has no
+terminal. Leto's own crates log in detail, other libraries only what they
+find worth telling; `RUST_LOG` changes that and also prints to the terminal.
+
+A log names PCs and their addresses, and each request's path, but never a
+secret: the folder can be sent as it is. The settings folder around it holds
+this device's key and is never to be sent.
+
 ## Dependencies and licences
 
 Leto is GPL-3.0-only because the host is a port of Apollo, which is
