@@ -17,7 +17,7 @@ use leto_client::{
 };
 
 use super::{
-    Unavailable,
+    Unavailable, gamepad,
     stream::{Outlet, Screen, Sound, sentence},
 };
 use crate::state::{AppsProblem, Event, Request, StreamEnd};
@@ -71,12 +71,29 @@ impl Backend {
         if let Err(error) = &client {
             log::error!("the client engine did not start: {error}");
         }
+        let watching = Arc::<Mutex<Watching>>::default();
+        if client.is_ok() {
+            // Gamepads go to the stream that is connected, whichever it is.
+            let (asked, sent) = (Arc::clone(&watching), Arc::clone(&watching));
+            gamepad::watch(
+                move || {
+                    let watching = lock(&asked);
+                    watching.session.as_ref().and(watching.wanted)
+                },
+                move |input| {
+                    if let Some(session) = &lock(&sent).session {
+                        // The interface says what the PC does not accept.
+                        let _ = session.send(input);
+                    }
+                },
+            );
+        }
         Self {
             client,
             reporter: Reporter { events: sender, ctx: ctx.clone() },
             events,
             apps_asked: Arc::new(AtomicU64::new(0)),
-            watching: Arc::default(),
+            watching,
         }
     }
 

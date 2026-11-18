@@ -5,6 +5,8 @@
 //! only explains what is missing, until the bridge exists.
 
 #[cfg(not(target_arch = "wasm32"))]
+mod gamepad;
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod stream;
