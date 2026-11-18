@@ -1,0 +1,26 @@
+# Temporary: finds out why a camera test is slow on macOS. Not to be merged.
+name: macOS probe
+on:
+  push:
+    branches: [macos-camera-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: The test alone
+        run: cargo test -p leto-media --lib what_a_camera_sees -- --nocapture --test-threads 1
+        continue-on-error: true
+      - name: The test alone, again
+        run: cargo test -p leto-media --lib what_a_camera_sees -- --nocapture --test-threads 1
+        continue-on-error: true
+      - name: The crate's tests together
+        run: cargo test -p leto-media --lib -- --nocapture
+        continue-on-error: true
+      - name: Processors
+        run: sysctl -n hw.ncpu machdep.cpu.brand_string

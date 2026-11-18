@@ -63,7 +63,12 @@ impl Card {
 impl Source for Card {
     fn next(&mut self) -> Result<Raw<'_>, Error> {
         let now = Instant::now();
-        thread::sleep(self.due.saturating_duration_since(now));
+        let wanted = self.due.saturating_duration_since(now);
+        thread::sleep(wanted);
+        let slept = now.elapsed();
+        if slept > wanted + Duration::from_millis(4) {
+            eprintln!("PROBE the card slept {slept:?} for {wanted:?}");
+        }
         // A reader that is late gets its pictures as fast as it reads them,
         // not a pile of them at once.
         self.due = (self.due + STEP).max(now);

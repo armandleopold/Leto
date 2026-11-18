@@ -186,6 +186,9 @@ fn capture(shared: &Shared, which: Which, news: &dyn Fn()) -> Result<(), Error> 
                 unreadable = 0;
                 let mut slot = shared.slot();
                 slot.spare = slot.fresh.replace(picture);
+                if slot.spare.is_some() {
+                    eprintln!("PROBE a picture nobody took was replaced");
+                }
                 drop(slot);
                 news();
             }

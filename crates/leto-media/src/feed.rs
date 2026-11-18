@@ -252,14 +252,21 @@ fn run(
         let at = started.elapsed();
         let step = Duration::from_secs(1) / encoder.sending().fps;
         if at + step / 4 < due {
+            eprintln!("PROBE early at={at:?} due={due:?}");
             continue;
         }
         due = (due + step).max(at + step / 2);
 
-        let encoded = match encoder.encode(&picture, key_frame) {
+        let began = Instant::now();
+        let encoded = encoder.encode(&picture, key_frame);
+        eprintln!("PROBE at={at:?} encode took {:?}", began.elapsed());
+        let encoded = match encoded {
             Ok(Some(encoded)) => encoded,
             // Left out by the encoder, to keep to its bit rate.
-            Ok(None) => continue,
+            Ok(None) => {
+                eprintln!("PROBE skipped by encoder at={at:?}");
+                continue;
+            }
             Err(error) => return Some(Feeding::Lost(error.to_string())),
         };
         match carrier.carry(at, encoded) {
@@ -380,6 +387,7 @@ mod tests {
         assert!(first.1, "the first picture decodes on its own");
         // About thirty a second, by the clock that the pictures carry.
         let pace = (carried.pictures.len() - 1) as f64 / (last.0 - first.0).as_secs_f64();
+        eprintln!("PROBE pace {pace}");
         assert!((20.0..=33.0).contains(&pace), "{pace} pictures a second");
 
         // And they are the card: white on the left, black on the right.
