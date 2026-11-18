@@ -4,4 +4,5 @@ pub mod apps;
 pub mod icons;
 pub mod pairing;
 pub mod pcs;
+pub mod stream;
 pub mod widgets;

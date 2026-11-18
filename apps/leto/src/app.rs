@@ -7,7 +7,7 @@ use crate::{
     backend::{Backend, Unavailable},
     state::{Event, Screen, State},
     theme,
-    ui::{self, apps::Covers, icons, widgets},
+    ui::{self, apps::Covers, icons, stream::Canvas, widgets},
 };
 
 /// Displayed size of the logo in the top bar, in points. The image is larger,
@@ -19,6 +19,7 @@ pub struct LetoApp {
     backend: Backend,
     state: State,
     covers: Covers,
+    canvas: Canvas,
 }
 
 impl LetoApp {
@@ -26,7 +27,12 @@ impl LetoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
-        Self { backend: Backend::new(&cc.egui_ctx), state: State::new(), covers: Covers::default() }
+        Self {
+            backend: Backend::new(&cc.egui_ctx),
+            state: State::new(),
+            covers: Covers::default(),
+            canvas: Canvas::default(),
+        }
     }
 }
 
@@ -47,32 +53,52 @@ impl eframe::App for LetoApp {
             self.state.tick(now);
         }
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::GROUND)).show(
-            ui,
-            |ui| {
-                top_bar(ui);
-                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                    widgets::page(ui, |ui| match (&unavailable, self.state.screen.clone()) {
-                        (Some(problem), _) => out_of_order(ui, problem),
-                        (None, Screen::Pcs) => {
-                            ui::pcs::show(ui, &mut self.state, now);
-                            ui.add_space(24.0);
-                            ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
-                        }
-                        (None, Screen::Pairing(pairing)) => {
-                            ui::pairing::show(ui, &mut self.state, &pairing, now);
-                        }
-                        (None, Screen::Apps(view)) => {
-                            ui::apps::show(ui, &mut self.state, &view, &self.covers, now);
-                        }
+        match (&unavailable, self.state.screen.clone()) {
+            // A stream takes the whole window: no bar, no margins.
+            (None, Screen::Stream(view)) => {
+                if let Some(picture) = self.backend.take_picture() {
+                    self.canvas.show(ui.ctx(), picture);
+                }
+                let sound_problem = self.backend.sound_problem();
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(egui::Color32::BLACK))
+                    .show(ui, |ui| {
+                        let problem = sound_problem.as_deref();
+                        ui::stream::show(ui, &mut self.state, &view, &mut self.canvas, problem);
+                    });
+            }
+            (unavailable, screen) => {
+                self.canvas.clear(ui.ctx());
+                let ground = egui::Frame::new().fill(theme::GROUND);
+                egui::CentralPanel::default().frame(ground).show(ui, |ui| {
+                    top_bar(ui);
+                    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                        widgets::page(ui, |ui| match (unavailable, screen) {
+                            (Some(problem), _) => out_of_order(ui, problem),
+                            (None, Screen::Pcs) => {
+                                ui::pcs::show(ui, &mut self.state, now);
+                                ui.add_space(24.0);
+                                ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
+                            }
+                            (None, Screen::Pairing(pairing)) => {
+                                ui::pairing::show(ui, &mut self.state, &pairing, now);
+                            }
+                            (None, Screen::Apps(view)) => {
+                                ui::apps::show(ui, &mut self.state, &view, &self.covers, now);
+                            }
+                            // Handled above.
+                            (None, Screen::Stream(_)) => {}
+                        });
                     });
                 });
-            },
-        );
+            }
+        }
 
-        // Covers are only kept for the PC whose apps are on screen.
+        // Covers are only kept for the PC whose apps are on screen, or were a
+        // moment ago: leaving a stream returns to them.
         let shown = match &self.state.screen {
             Screen::Apps(view) => Some(&view.host.id),
+            Screen::Stream(view) => Some(&view.host.id),
             _ => None,
         };
         self.covers.keep_only(shown);

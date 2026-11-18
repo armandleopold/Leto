@@ -5,7 +5,9 @@
 //! ```
 //!
 //! Pair from the client, then type the PIN it shows here and press Enter, as
-//! you would in the pairing page of a real host.
+//! you would in the pairing page of a real host. While a client is streaming,
+//! type `close` to close the app as its owner would on the host, or `drop`
+//! to break the stream and leave the app running.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -93,14 +95,25 @@ fn main() -> ExitCode {
     });
 
     println!("Pair from a client, then type the PIN it shows here and press Enter.");
+    println!("Type \"close\" to close the running app, \"drop\" to break the stream.");
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
-        match line.parse::<Pin>() {
-            Ok(pin) => {
-                host.type_pin(pin);
-                println!("PIN {pin} entered.");
+        match line.trim() {
+            "close" => {
+                host.close_app();
+                println!("The app is closed.");
             }
-            Err(error) => println!("{error}"),
+            "drop" => {
+                host.drop_stream();
+                println!("The stream is broken. The app keeps running.");
+            }
+            other => match other.parse::<Pin>() {
+                Ok(pin) => {
+                    host.type_pin(pin);
+                    println!("PIN {pin} entered.");
+                }
+                Err(error) => println!("{error}"),
+            },
         }
     }
     ExitCode::SUCCESS

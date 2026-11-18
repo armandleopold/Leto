@@ -23,6 +23,16 @@ pub enum Request {
     /// Load the apps of a PC, then their covers.
     Apps(HostId),
     Forget(HostId),
+    /// Start an app on a PC, or go back to it if it is running, and stream it.
+    Play {
+        host: HostId,
+        app: u32,
+        attempt: u64,
+    },
+    /// Stop watching. The app keeps running on the PC.
+    Leave,
+    /// Close the app running on a PC.
+    Quit(HostId),
 }
 
 /// News from the backend.
@@ -57,8 +67,39 @@ pub enum Event {
         app: u32,
         image: Option<egui::ColorImage>,
     },
+    /// The stream is connected: pictures and sound are on their way.
+    Playing {
+        attempt: u64,
+    },
+    /// The stream did not start.
+    PlayFailed {
+        attempt: u64,
+        message: String,
+    },
+    /// A stream that was playing ended without the person asking.
+    StreamEnded {
+        attempt: u64,
+        why: StreamEnd,
+    },
+    /// The attempt to close the app running on a PC is over.
+    QuitEnded {
+        host: HostId,
+        result: Result<(), String>,
+    },
     /// Something the person should know that belongs to no screen.
     Notice(String),
+}
+
+/// Why a stream ended on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub enum StreamEnd {
+    /// The app closed on the PC.
+    AppClosed,
+    /// The stream broke. The app may still be running.
+    ConnectionLost,
+    /// The PC ended the stream with this error code.
+    HostError(u32),
 }
 
 /// Why the apps of a PC could not be listed.
@@ -83,6 +124,8 @@ pub enum Screen {
     Pcs,
     Pairing(Pairing),
     Apps(AppsView),
+    /// An app of a PC, streamed. Fills the window.
+    Stream(StreamView),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +152,40 @@ pub enum PairingStep {
 pub struct AppsView {
     pub host: HostSummary,
     pub apps: Loadable<Vec<AppSummary>, AppsProblem>,
+    /// What just happened that the person should know, such as why a stream
+    /// ended.
+    pub notice: Option<Notice>,
+    /// The backend is closing the app running on the PC.
+    pub quitting: bool,
+}
+
+impl AppsView {
+    /// The app running on the PC, when it is one of the apps on screen.
+    pub fn running(&self) -> Option<&AppSummary> {
+        let running = self.host.running_app?;
+        match &self.apps {
+            Loadable::Ready(apps) => apps.iter().find(|app| app.id == running),
+            _ => None,
+        }
+    }
+}
+
+/// A line that tells the person what happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    /// Something went wrong, as opposed to something merely happened.
+    pub problem: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamView {
+    pub host: HostSummary,
+    pub app: AppSummary,
+    /// Tells this stream from an earlier one that was left.
+    pub attempt: u64,
+    /// The stream is connected. Before that, the PC is starting the app.
+    pub connected: bool,
 }
 
 /// The form that adds a PC by address.
@@ -198,8 +275,67 @@ impl State {
     }
 
     fn show_apps(&mut self, host: HostSummary) {
+        self.show_apps_with(host, None);
+    }
+
+    fn show_apps_with(&mut self, host: HostSummary, notice: Option<Notice>) {
         self.requests.push(Request::Apps(host.id.clone()));
-        self.screen = Screen::Apps(AppsView { host, apps: Loadable::Loading });
+        self.screen =
+            Screen::Apps(AppsView { host, apps: Loadable::Loading, notice, quitting: false });
+    }
+
+    /// The person chose an app: start it, or go back to it if it is the one
+    /// running.
+    pub fn play(&mut self, app: &AppSummary) {
+        let Screen::Apps(view) = &mut self.screen else { return };
+        if view.quitting {
+            return;
+        }
+        // A PC runs one app at a time.
+        if let Some(running) = view.host.running_app.filter(|running| *running != app.id) {
+            let other = match &view.apps {
+                Loadable::Ready(apps) => apps.iter().find(|other| other.id == running),
+                _ => None,
+            };
+            let other = other.map_or("Another app", |other| other.title.as_str());
+            view.notice = Some(Notice {
+                text: format!("{other} is running on this PC. Close it to start {}.", app.title),
+                problem: true,
+            });
+            return;
+        }
+        self.attempts += 1;
+        self.requests.push(Request::Play {
+            host: view.host.id.clone(),
+            app: app.id,
+            attempt: self.attempts,
+        });
+        self.screen = Screen::Stream(StreamView {
+            host: view.host.clone(),
+            app: app.clone(),
+            attempt: self.attempts,
+            connected: false,
+        });
+    }
+
+    /// The person stops watching. The app keeps running on the PC.
+    pub fn leave_stream(&mut self) {
+        if let Screen::Stream(view) = &self.screen {
+            let host = view.host.clone();
+            self.requests.push(Request::Leave);
+            self.show_apps(host);
+        }
+    }
+
+    /// The person closes the app running on the PC whose apps are on screen.
+    pub fn quit_app(&mut self) {
+        if let Screen::Apps(view) = &mut self.screen
+            && !view.quitting
+        {
+            view.quitting = true;
+            view.notice = None;
+            self.requests.push(Request::Quit(view.host.id.clone()));
+        }
     }
 
     /// Asks again for the apps on screen.
@@ -211,6 +347,9 @@ impl State {
 
     /// Back to the list of PCs, from any screen.
     pub fn back(&mut self, now: f64) {
+        if matches!(self.screen, Screen::Stream(_)) {
+            self.requests.push(Request::Leave);
+        }
         if self.screen != Screen::Pcs {
             self.screen = Screen::Pcs;
             self.search(now);
@@ -246,8 +385,12 @@ impl State {
             Screen::Pcs => None,
             Screen::Pairing(pairing) => Some(&pairing.host.id),
             Screen::Apps(view) => Some(&view.host.id),
+            Screen::Stream(view) => Some(&view.host.id),
         };
         if shown == Some(id) {
+            if matches!(self.screen, Screen::Stream(_)) {
+                self.requests.push(Request::Leave);
+            }
             self.screen = Screen::Pcs;
         }
     }
@@ -261,6 +404,7 @@ impl State {
                     Screen::Pcs => None,
                     Screen::Pairing(pairing) => Some(&mut pairing.host),
                     Screen::Apps(view) => Some(&mut view.host),
+                    Screen::Stream(view) => Some(&mut view.host),
                 };
                 if let Some(shown) = shown
                     && let Some(fresh) = hosts.iter().find(|host| host.id == shown.id)
@@ -312,6 +456,55 @@ impl State {
                         Ok(apps) => Loadable::Ready(apps),
                         Err(problem) => Loadable::Failed(problem),
                     };
+                }
+            }
+            Event::Playing { attempt } => {
+                if let Screen::Stream(view) = &mut self.screen
+                    && view.attempt == attempt
+                {
+                    view.connected = true;
+                }
+            }
+            Event::PlayFailed { attempt, message } => {
+                // A stream the person already left changes no screen.
+                let Screen::Stream(view) = &self.screen else { return };
+                if view.attempt != attempt {
+                    return;
+                }
+                let host = view.host.clone();
+                self.show_apps_with(host, Some(Notice { text: message, problem: true }));
+            }
+            Event::StreamEnded { attempt, why } => {
+                let Screen::Stream(view) = &self.screen else { return };
+                if view.attempt != attempt {
+                    return;
+                }
+                let (host, app) = (view.host.clone(), &view.app.title);
+                let notice = match why {
+                    StreamEnd::AppClosed => {
+                        Notice { text: format!("{app} was closed on the PC."), problem: false }
+                    }
+                    StreamEnd::ConnectionLost => Notice {
+                        text: format!("The connection to {} was lost.", host.name),
+                        problem: true,
+                    },
+                    StreamEnd::HostError(code) => Notice {
+                        text: format!("{} ended the stream (error {code:#x}).", host.name),
+                        problem: true,
+                    },
+                };
+                // The backend still holds what is left of the stream.
+                self.requests.push(Request::Leave);
+                self.show_apps_with(host, Some(notice));
+            }
+            Event::QuitEnded { host, result } => {
+                if let Screen::Apps(view) = &mut self.screen
+                    && view.host.id == host
+                {
+                    view.quitting = false;
+                    if let Err(message) = result {
+                        view.notice = Some(Notice { text: message, problem: true });
+                    }
                 }
             }
             // Covers are pictures: the drawing side keeps them.
@@ -391,7 +584,15 @@ mod tests {
         let paired = host("Salon", true, Reachability::Online);
         state.apply(Event::PairingEnded { attempt: 1, result: Ok(paired.clone()) }, 9.0);
         assert_eq!(state.take_requests(), [Request::Apps(salon.id.clone())]);
-        assert_eq!(state.screen, Screen::Apps(AppsView { host: paired, apps: Loadable::Loading }));
+        assert_eq!(
+            state.screen,
+            Screen::Apps(AppsView {
+                host: paired,
+                apps: Loadable::Loading,
+                notice: None,
+                quitting: false
+            })
+        );
 
         let apps = vec![AppSummary { id: 1, title: "Desktop".into(), hdr: true }];
         state.apply(Event::Apps { host: salon.id, result: Ok(apps.clone()) }, 9.5);
@@ -512,5 +713,156 @@ mod tests {
         state.apply(Event::Hosts(vec![busy.clone()]), 2.0);
         let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert_eq!(view.host, busy);
+    }
+
+    fn app(id: u32, title: &str) -> AppSummary {
+        AppSummary { id, title: title.to_owned(), hdr: false }
+    }
+
+    /// A state showing the apps of a paired PC, with nothing left to send.
+    fn state_with_apps(salon: &HostSummary) -> State {
+        let mut state = state_with(vec![salon.clone()]);
+        state.open(&salon.id, 1.0);
+        let apps = vec![app(1, "Desktop"), app(2, "Steam")];
+        state.apply(Event::Apps { host: salon.id.clone(), result: Ok(apps) }, 1.5);
+        state.take_requests();
+        state
+    }
+
+    #[test]
+    fn choosing_an_app_streams_it_and_leaving_returns_to_the_apps() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+
+        state.play(&app(2, "Steam"));
+        let play = Request::Play { host: salon.id.clone(), app: 2, attempt: 1 };
+        assert_eq!(state.take_requests(), [play]);
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(!view.connected);
+
+        state.apply(Event::Playing { attempt: 1 }, 3.0);
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(view.connected);
+
+        state.leave_stream();
+        assert_eq!(state.take_requests(), [Request::Leave, Request::Apps(salon.id)]);
+        let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert_eq!(view.notice, None);
+    }
+
+    #[test]
+    fn a_stream_that_does_not_start_says_why_on_the_apps_screen() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.take_requests();
+
+        state
+            .apply(Event::PlayFailed { attempt: 1, message: "The PC did not answer.".into() }, 4.0);
+        assert_eq!(state.take_requests(), [Request::Apps(salon.id)]);
+        let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
+        let notice = Notice { text: "The PC did not answer.".into(), problem: true };
+        assert_eq!(view.notice, Some(notice));
+    }
+
+    #[test]
+    fn a_stream_that_ends_on_its_own_returns_to_the_apps_and_says_why() {
+        let salon = host("Salon", true, Reachability::Online);
+        for (why, text, problem) in [
+            (StreamEnd::AppClosed, "Steam was closed on the PC.", false),
+            (StreamEnd::ConnectionLost, "The connection to Salon was lost.", true),
+            (StreamEnd::HostError(0x8003_0023), "Salon ended the stream (error 0x80030023).", true),
+        ] {
+            let mut state = state_with_apps(&salon);
+            state.play(&app(2, "Steam"));
+            state.apply(Event::Playing { attempt: 1 }, 3.0);
+            state.take_requests();
+
+            state.apply(Event::StreamEnded { attempt: 1, why }, 9.0);
+            assert_eq!(state.take_requests(), [Request::Leave, Request::Apps(salon.id.clone())]);
+            let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
+            assert_eq!(view.notice, Some(Notice { text: text.into(), problem }));
+        }
+    }
+
+    #[test]
+    fn news_about_a_stream_the_person_left_changes_no_screen() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.leave_stream();
+        state.take_requests();
+        let before = state.screen.clone();
+
+        state.apply(Event::Playing { attempt: 1 }, 5.0);
+        state.apply(Event::PlayFailed { attempt: 1, message: "Too late.".into() }, 5.0);
+        state.apply(Event::StreamEnded { attempt: 1, why: StreamEnd::ConnectionLost }, 5.0);
+        assert_eq!(state.screen, before);
+        assert_eq!(state.take_requests(), []);
+
+        // The same goes for a second stream: the first one's end is not its own.
+        state.play(&app(1, "Desktop"));
+        state.take_requests();
+        state.apply(Event::StreamEnded { attempt: 1, why: StreamEnd::AppClosed }, 6.0);
+        assert!(matches!(&state.screen, Screen::Stream(view) if view.attempt == 2));
+    }
+
+    #[test]
+    fn another_app_cannot_start_while_one_is_running_but_the_running_one_resumes() {
+        let mut salon = host("Salon", true, Reachability::Online);
+        salon.busy = true;
+        salon.running_app = Some(1);
+        let mut state = state_with_apps(&salon);
+
+        state.play(&app(2, "Steam"));
+        assert_eq!(state.take_requests(), []);
+        let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
+        let text = "Desktop is running on this PC. Close it to start Steam.";
+        assert_eq!(view.notice, Some(Notice { text: text.into(), problem: true }));
+        assert_eq!(view.running(), Some(&app(1, "Desktop")));
+
+        state.play(&app(1, "Desktop"));
+        assert_eq!(state.take_requests(), [Request::Play { host: salon.id, app: 1, attempt: 1 }]);
+    }
+
+    #[test]
+    fn closing_the_running_app_is_asked_once_and_a_failure_is_shown() {
+        let mut salon = host("Salon", true, Reachability::Online);
+        salon.running_app = Some(1);
+        let mut state = state_with_apps(&salon);
+
+        state.quit_app();
+        state.quit_app();
+        assert_eq!(state.take_requests(), [Request::Quit(salon.id.clone())]);
+        // Nothing starts while the app is closing.
+        state.play(&app(1, "Desktop"));
+        assert_eq!(state.take_requests(), []);
+
+        let result = Err("The PC did not answer.".to_owned());
+        state.apply(Event::QuitEnded { host: salon.id.clone(), result }, 4.0);
+        let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(!view.quitting);
+        assert_eq!(view.notice.as_ref().map(|notice| notice.problem), Some(true));
+
+        // Closed: the PC says it runs nothing, and any app can start.
+        state.quit_app();
+        salon.running_app = None;
+        state.apply(Event::Hosts(vec![salon.clone()]), 5.0);
+        state.apply(Event::QuitEnded { host: salon.id.clone(), result: Ok(()) }, 5.0);
+        state.take_requests();
+        state.play(&app(2, "Steam"));
+        assert_eq!(state.take_requests(), [Request::Play { host: salon.id, app: 2, attempt: 1 }]);
+    }
+
+    #[test]
+    fn going_back_to_the_pcs_from_a_stream_leaves_it() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.take_requests();
+
+        state.back(8.0);
+        assert_eq!(state.screen, Screen::Pcs);
+        assert_eq!(state.take_requests(), [Request::Leave, Request::Search]);
     }
 }

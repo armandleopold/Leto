@@ -8,7 +8,7 @@
 
 use openh264::{
     OpenH264API,
-    encoder::{BitRate, Encoder, EncoderConfig, FrameRate, FrameType, QpRange, RateControlMode},
+    encoder::{BitRate, Encoder, EncoderConfig, FrameRate, FrameType, RateControlMode},
     formats::YUVSource,
 };
 use opus_rs::{Application, OpusEncoder};
@@ -141,15 +141,20 @@ impl TestCard {
         let height = (height.clamp(64, MAX_HEIGHT) & !1) as usize;
 
         // A host never skips a frame to save bits, and sends a keyframe only
-        // at the start and when the client asks for one. The card is flat
-        // colours, so a fixed quality stays far below any bit rate asked for.
+        // at the start and when the client asks for one. Without rate control
+        // the encoder keeps one quality throughout, and the card, all flat
+        // colours, stays far below any bit rate asked for.
+        //
+        // The two last settings save bits by leaving alone what looks
+        // unchanged, which leaves a faint trace behind the sun.
         let config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(bitrate_kbps.clamp(500, 20_000) * 1000))
             .max_frame_rate(FrameRate::from_hz(fps as f32))
             .rate_control_mode(RateControlMode::Off)
-            .qp(QpRange::new(22, 22))
             .skip_frames(false)
-            .scene_change_detect(false);
+            .scene_change_detect(false)
+            .background_detection(false)
+            .adaptive_quantization(false);
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config).ok()?;
 
         let ground = Yuv::from_rgb(0x15, 0x13, 0x12);
@@ -294,6 +299,42 @@ mod tests {
         assert!(card.next(false).expect("a first picture").keyframe);
         assert!(!card.next(false).expect("a second picture").keyframe);
         assert!(card.next(true).expect("a requested picture").keyframe);
+    }
+
+    #[test]
+    fn the_sun_leaves_no_trace_on_the_ground() {
+        use openh264::decoder::Decoder;
+
+        let (width, height, fps) = (640.0f32, 360.0f32, 30.0f32);
+        let mut card = TestCard::new(640, 360, 30, 2000).expect("the encoder starts");
+        let mut decoder = Decoder::new().expect("the decoder starts");
+        let ground = i32::from(Yuv::from_rgb(0x15, 0x13, 0x12).0);
+
+        // Three quarters of the sun's way round.
+        let last = 6 * 30 - 1;
+        for number in 0..=last {
+            let data = card.next(false).expect("a picture").data.to_vec();
+            let decoded = decoder.decode(&data).expect("it decodes").expect("a picture comes out");
+            if number < last {
+                continue;
+            }
+            let angle = number as f32 / fps * std::f32::consts::TAU / 8.0;
+            let moon = (width / 2.0, height * 0.42);
+            let sun = (moon.0 + angle.cos() * width / 4.0, moon.1 + angle.sin() * height / 9.0);
+            let (stride, _, _) = decoded.strides();
+            // Between the marker's edge and the colour bars, away from the discs.
+            for row in 40..300 {
+                for column in 0..640 {
+                    let away = |disc: (f32, f32)| {
+                        (column as f32 - disc.0).hypot(row as f32 - disc.1) > height / 7.0 + 12.0
+                    };
+                    if away(sun) && away(moon) {
+                        let luma = i32::from(decoded.y()[row * stride + column]);
+                        assert!((luma - ground).abs() <= 2, "{luma} at {column}, {row}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

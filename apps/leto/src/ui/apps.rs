@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use egui::{
-    Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Stroke, StrokeKind,
-    TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
+    Align, Align2, Color32, CursorIcon, FontId, Key, Layout, Rect, RichText, Sense, Stroke,
+    StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
 };
 use leto_core::model::{AppSummary, HostId, Reachability};
 
@@ -80,12 +80,15 @@ pub fn show(ui: &mut Ui, state: &mut State, view: &AppsView, covers: &Covers, no
         ui.spacing_mut().item_spacing.y = 4.0;
         widgets::title(ui, &host.name);
         let online = host.reachability != Reachability::Offline;
-        let state_text = match (online, host.busy) {
-            (false, _) => "Offline",
-            (true, true) => "An app is running",
-            (true, false) => "Ready",
+        let kind = host.kind.name();
+        let line = match (online, host.busy) {
+            (false, _) => format!("Offline · {kind}"),
+            // The card below says which app is running.
+            (true, true) if shows_running_card(view) => kind.to_owned(),
+            (true, true) => format!("An app is running · {kind}"),
+            (true, false) => format!("Ready · {kind}"),
         };
-        ui.label(widgets::dim(format!("{state_text} · {}", host.kind.name())));
+        ui.label(widgets::dim(line));
     });
     ui.add_space(14.0);
 
@@ -109,12 +112,26 @@ pub fn show(ui: &mut Ui, state: &mut State, view: &AppsView, covers: &Covers, no
             )));
         }
         Loadable::Ready(apps) => {
-            widgets::note(
-                ui,
-                "Leto cannot start a stream yet. Playing these apps is the next part of this step.",
-            );
-            ui.add_space(12.0);
-            grid(ui, &host.id, apps, covers);
+            let mut chosen = None;
+            let mut quit = false;
+            if let Some(notice) = &view.notice {
+                let color = if notice.problem { theme::PROBLEM } else { theme::DIM };
+                ui.add(egui::Label::new(RichText::new(&notice.text).color(color)).wrap());
+                ui.add_space(4.0);
+            }
+            if shows_running_card(view) {
+                let (resume, asked_to_quit) = running_card(ui, view);
+                chosen = resume.then(|| view.running()).flatten();
+                quit = asked_to_quit;
+                ui.add_space(8.0);
+            }
+            chosen = grid(ui, view, apps, covers).or(chosen);
+
+            if quit {
+                state.quit_app();
+            } else if let Some(app) = chosen {
+                state.play(app);
+            }
         }
     }
 
@@ -125,28 +142,84 @@ pub fn show(ui: &mut Ui, state: &mut State, view: &AppsView, covers: &Covers, no
     }
 }
 
-fn grid(ui: &mut Ui, host: &HostId, apps: &[AppSummary], covers: &Covers) {
+fn shows_running_card(view: &AppsView) -> bool {
+    view.host.running_app.is_some() && matches!(view.apps, Loadable::Ready(_))
+}
+
+/// Says which app is running on the PC and offers to go back to it or to
+/// close it. Returns which of the two the person asked for.
+fn running_card(ui: &mut Ui, view: &AppsView) -> (bool, bool) {
+    let mut resume = false;
+    let mut quit = false;
+    egui::Frame::new()
+        .fill(theme::SURFACE)
+        .corner_radius(theme::CARD_RADIUS)
+        .inner_margin(egui::Margin::symmetric(16, 10))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(40.0);
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 4.0, theme::READY);
+                let text = match view.running() {
+                    Some(app) => format!("{} is running", app.title),
+                    None => "An app is running".to_owned(),
+                };
+                ui.add(egui::Label::new(text).truncate());
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if view.quitting {
+                        widgets::waiting(ui, "Closing…");
+                        return;
+                    }
+                    if view.running().is_some() {
+                        resume = widgets::primary_button(ui, "Resume").clicked();
+                    }
+                    quit = widgets::quiet_button(ui, "Close it").clicked();
+                });
+            });
+        });
+    (resume, quit)
+}
+
+/// The covers. Returns the app the person chose, if any.
+fn grid<'a>(
+    ui: &mut Ui,
+    view: &AppsView,
+    apps: &'a [AppSummary],
+    covers: &Covers,
+) -> Option<&'a AppSummary> {
     let available = ui.available_width();
     let columns = (((available + GAP) / (TILE_MIN_WIDTH + GAP)).floor() as usize).clamp(2, 7);
     let width = ((available - GAP * (columns as f32 - 1.0)) / columns as f32).min(210.0);
+    let mut chosen = None;
     for row in apps.chunks(columns) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = GAP;
             for app in row {
-                tile(ui, app, covers.of(host, app.id), width);
+                let running = view.host.running_app == Some(app.id);
+                if tile(ui, app, covers.of(&view.host.id, app.id), width, running) {
+                    chosen = Some(app);
+                }
             }
         });
         ui.add_space(GAP - ui.spacing().item_spacing.y);
     }
+    chosen
 }
 
-fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32) {
+/// One app: its cover and its title. Returns true when the person chose it.
+fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32, running: bool) -> bool {
     let cover_size = vec2(width, (width * COVER_SHAPE).round());
-    let (rect, response) = ui.allocate_exact_size(cover_size + vec2(0.0, 30.0), Sense::hover());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, app.title.as_str()));
+    let (rect, response) = ui.allocate_exact_size(cover_size + vec2(0.0, 30.0), Sense::click());
+    response.widget_info(|| {
+        let name = if running { format!("Resume {}", app.title) } else { app.title.clone() };
+        egui::WidgetInfo::labeled(egui::Role::Button, true, name)
+    });
+    let chosen = response.clicked();
     if !ui.is_rect_visible(rect) {
-        return;
+        return chosen;
     }
+    let lit = response.hovered() || response.has_focus();
     let picture = Rect::from_min_size(rect.min, cover_size);
     let painter = ui.painter();
 
@@ -170,8 +243,21 @@ fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32) {
             );
         }
     }
-    let border = Stroke::new(1.0, theme::LINE);
+    let border = if lit { Stroke::new(2.0, theme::SUN) } else { Stroke::new(1.0, theme::LINE) };
     painter.rect_stroke(picture, theme::CONTROL_RADIUS, border, StrokeKind::Inside);
+
+    if running {
+        let font = FontId::proportional(11.5);
+        let label = painter.layout_no_wrap("Running".to_owned(), font, theme::MOON);
+        let badge = Rect::from_min_size(
+            picture.left_top() + vec2(8.0, 8.0),
+            vec2(label.size().x + 26.0, 20.0),
+        );
+        painter.rect_filled(badge, 6, Color32::from_black_alpha(190));
+        painter.circle_filled(badge.left_center() + vec2(10.0, 0.0), 3.5, theme::READY);
+        let text = pos2(badge.left() + 19.0, badge.center().y - label.size().y / 2.0);
+        painter.galley(text, label, theme::MOON);
+    }
 
     if app.hdr {
         let badge = Rect::from_min_size(
@@ -186,10 +272,12 @@ fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32) {
     let title = pos2(rect.left() + 2.0, picture.bottom() + 8.0);
     let drawn =
         widgets::line(painter, title, &app.title, theme::BODY - 0.5, theme::MOON, width - 4.0);
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
     // The whole title for the ones that were cut.
     if drawn.width() >= width - 6.0 {
         response.on_hover_text(&app.title);
     }
+    chosen
 }
 
 /// The part of a picture of size `picture` that fills a frame of size
