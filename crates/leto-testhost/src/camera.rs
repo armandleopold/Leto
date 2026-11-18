@@ -7,11 +7,12 @@
 
 use std::{
     io::{self, Read, Write},
-    net::{TcpListener, TcpStream, UdpSocket},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -117,8 +118,8 @@ impl Cameras {
             .checked_add(OFFSET)
             .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no port that high"))?;
         let listener = TcpListener::bind((interface, port))?;
+        // With no limit on how long it waits for a packet: see `receive`.
         let socket = UdpSocket::bind((interface, port))?;
-        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
         let cameras = Self { port, socket, largest, state: Mutex::default() };
         Ok((Arc::new(cameras), listener))
     }
@@ -221,11 +222,31 @@ impl Cameras {
         }
     }
 
-    /// Takes the packets of the camera until `stop` is set.
+    /// Takes the packets of the camera until `stop` is set and
+    /// [`Self::wake`] was called.
+    ///
+    /// It waits for each packet as long as it takes. It used to wait fifty
+    /// milliseconds at a time, to look at `stop` in between, and on Windows
+    /// packets then went missing when the computer was busy: sent, and never
+    /// seen here. On GitHub's runner that was two of the sixteen that
+    /// `every_packet_is_taken_however_busy_the_computer_is` sends, and none
+    /// on Linux. Microsoft says of a socket whose wait ran out of time that
+    /// it should not be used any more, and of TCP that data may be lost
+    /// because the wait can be cancelled just as it would have ended. That
+    /// this is what happened to those packets is likely, and not proven.
     pub fn receive(&self, stop: &AtomicBool) {
         let mut packet = [0u8; 2048];
-        while !stop.load(Ordering::SeqCst) {
-            let Ok((length, _)) = self.socket.recv_from(&mut packet) else { continue };
+        loop {
+            let received = self.socket.recv_from(&mut packet);
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let Ok((length, _)) = received else {
+                // Nothing a client sends does this. Not in a tight loop, in
+                // case it lasts.
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            };
             let mut state = self.state();
             let State { receiving, undecoded, report, seen, .. } = &mut *state;
             // Nobody was told to send: whatever this is, it is not looked at.
@@ -254,6 +275,21 @@ impl Cameras {
             report.refused = tally.refused;
             report.lost = tally.lost + *undecoded;
         }
+    }
+
+    /// Lets [`Self::receive`] see that `stop` was set, by sending it a
+    /// packet of the host's own: for whoever set `stop`, after setting it.
+    pub fn wake(&self) {
+        let Ok(mut here) = self.socket.local_addr() else { return };
+        if here.ip().is_unspecified() {
+            // The port is open on every address of this computer, and this
+            // is the one that always exists.
+            here.set_ip(match here {
+                SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+            });
+        }
+        let _ = self.socket.send_to(&[0], here);
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -379,8 +415,6 @@ fn write_response(stream: &mut impl Write, status: u16, body: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
-
     use leto_return::{api::CameraAsk, camera::Packer};
 
     use super::*;
@@ -489,7 +523,7 @@ mod tests {
     fn what_arrives_before_anyone_was_told_to_send_is_not_looked_at() {
         let cameras = cameras();
         let stop = Arc::new(AtomicBool::new(false));
-        let receiving = std::thread::spawn({
+        let receiving = thread::spawn({
             let (cameras, stop) = (Arc::clone(&cameras), Arc::clone(&stop));
             move || cameras.receive(&stop)
         });
@@ -500,7 +534,7 @@ mod tests {
         stray
             .pack(0, true, b"not for this host", |packet| drop(sender.send_to(packet, to)))
             .unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(100));
         assert_eq!(cameras.report(), CameraReport::default());
 
         // Once a camera is open, a packet under another key is refused.
@@ -509,11 +543,12 @@ mod tests {
         let start = Instant::now();
         while cameras.report().refused == 0 {
             assert!(start.elapsed() < Duration::from_secs(10), "the packet never arrived");
-            std::thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(cameras.report().pictures, 0);
 
         stop.store(true, Ordering::SeqCst);
+        cameras.wake();
         receiving.join().unwrap();
     }
 
@@ -575,6 +610,7 @@ mod tests {
         );
 
         stop.store(true, Ordering::SeqCst);
+        cameras.wake();
         receiving.join().unwrap();
     }
 }
