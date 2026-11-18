@@ -145,6 +145,21 @@ impl Transport {
         path: &str,
         body: Option<&[u8]>,
     ) -> Result<Reply, Error> {
+        // Not the query, as for the GameStream API.
+        let shown = path.split('?').next().unwrap_or_default();
+        log::debug!("{method} https://{hostport}{shown}");
+        self.exchange_request(method, hostport, path, body).inspect_err(|error| {
+            log::debug!("{method} https://{hostport}{shown} failed: {error:?}")
+        })
+    }
+
+    fn exchange_request(
+        &self,
+        method: &str,
+        hostport: &str,
+        path: &str,
+        body: Option<&[u8]>,
+    ) -> Result<Reply, Error> {
         let config = self.tls.clone().ok_or(Error::Unauthenticated)?;
         let tcp = connect(hostport, self.timeout)?;
         let peer = tcp.peer_addr()?;

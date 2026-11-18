@@ -313,6 +313,9 @@ pub(crate) fn handle(stream: TcpStream, shared: &Shared, cameras: &Cameras) {
     let mut stream = StreamOwned::new(connection, stream);
     // Reading the request runs the handshake first.
     let Some(request) = read_request(&mut stream) else { return };
+    if crate::resumed(&stream.conn) {
+        return;
+    }
     let device =
         stream.conn.peer_certificates().and_then(|chain| chain.first()).map(|c| c.to_vec());
     // Like the rest of the host, only for a device it is paired with.
