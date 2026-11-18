@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#151312" />
+    <meta name="color-scheme" content="dark" />
+    <title>Leto</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon.ico" sizes="32x32" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #151312;
+      }
+
+      /* The app paints the whole page. */
+      #leto_canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        outline: none;
+      }
+
+      /* Shown until the first frame, and kept if the app cannot start. */
+      #leto_status {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        margin: 0;
+        padding: 16px;
+        color: #a8a298;
+        font: 16px/1.4 system-ui, sans-serif;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="leto_canvas"></canvas>
+    <p id="leto_status">Loading Leto…</p>
+    <!-- leto.js and leto_bg.wasm are generated next to this page by `cargo xtask web`. -->
+    <script type="module">
+      import init from "./leto.js";
+
+      init().catch((error) => {
+        console.error(error);
+        document.getElementById("leto_status").textContent =
+          "Leto could not start in this browser. The console has the details.";
+      });
+    </script>
+  </body>
+</html>

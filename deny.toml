@@ -1,0 +1,53 @@
+# Rules for third-party crates, enforced with `cargo deny check`.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Only look at what Leto ships: the targets it supports.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "aarch64-linux-android",
+    "aarch64-apple-ios",
+    "wasm32-unknown-unknown",
+]
+
+[advisories]
+version = 2
+# No exceptions. Add an advisory id here only with a comment saying why.
+ignore = []
+
+[licenses]
+version = 2
+# Licences that may be combined with Leto's GPL-3.0-only code.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "GPL-3.0-only",
+    # For moonlight-common-rust, the client protocol core added in the next step.
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # Fonts bundled with egui's default font set.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+
+[bans]
+# Two versions of one crate is common in a UI stack. Report it, do not fail.
+multiple-versions = "warn"
+wildcards = "deny"
+# Crates inside this workspace depend on each other by path.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Git dependencies must be listed here one by one.
+allow-git = []
