@@ -4,10 +4,10 @@ use egui::{Align, Layout, RichText, Sense, Vec2};
 use leto_core::{brand, platform::Platform};
 
 use crate::{
-    backend::{Backend, Unavailable},
+    backend::{Backend, Door, Unavailable},
     state::{Event, Screen, State},
     theme,
-    ui::{self, apps::Covers, icons, stream::Player, widgets},
+    ui::{self, apps::Covers, gate, icons, stream::Player, widgets},
 };
 
 /// Displayed size of the logo in the top bar, in points. The image is larger,
@@ -20,6 +20,10 @@ pub struct LetoApp {
     state: State,
     covers: Covers,
     player: Player,
+    /// The code a browser types to be let in by its bridge.
+    gate: gate::Form,
+    /// The backend took requests in the last frame.
+    was_open: bool,
 }
 
 impl LetoApp {
@@ -32,6 +36,8 @@ impl LetoApp {
             state: State::new(),
             covers: Covers::default(),
             player: Player::default(),
+            gate: gate::Form::default(),
+            was_open: false,
         }
     }
 }
@@ -42,15 +48,37 @@ impl eframe::App for LetoApp {
         // interface must not act on Tab, Enter or Escape itself.
         if matches!(&self.state.screen, Screen::Stream(view) if view.connected) {
             self.player.take_keyboard(raw_input);
+            // A browser reports how the mouse itself moved to the page, not
+            // to egui.
+            #[cfg(target_arch = "wasm32")]
+            raw_input
+                .events
+                .extend(crate::window::mouse_moves().into_iter().map(egui::Event::MouseMoved));
         } else {
             #[cfg(not(target_arch = "wasm32"))]
             crate::clipboard::shortcuts(raw_input);
         }
     }
 
+    /// What shows where the app paints nothing. In a browser that is the
+    /// page: the pictures of a stream are there, on a canvas behind this
+    /// one, and every screen paints its own ground.
+    #[cfg(target_arch = "wasm32")]
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = ui.input(|input| input.time);
-        let unavailable = self.backend.unavailable();
+        let door = self.backend.door();
+        let open = door == Door::Open;
+        if open != self.was_open {
+            // What was on screen belongs to a backend that is gone, or was
+            // never there: start from the list of PCs.
+            self.was_open = open;
+            self.state = State::new();
+            self.gate = gate::Form::default();
+        }
 
         for event in self.backend.events() {
             match event {
@@ -60,13 +88,13 @@ impl eframe::App for LetoApp {
                 other => self.state.apply(other, now),
             }
         }
-        if unavailable.is_none() {
+        if open {
             self.state.tick(now);
         }
 
-        match (&unavailable, self.state.screen.clone()) {
+        match (&door, self.state.screen.clone()) {
             // A stream takes the whole window: no bar, no margins.
-            (None, Screen::Stream(view)) => {
+            (Door::Open, Screen::Stream(view)) => {
                 if let Some(picture) = self.backend.take_picture() {
                     self.player.picture(ui.ctx(), picture);
                 }
@@ -85,28 +113,35 @@ impl eframe::App for LetoApp {
                 self.backend.input(inputs);
                 self.backend.place_picture(self.player.hole());
             }
-            (unavailable, screen) => {
+            (door, screen) => {
                 self.player.clear(ui.ctx());
                 self.backend.place_picture(None);
                 let ground = egui::Frame::new().fill(theme::GROUND);
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
                     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                        widgets::page(ui, |ui| match (unavailable, screen) {
-                            (Some(problem), _) => out_of_order(ui, problem),
-                            (None, Screen::Pcs) => {
+                        widgets::page(ui, |ui| match (door, screen) {
+                            (Door::Closed(problem), _) => out_of_order(ui, problem),
+                            (Door::Opening { failed }, _) => gate::reaching(ui, *failed),
+                            (Door::Code { refused, checking }, _) => {
+                                let code = gate::code(ui, &mut self.gate, *refused, *checking);
+                                if let Some(code) = code {
+                                    self.backend.knock(&code);
+                                }
+                            }
+                            (Door::Open, Screen::Pcs) => {
                                 ui::pcs::show(ui, &mut self.state, now);
                                 ui.add_space(24.0);
                                 ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
                             }
-                            (None, Screen::Pairing(pairing)) => {
+                            (Door::Open, Screen::Pairing(pairing)) => {
                                 ui::pairing::show(ui, &mut self.state, &pairing, now);
                             }
-                            (None, Screen::Apps(view)) => {
+                            (Door::Open, Screen::Apps(view)) => {
                                 ui::apps::show(ui, &mut self.state, &view, &self.covers, now);
                             }
                             // Handled above.
-                            (None, Screen::Stream(_)) => {}
+                            (Door::Open, Screen::Stream(_)) => {}
                         });
                     });
                 });
@@ -125,7 +160,7 @@ impl eframe::App for LetoApp {
         for request in self.state.take_requests() {
             self.backend.send(request);
         }
-        if unavailable.is_none() && self.state.screen == Screen::Pcs {
+        if open && self.state.screen == Screen::Pcs {
             // Wake up for the next search even if nobody touches the app.
             ui.ctx().request_repaint_after_secs(1.0);
         }

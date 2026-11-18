@@ -10,13 +10,10 @@ use leto_client::{
 };
 
 use super::{
-    Picture, Unavailable, gamepad,
+    Door, Picture, Unavailable, decode_cover, gamepad,
     stream::{Outlet, Screen, Sound},
 };
 use crate::state::{Event, Request};
-
-/// Covers are shown small: anything wider is scaled down to this.
-const COVER_WIDTH: u32 = 360;
 
 pub struct Backend {
     /// The engine at work for this window, or why it could not start.
@@ -76,10 +73,19 @@ impl Backend {
         Self { service, events }
     }
 
-    pub fn unavailable(&self) -> Option<Unavailable> {
-        let explanation = self.service.as_ref().err()?.clone();
-        Some(Unavailable { title: "Leto could not start", explanation })
+    /// Open when the engine started, closed for good when it did not.
+    pub fn door(&self) -> Door {
+        match &self.service {
+            Ok(_) => Door::Open,
+            Err(explanation) => Door::Closed(Unavailable {
+                title: "Leto could not start",
+                explanation: explanation.clone(),
+            }),
+        }
     }
+
+    /// Nobody asks the desktop app for a code.
+    pub fn knock(&self, _code: &str) {}
 
     /// The news that arrived since the last call.
     pub fn events(&self) -> Vec<Event> {
@@ -118,37 +124,5 @@ impl Backend {
             *desk.outlet.lock().unwrap_or_else(PoisonError::into_inner) = Arc::default();
         }
         service.ask(request);
-    }
-}
-
-/// Turns the bytes of an image file into pixels, scaled down for the grid.
-fn decode_cover(bytes: &[u8]) -> Option<egui::ColorImage> {
-    let image = image::load_from_memory(bytes).ok()?.into_rgba8();
-    let image = if image.width() > COVER_WIDTH {
-        let height = u64::from(image.height()) * u64::from(COVER_WIDTH) / u64::from(image.width());
-        let height = u32::try_from(height).ok()?.max(1);
-        image::imageops::resize(&image, COVER_WIDTH, height, image::imageops::FilterType::Triangle)
-    } else {
-        image
-    };
-    let size = [usize::try_from(image.width()).ok()?, usize::try_from(image.height()).ok()?];
-    Some(egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_wide_cover_is_scaled_down_and_a_broken_one_is_dropped() {
-        let wide = image::RgbaImage::from_pixel(720, 1080, image::Rgba([255, 107, 53, 255]));
-        let mut file = std::io::Cursor::new(Vec::new());
-        wide.write_to(&mut file, image::ImageFormat::Png).expect("a PNG can be written to memory");
-
-        let cover = decode_cover(file.get_ref()).expect("a valid PNG decodes");
-        assert_eq!(cover.size, [360, 540]);
-        assert_eq!(cover.pixels[0], egui::Color32::from_rgb(255, 107, 53));
-
-        assert!(decode_cover(b"not an image").is_none());
     }
 }

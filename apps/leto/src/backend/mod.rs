@@ -4,6 +4,9 @@
 //! browser page cannot open sockets, so the web build asks the bridge that
 //! served the page, which runs the same engine next to the PC.
 
+// The rules of the web build that need no browser, tested on the desktop.
+#[cfg(any(target_arch = "wasm32", test))]
+mod flow;
 #[cfg(not(target_arch = "wasm32"))]
 mod gamepad;
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,6 +20,33 @@ mod web;
 pub use native::Backend;
 #[cfg(target_arch = "wasm32")]
 pub use web::Backend;
+
+/// Covers are shown small: anything wider is scaled down to this.
+const COVER_WIDTH: u32 = 360;
+
+/// Whether the backend takes requests, and what is in the way when it does
+/// not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// The desktop app has its engine or it does not: nothing to wait for, and
+// nobody to ask for a code.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub enum Door {
+    /// The backend takes requests.
+    Open,
+    /// The page is reaching its bridge. `failed` once an attempt has: the
+    /// bridge is not answering.
+    Opening { failed: bool },
+    /// The bridge does not know this browser, and wants the code it shows
+    /// where it runs.
+    Code {
+        /// The code last given was not the one.
+        refused: bool,
+        /// The bridge is looking at a code.
+        checking: bool,
+    },
+    /// The backend cannot work at all.
+    Closed(Unavailable),
+}
 
 /// Why the backend can do nothing, in words for the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,4 +65,36 @@ pub enum Picture {
     /// says how large they are. The interface leaves a hole for them and
     /// says where it is with `Backend::place_picture`.
     Behind([usize; 2]),
+}
+
+/// Turns the bytes of an image file into pixels, scaled down for the grid.
+fn decode_cover(bytes: &[u8]) -> Option<egui::ColorImage> {
+    let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let image = if image.width() > COVER_WIDTH {
+        let height = u64::from(image.height()) * u64::from(COVER_WIDTH) / u64::from(image.width());
+        let height = u32::try_from(height).ok()?.max(1);
+        image::imageops::resize(&image, COVER_WIDTH, height, image::imageops::FilterType::Triangle)
+    } else {
+        image
+    };
+    let size = [usize::try_from(image.width()).ok()?, usize::try_from(image.height()).ok()?];
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wide_cover_is_scaled_down_and_a_broken_one_is_dropped() {
+        let wide = image::RgbaImage::from_pixel(720, 1080, image::Rgba([255, 107, 53, 255]));
+        let mut file = std::io::Cursor::new(Vec::new());
+        wide.write_to(&mut file, image::ImageFormat::Png).expect("a PNG can be written to memory");
+
+        let cover = decode_cover(file.get_ref()).expect("a valid PNG decodes");
+        assert_eq!(cover.size, [360, 540]);
+        assert_eq!(cover.pixels[0], egui::Color32::from_rgb(255, 107, 53));
+
+        assert!(decode_cover(b"not an image").is_none());
+    }
 }

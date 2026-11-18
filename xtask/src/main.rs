@@ -252,7 +252,7 @@ fn web() -> Result<(), String> {
     copy_files(&root.join("assets/brand/web"), &out)?;
 
     eprintln!("xtask: web client ready in {}", out.display());
-    eprintln!("xtask: try it with `python3 -m http.server --directory dist/web`");
+    eprintln!("xtask: serve it with `cargo run -p leto-cli -- bridge`");
     Ok(())
 }
 
