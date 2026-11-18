@@ -167,7 +167,10 @@ passes them on.
 - **Gamepads** are followed by one thread of the backend (`backend/gamepad.rs`,
   on [gilrs](https://gitlab.com/gilrs-project/gilrs)). Each stream hears of
   every gamepad once, then of each change. Buttons are named by place: A is
-  the lowest of the four.
+  the lowest of the four. A browser says nothing when a button moves, so the
+  web build looks at the gamepads itself, 125 times a second while a stream is
+  connected (`backend/web/gamepad.rs`). What a PC is told is decided once for
+  both, in `backend/pads.rs`.
 - Apollo decides per device which of keyboard, mouse and gamepad it accepts.
   The engine reports it when the stream connects (`Session::input_allowed`),
   and the bar over the picture says which permission to tick when one is

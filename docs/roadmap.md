@@ -38,7 +38,9 @@ Progress:
 
 What the web client does not do yet:
 
-- Gamepads. The browser has them, and nothing reads them yet.
+- Gamepads whose layout the browser does not know. It names the buttons of
+  the usual ones ("standard" in its words), and Leto leaves the others out
+  instead of guessing which button is which.
 - Starting the bridge from the app. It is a command for now, and the code it
   asks a new browser for is printed in its terminal.
 - Reaching the bridge from outside the home network. It is built for the
