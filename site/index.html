@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leto · Bureau à distance et jeu en streaming, réunis</title>
+  <meta name="description" content="Leto réunit l'hôte qui partage un PC et les clients pour ordinateur, téléphone et navigateur, dans une seule application écrite en Rust et compatible Moonlight.">
+  <meta name="theme-color" content="#151312">
+  <meta property="og:title" content="Leto">
+  <meta property="og:description" content="Bureau à distance et jeu en streaming, réunis dans une seule application.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://leto.re/">
+  <meta property="og:image" content="https://leto.re/img/applications.webp">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-row">
+      <a href="#" class="brand"><img src="img/leto-logo.svg" alt="Leto" width="105" height="30"></a>
+      <nav aria-label="Sections">
+        <a href="#pourquoi">Pourquoi</a>
+        <a href="#apercu">Aperçu</a>
+        <a href="#etat">Où en est Leto</a>
+        <a href="#route">Feuille de route</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="pill"><span class="dot"></span>En développement · pas encore de version à télécharger</p>
+          <h1>Le bureau à distance et le jeu en streaming, <em>réunis</em>.</h1>
+          <p class="lead">Une seule application, écrite en Rust, pour le PC que vous partagez et pour chaque appareil depuis lequel vous l'atteignez : ordinateur, téléphone et navigateur.</p>
+          <p class="lead small">Leto parle le protocole de Moonlight. Il marche avec les PC qui font tourner Apollo ou Sunshine, et part du travail de leurs communautés.</p>
+          <div class="cta">
+            <a class="btn primary" href="#etat">Voir où en est Leto</a>
+            <a class="btn" href="#apercu">Aperçu de l'interface</a>
+          </div>
+        </div>
+        <figure class="hero-shot">
+          <img src="img/applications.webp" alt="Leto affiche les applications d'un PC nommé Salon, le Bureau est en cours et un bouton Reprendre le relance." width="1440" height="900">
+        </figure>
+      </div>
+    </section>
+
+    <section id="pourquoi" class="wrap">
+      <h2>Pourquoi Leto</h2>
+      <p class="intro">Aujourd'hui, partager un PC demande un serveur, un client pour l'ordinateur, un autre pour le téléphone et un dernier pour le navigateur, qui ne se ressemblent pas. Leto veut les remplacer par une seule application.</p>
+      <div class="cards">
+        <article class="card">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
+          <h3>Une seule application</h3>
+          <p>Le même Leto, avec la même interface, sur Windows, dans le navigateur et bientôt sur Android. Puis, à terme, du côté du PC partagé aussi.</p>
+        </article>
+        <article class="card">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></svg></div>
+          <h3>Simple d'abord</h3>
+          <p>Il doit marcher sans ouvrir de page de réglages. Les réglages que les habitués de Moonlight attendent restent à portée, derrière un engrenage.</p>
+        </article>
+        <article class="card">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></div>
+          <h3>Micro et caméra vers le PC</h3>
+          <p>Le but : que le micro et la caméra de l'appareil que vous tenez apparaissent sur le PC comme un micro et une webcam ordinaires.</p>
+        </article>
+        <article class="card">
+          <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg></div>
+          <h3>Compatible</h3>
+          <p>Leto se connecte aux PC qui font tourner Apollo ou Sunshine. L'hôte Leto, plus tard, devra accepter les clients Moonlight et Artemis existants.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="apercu" class="wrap">
+      <h2>Aperçu</h2>
+      <p class="intro">Ces captures viennent de l'application en développement. L'interface est en anglais pour l'instant, et les PC qu'on y voit sont l'hôte d'essai qui sert aux tests, pas un vrai PC de jeu.</p>
+      <div class="gallery">
+        <figure class="shot wide">
+          <img src="img/vos-pc.webp" alt="Écran Your PCs : deux PC trouvés sur le réseau, Bureau pas encore appairé et Salon prêt, et une carte pour ajouter un PC par son adresse." width="1440" height="900" loading="lazy">
+          <figcaption><strong>Vos PC.</strong> Leto trouve les PC du réseau. On appaire avec un code PIN, comme avec Moonlight.</figcaption>
+        </figure>
+        <figure class="shot wide">
+          <img src="img/navigateur.webp" alt="Un flux dans le navigateur, avec la barre du haut qui rappelle que Ctrl+Alt+Shift+Q rend la main." width="1440" height="900" loading="lazy">
+          <figcaption><strong>Dans le navigateur.</strong> Une petite passerelle sur le réseau relaie le flux, que le navigateur décode lui-même.</figcaption>
+        </figure>
+        <figure class="shot tall">
+          <img src="img/telephone.webp" alt="Sur un écran de téléphone, l'aperçu de la caméra et le niveau du micro." width="600" height="1200" loading="lazy">
+          <figcaption><strong>Caméra et micro.</strong> Un aperçu pour vérifier qu'on vous voit et qu'on vous entend.</figcaption>
+        </figure>
+        <figure class="shot wide">
+          <img src="img/parametres.webp" alt="Écran Settings : résolution et images par seconde natives, débit automatique, plein écran au démarrage, V-Sync, un écran à lui sur le PC." width="1440" height="900" loading="lazy">
+          <figcaption><strong>Réglages.</strong> Des valeurs par défaut qui marchent, et ce que Moonlight propose pour qui veut aller plus loin.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="etat" class="wrap">
+      <h2>Où en est Leto</h2>
+      <p class="intro">Leto est très jeune. Voici, honnêtement, ce qui a été essayé et ce qui ne l'a pas encore été.</p>
+      <div class="status">
+        <div class="col">
+          <h3><span class="tag ok">Essayé sur un vrai PC</span></h3>
+          <ul>
+            <li>Appairer Leto pour Windows avec un PC Windows 11 qui fait tourner Apollo.</li>
+            <li>Lancer un flux depuis ce PC : l'image, la souris et le clavier marchent.</li>
+          </ul>
+        </div>
+        <div class="col">
+          <h3><span class="tag test">Fait, essayé seulement sur l'hôte d'essai</span></h3>
+          <ul>
+            <li>Le son du PC.</li>
+            <li>Les manettes.</li>
+            <li>Le client Web et sa passerelle, essayés dans Chromium seulement.</li>
+            <li>Le micro de l'appareil envoyé au PC, pour les versions d'Apollo et de Sunshine qui le prennent. Aucun vrai micro n'a encore été capté.</li>
+          </ul>
+        </div>
+        <div class="col">
+          <h3><span class="tag wip">En cours</span></h3>
+          <ul>
+            <li>La caméra : capture, aperçu et envoi vers le PC.</li>
+            <li>Un flux qui se comporte comme Moonlight : plein écran, toutes les touches, écran virtuel sur le PC.</li>
+            <li>L'écran des réglages.</li>
+            <li>Le décodage par la carte graphique sous Windows, en AV1, H.265 ou H.264.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="note">Il n'y a pas encore de version à télécharger. Ce site sera mis à jour quand il y en aura une.</p>
+    </section>
+
+    <section id="route" class="wrap">
+      <h2>Feuille de route</h2>
+      <ol class="road">
+        <li class="done">
+          <span class="step">1</span>
+          <div><h3>Les fondations</h3><p>Le projet, l'interface, la marque, et le choix des projets libres sur lesquels Leto s'appuie.</p><span class="tag ok">Fait</span></div>
+        </li>
+        <li class="now">
+          <span class="step">2</span>
+          <div><h3>Un client pour Windows et le Web</h3><p>Trouver ses PC, appairer, jouer au clavier, à la souris et à la manette, depuis l'application ou un navigateur. Envoyer son micro et sa caméra.</p><span class="tag wip">En cours</span></div>
+        </li>
+        <li>
+          <span class="step">3</span>
+          <div><h3>Le client Android</h3><p>À partir de Super Artemis, renommé et habillé en Leto, avec une interface par défaut plus simple.</p><span class="tag">Pas commencé</span></div>
+        </li>
+        <li>
+          <span class="step">4</span>
+          <div><h3>L'hôte</h3><p>Apollo porté en Rust, Windows d'abord, avec la caméra et le micro reçus sur le PC. L'application Leto remplace les pages de configuration web d'Apollo.</p><span class="tag">Pas commencé</span></div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="wrap story">
+      <img src="img/leto-symbol.svg" alt="" width="96" height="96">
+      <div>
+        <h2>Pourquoi ce nom</h2>
+        <p>Dans la mythologie grecque, Léto est la mère d'Apollon et d'Artémis, le soleil et la lune. Leto part des projets qui portent leurs noms, Apollo et Artemis, eux-mêmes nés de Sunshine et Moonlight. Le logo le dit aussi : un croissant de lune qui entoure un soleil.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-grid">
+      <div>
+        <img src="img/leto-logo.svg" alt="Leto" width="84" height="24">
+        <p>Logiciel libre, sous licence GPL-3.0, comme Apollo et Sunshine.</p>
+      </div>
+      <div>
+        <p>Leto s'appuie sur le travail de
+          <a href="https://github.com/ClassicOldSong/Apollo">Apollo</a>,
+          <a href="https://github.com/ClassicOldSong/moonlight-android">Artemis</a>,
+          <a href="https://github.com/Arora-Sir/Super-Artemis">Super Artemis</a>,
+          <a href="https://github.com/LizardByte/Sunshine">Sunshine</a>,
+          <a href="https://moonlight-stream.org">Moonlight</a> et
+          <a href="https://github.com/MrCreativ3001/moonlight-common-rust">moonlight-common-rust</a>.
+          Leto n'est affilié à aucun de ces projets.</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
