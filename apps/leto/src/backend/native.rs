@@ -1,6 +1,9 @@
 //! The backend of the desktop app: the client engine on worker threads.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::{
+    cell::RefCell,
+    sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc},
+};
 
 use leto_client::{
     Client, Service, Shell,
@@ -8,10 +11,10 @@ use leto_client::{
     input::Input,
     service::{explain, sentence},
 };
-use leto_media::{Microphone, VOICE_FRAME};
+use leto_media::{Camera, Microphone, VOICE_FRAME};
 
 use super::{
-    Door, Picture, Unavailable, decode_cover, gamepad,
+    Door, Picture, Seen, Unavailable, decode_cover, gamepad,
     stream::{Outlet, Screen, Sound},
 };
 use crate::state::{Event, Request};
@@ -20,7 +23,24 @@ pub struct Backend {
     /// The engine at work for this window, or why it could not start.
     service: Result<Arc<Service<Desk>>, String>,
     events: mpsc::Receiver<Event>,
+    ctx: egui::Context,
+    /// The camera and the microphone while the person tries them out.
+    tried: RefCell<Tried>,
 }
+
+/// The camera and the microphone of this device, tried out with no PC
+/// involved: what they capture goes to the window and nowhere else.
+#[derive(Default)]
+struct Tried {
+    camera: Option<Camera>,
+    /// The picture the camera's pixels are taken into.
+    picture: leto_media::Picture,
+    microphone: Option<Microphone>,
+}
+
+/// Set to `card` in the environment, the camera is a test card: for trying
+/// the app on a device that has none.
+const CAMERA: &str = "LETO_CAMERA";
 
 /// What the engine works for on the desktop: this window.
 struct Desk {
@@ -108,7 +128,7 @@ impl Backend {
             }
             Err(error) => log::error!("the client engine did not start: {error}"),
         }
-        Self { service, events }
+        Self { service, events, ctx: ctx.clone(), tried: RefCell::default() }
     }
 
     /// Open when the engine started, closed for good when it did not.
@@ -176,6 +196,64 @@ impl Backend {
             voice.microphone = Some(opened.map_err(|error| sentence(&error.to_string()))?);
         }
         Ok(voice.microphone.as_ref().map(Microphone::level))
+    }
+
+    /// Captures the camera of this device while `on`, for the person to
+    /// look at, and stops capturing when it is not. Returns what it shows
+    /// when that is news, or why it cannot be used, in words for the person.
+    ///
+    /// Asked every frame. The camera is opened the first time, which takes
+    /// it a moment: until then there is no picture.
+    pub fn camera(&self, on: bool) -> Result<Option<Seen>, String> {
+        let mut tried = self.tried.borrow_mut();
+        let Tried { camera, picture, .. } = &mut *tried;
+        if !on {
+            *camera = None;
+            return Ok(None);
+        }
+        let capturing = camera.get_or_insert_with(|| {
+            let ctx = self.ctx.clone();
+            let news = move || ctx.request_repaint();
+            if std::env::var_os(CAMERA).is_some_and(|camera| camera == "card") {
+                Camera::test_card(news)
+            } else {
+                Camera::open(news)
+            }
+        });
+        match capturing.take(picture) {
+            Ok(true) => {
+                let size = [picture.width, picture.height];
+                let pixels = egui::ColorImage::from_rgba_premultiplied(size, &picture.rgba);
+                Ok(Some(Seen { picture: pixels, size }))
+            }
+            Ok(false) => Ok(None),
+            Err(error) => {
+                *camera = None;
+                Err(sentence(&error.to_string()))
+            }
+        }
+    }
+
+    /// Listens to the microphone of this device while `on`, for the person
+    /// to see that it hears them, and stops when it is not. Returns how
+    /// loud it is, from 0 to 1, or why it cannot be used.
+    ///
+    /// Asked every frame. Nothing of what it hears is kept or sent.
+    pub fn hear(&self, on: bool) -> Result<Option<f32>, String> {
+        let mut tried = self.tried.borrow_mut();
+        if !on {
+            tried.microphone = None;
+            return Ok(None);
+        }
+        if tried.microphone.as_ref().is_some_and(Microphone::is_lost) {
+            tried.microphone = None;
+            return Err("The microphone stopped. It may have been unplugged.".to_owned());
+        }
+        if tried.microphone.is_none() {
+            let opened = Microphone::open(|_| {});
+            tried.microphone = Some(opened.map_err(|error| sentence(&error.to_string()))?);
+        }
+        Ok(tried.microphone.as_ref().map(Microphone::level))
     }
 
     /// Passes what the person did on to the PC being watched, in order.

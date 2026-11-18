@@ -7,6 +7,8 @@
 //! and the stream come down. Pictures and sound arrive still encoded, and
 //! the browser's own decoders turn them into something to see and hear.
 
+mod camera;
+mod capture;
 mod codecs;
 mod gamepad;
 mod microphone;
@@ -29,12 +31,13 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{AudioContext, BinaryType, MessageEvent, WebSocket};
 
 use self::{
+    camera::Camera,
     gamepad::Gamepads,
     microphone::Microphone,
     screen::{Canvas, Screen, Shown},
     speaker::Speaker,
 };
-use super::{Door, Picture, Unavailable, decode_cover};
+use super::{Door, Picture, Seen, Unavailable, decode_cover};
 use crate::state::{Event, Request};
 
 /// Where the browser keeps the key its bridge gave it.
@@ -68,8 +71,12 @@ struct Inner {
     /// Made when first needed, then kept: a page gets few of each.
     canvas: Option<Rc<Canvas>>,
     speakers: Option<AudioContext>,
-    /// Times the browser was asked for the microphone.
+    /// Times the browser was asked for a microphone or a camera.
     asked: u32,
+    /// The camera and the microphone while the person tries them out, with
+    /// no PC involved: what they capture stays on the page.
+    camera: Device<Camera>,
+    ear: Device<Microphone>,
 }
 
 /// The WebSocket to the bridge, with what listens to it.
@@ -104,17 +111,19 @@ struct Stream {
     gamepads: Option<Gamepads>,
     /// The PC takes a microphone, and the stream is connected.
     listens: bool,
-    voice: Voice,
+    /// The microphone of this browser, which only ever captures for a
+    /// stream that is connected to a PC that takes one. It goes with the
+    /// stream.
+    voice: Device<Microphone>,
 }
 
-/// The microphone of this browser, which only ever captures for a stream
-/// that is connected to a PC that takes one. It goes with the stream.
-enum Voice {
+/// A microphone or a camera of this browser, from the asking on.
+enum Device<T> {
     Off,
     /// The browser was asked for it, for this many-th time, and has not
     /// answered: it may be asking the person.
     Asked(u32),
-    On(Microphone),
+    On(T),
     /// The browser gave none, and why.
     Refused(String),
 }
@@ -144,6 +153,8 @@ impl Backend {
                 canvas: None,
                 speakers: None,
                 asked: 0,
+                camera: Device::Off,
+                ear: Device::Off,
             }),
         });
         page.connect();
@@ -201,12 +212,12 @@ impl Backend {
         let inner = &mut *inner;
         let Some(stream) = &mut inner.stream else { return Ok(None) };
         // Whatever it was: letting go of a microphone stops it.
-        let voice = std::mem::replace(&mut stream.voice, Voice::Off);
+        let voice = std::mem::replace(&mut stream.voice, Device::Off);
         if !on || !stream.listens {
             return Ok(None);
         }
         match voice {
-            Voice::Off => {
+            Device::Off => {
                 let Some(speakers) = inner.speakers.clone() else {
                     return Err("This browser gave the page no sound, in or out.".to_owned());
                 };
@@ -214,7 +225,7 @@ impl Backend {
                 speaker::wake(&speakers);
                 inner.asked += 1;
                 let asked = inner.asked;
-                stream.voice = Voice::Asked(asked);
+                stream.voice = Device::Asked(asked);
                 let (page, listener) = (self.page.this.clone(), self.page.this.clone());
                 spawn_local(async move {
                     let packet = move |packet: &[u8]| {
@@ -229,19 +240,109 @@ impl Backend {
                 });
                 Ok(None)
             }
-            Voice::Asked(asked) => {
-                stream.voice = Voice::Asked(asked);
+            Device::Asked(asked) => {
+                stream.voice = Device::Asked(asked);
                 Ok(None)
             }
-            Voice::On(microphone) => match microphone.stopped() {
+            Device::On(microphone) => match microphone.stopped() {
                 Some(why) => Err(why.to_owned()),
                 None => {
                     let level = microphone.level();
-                    stream.voice = Voice::On(microphone);
+                    stream.voice = Device::On(microphone);
                     Ok(Some(level))
                 }
             },
-            Voice::Refused(why) => Err(why),
+            Device::Refused(why) => Err(why),
+        }
+    }
+
+    /// Captures the camera of this browser while `on`, for the person to
+    /// look at, and stops capturing when it is not. Returns what it shows
+    /// when that is news, or why it cannot be used, in words for the person.
+    ///
+    /// Asked every frame. The browser is asked for the camera the first
+    /// time, which is when it may ask the person. Until it answers nothing
+    /// is captured.
+    pub fn camera(&self, on: bool) -> Result<Option<Seen>, String> {
+        let mut inner = self.page.inner.borrow_mut();
+        // Whatever it was: letting go of a camera stops it.
+        let camera = std::mem::replace(&mut inner.camera, Device::Off);
+        if !on {
+            return Ok(None);
+        }
+        match camera {
+            Device::Off => {
+                inner.asked += 1;
+                let asked = inner.asked;
+                inner.camera = Device::Asked(asked);
+                let page = self.page.this.clone();
+                spawn_local(async move {
+                    let answer = Camera::open().await;
+                    if let Some(page) = page.upgrade() {
+                        page.camera_answered(asked, answer);
+                    }
+                });
+                Ok(None)
+            }
+            Device::Asked(asked) => {
+                inner.camera = Device::Asked(asked);
+                Ok(None)
+            }
+            Device::On(camera) => match camera.stopped() {
+                Some(why) => Err(why.to_owned()),
+                None => {
+                    let seen = camera.picture();
+                    inner.camera = Device::On(camera);
+                    Ok(seen)
+                }
+            },
+            Device::Refused(why) => Err(why),
+        }
+    }
+
+    /// Listens to the microphone of this browser while `on`, for the person
+    /// to see that it hears them, and stops when it is not. Returns how
+    /// loud it is, from 0 to 1, or why it cannot be used.
+    ///
+    /// Asked every frame. It is captured exactly as it would be for a PC,
+    /// so what works here works there, and nothing of it is sent.
+    pub fn hear(&self, on: bool) -> Result<Option<f32>, String> {
+        let mut inner = self.page.inner.borrow_mut();
+        let ear = std::mem::replace(&mut inner.ear, Device::Off);
+        if !on {
+            return Ok(None);
+        }
+        match ear {
+            Device::Off => {
+                // The microphone is heard at the pace of the page's sound.
+                let Some(speakers) = inner.speakers() else {
+                    return Err("This browser gave the page no sound, in or out.".to_owned());
+                };
+                inner.asked += 1;
+                let asked = inner.asked;
+                inner.ear = Device::Asked(asked);
+                let page = self.page.this.clone();
+                spawn_local(async move {
+                    let answer = Microphone::open(speakers, |_| {}).await;
+                    if let Some(page) = page.upgrade() {
+                        page.ear_answered(asked, answer);
+                    }
+                });
+                Ok(None)
+            }
+            Device::Asked(asked) => {
+                inner.ear = Device::Asked(asked);
+                Ok(None)
+            }
+            Device::On(microphone) => match microphone.stopped() {
+                Some(why) => Err(why.to_owned()),
+                None => {
+                    let level = microphone.level();
+                    inner.ear = Device::On(microphone);
+                    Ok(Some(level))
+                }
+            },
+            Device::Refused(why) => Err(why),
         }
     }
 
@@ -288,19 +389,24 @@ impl Backend {
 }
 
 impl Inner {
-    fn start_stream(&mut self, attempt: u64) {
-        self.end_stream();
-        // Now, while the browser knows the person just asked for something:
-        // that is when it gives a page its speakers.
+    /// The page's sound, made the first time and woken every time. Asked
+    /// for while the browser knows the person just asked for something:
+    /// that is when it gives a page its speakers.
+    fn speakers(&mut self) -> Option<AudioContext> {
         if self.speakers.is_none() {
             match speaker::speakers(SOUND_RATE) {
                 Ok(speakers) => self.speakers = Some(speakers),
                 Err(error) => log::warn!("the browser gave no speakers: {error}"),
             }
         }
-        if let Some(speakers) = &self.speakers {
-            speaker::wake(speakers);
-        }
+        let speakers = self.speakers.clone()?;
+        speaker::wake(&speakers);
+        Some(speakers)
+    }
+
+    fn start_stream(&mut self, attempt: u64) {
+        self.end_stream();
+        self.speakers();
         self.stream = Some(Stream {
             attempt,
             screen: None,
@@ -309,7 +415,7 @@ impl Inner {
             told: None,
             gamepads: None,
             listens: false,
-            voice: Voice::Off,
+            voice: Device::Off,
         });
     }
 
@@ -540,17 +646,44 @@ impl Page {
     fn microphone_answered(&self, asked: u32, answer: Result<Microphone, String>) {
         let mut inner = self.inner.borrow_mut();
         if let Some(stream) = &mut inner.stream
-            && matches!(stream.voice, Voice::Asked(waiting) if waiting == asked)
+            && matches!(stream.voice, Device::Asked(waiting) if waiting == asked)
         {
             stream.voice = match answer {
-                Ok(microphone) => Voice::On(microphone),
-                Err(why) => Voice::Refused(why),
+                Ok(microphone) => Device::On(microphone),
+                Err(why) => Device::Refused(why),
             };
             self.ctx.request_repaint();
         }
         // Otherwise nobody waits for this microphone any more: the switch
         // went off or the stream ended while the browser was asking. It is
         // let go of here, unused.
+    }
+
+    /// The browser answered the `asked`-th request, which was for the
+    /// camera the person tries out.
+    fn camera_answered(&self, asked: u32, answer: Result<Camera, String>) {
+        let mut inner = self.inner.borrow_mut();
+        if matches!(inner.camera, Device::Asked(waiting) if waiting == asked) {
+            inner.camera = match answer {
+                Ok(camera) => Device::On(camera),
+                Err(why) => Device::Refused(why),
+            };
+            self.ctx.request_repaint();
+        }
+        // Otherwise the person turned it off, or left, while the browser
+        // was asking: the camera is let go of here, unused.
+    }
+
+    /// The same for the microphone the person tries out.
+    fn ear_answered(&self, asked: u32, answer: Result<Microphone, String>) {
+        let mut inner = self.inner.borrow_mut();
+        if matches!(inner.ear, Device::Asked(waiting) if waiting == asked) {
+            inner.ear = match answer {
+                Ok(microphone) => Device::On(microphone),
+                Err(why) => Device::Refused(why),
+            };
+            self.ctx.request_repaint();
+        }
     }
 
     /// Sends a packet of the microphone to the bridge, for the PC.

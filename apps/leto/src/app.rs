@@ -5,11 +5,12 @@ use leto_core::{brand, platform::Platform};
 
 use crate::{
     backend::{Backend, Door, Unavailable},
-    state::{Event, Mic, Screen, State},
+    state::{Device, Devices, Event, Mic, Screen, State, Trial},
     theme,
     ui::{
         self,
         apps::Covers,
+        devices::Preview,
         gate, icons,
         stream::{Player, Sound},
         widgets,
@@ -26,6 +27,8 @@ pub struct LetoApp {
     state: State,
     covers: Covers,
     player: Player,
+    /// What the camera shows while the person tries it out.
+    preview: Preview,
     /// The code a browser types to be let in by its bridge.
     gate: gate::Form,
     /// The backend took requests in the last frame.
@@ -42,9 +45,37 @@ impl LetoApp {
             state: State::new(),
             covers: Covers::default(),
             player: Player::default(),
+            preview: Preview::default(),
             gate: gate::Form::default(),
             was_open: false,
         }
+    }
+}
+
+impl LetoApp {
+    /// Runs the camera and the microphone of this device as `tried` has
+    /// them, and no further: what is not on captures nothing. Returns how
+    /// loud the microphone is while it captures.
+    fn try_devices(&mut self, ctx: &egui::Context, tried: &Devices) -> Option<f32> {
+        let watching = tried.camera == Trial::On;
+        match self.backend.camera(watching) {
+            Ok(Some(seen)) => self.preview.show(ctx, seen),
+            Ok(None) => {}
+            Err(why) => self.state.device_failed(Device::Camera, why),
+        }
+        if !watching {
+            self.preview.clear();
+        }
+        let listening = tried.microphone == Trial::On;
+        let heard = self.backend.hear(listening).unwrap_or_else(|why| {
+            self.state.device_failed(Device::Microphone, why);
+            None
+        });
+        if watching || listening {
+            // What they capture changes all the time, touched or not.
+            ctx.request_repaint_after_secs(1.0 / 30.0);
+        }
+        heard
     }
 }
 
@@ -98,6 +129,14 @@ impl eframe::App for LetoApp {
             self.state.tick(now);
         }
 
+        // The camera and the microphone are tried out on one screen, and
+        // are off everywhere else.
+        let tried = match (&door, &self.state.screen) {
+            (Door::Open, Screen::Devices(devices)) => devices.clone(),
+            _ => Devices::default(),
+        };
+        let heard = self.try_devices(ui.ctx(), &tried);
+
         match (&door, self.state.screen.clone()) {
             // A stream takes the whole window: no bar, no margins.
             (Door::Open, Screen::Stream(view)) => {
@@ -146,6 +185,17 @@ impl eframe::App for LetoApp {
                                 ui::pcs::show(ui, &mut self.state, now);
                                 ui.add_space(24.0);
                                 ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
+                            }
+                            (Door::Open, Screen::Devices(devices)) => {
+                                let preview = &self.preview;
+                                ui::devices::show(
+                                    ui,
+                                    &mut self.state,
+                                    &devices,
+                                    preview,
+                                    heard,
+                                    now,
+                                );
                             }
                             (Door::Open, Screen::Pairing(pairing)) => {
                                 ui::pairing::show(ui, &mut self.state, &pairing, now);

@@ -24,9 +24,11 @@ lists their apps and streams one: you see its picture, hear its sound and
 play with the keyboard and the mouse of your device. It does so as a desktop
 app, with gamepads too, and in a browser, through a small bridge that runs on
 your network. Both send the microphone of your device to a PC that takes
-one, which Apollo and Sunshine only do in special builds for now. Nothing has
-been tried against a real PC yet, only against the stand-in host of the
-tests.
+one, which Apollo and Sunshine only do in special builds for now. Both show
+what your camera sees and whether your microphone hears you, on a screen of
+their own: sending the camera to a PC comes next. Nothing has been tried
+against a real PC yet, only against the stand-in host of the tests, and no
+real camera has been tried either.
 
 | Step | State |
 |---|---|

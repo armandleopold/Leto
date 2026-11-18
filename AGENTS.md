@@ -22,9 +22,9 @@ cargo run -p leto-cli -- bridge   # serves the web client to browsers
 Building needs a C++ compiler, for the H.264 codec (OpenH264, built from
 source). With [NASM](https://www.nasm.us) on the `PATH` the codec is built
 with its fast assembly routines; without it the build still works and
-decoding is several times slower. On Linux, sound needs the ALSA headers and
-gamepads need the udev headers (`libasound2-dev` and `libudev-dev` on Debian
-and Ubuntu).
+decoding is several times slower. On Linux, sound needs the ALSA headers,
+gamepads need the udev headers and the camera needs libclang
+(`libasound2-dev`, `libudev-dev` and `libclang-dev` on Debian and Ubuntu).
 
 No gaming PC at hand? This keeps a stand-in host running on this machine. The
 app finds it, and you type the PIN the app shows into its terminal. It streams
@@ -68,7 +68,12 @@ To check the browser's microphone without one, start Chromium with
 --use-file-for-fake-audio-capture=<a WAV file>`: the file plays as the
 microphone, and `voice` on the stand-in host saves what arrived. The browser
 treats a steady tone as noise and turns it down, so use a voice, or a tone
-only to check the pitch.
+only to check the pitch. The same two first flags give the browser a made-up
+camera.
+
+The desktop app has a made-up camera too: with `LETO_CAMERA=card` in its
+environment, the screen "Camera and microphone" shows a test card instead of
+the system's camera, read and converted as a camera's pictures are.
 
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
 and `targets` (a compile check for macOS, the web, Android and iOS). Each is

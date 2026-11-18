@@ -7,16 +7,19 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use js_sys::{Array, Float32Array, Reflect, Uint8Array};
+use js_sys::{Array, Float32Array, Uint8Array};
 use leto_core::bridge::{VOICE_PACKET, VOICE_RATE};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     AudioContext, AudioWorkletNode, AudioWorkletNodeOptions, ChannelCountMode, MediaStream,
-    MediaStreamAudioSourceNode, MediaStreamConstraints, MediaStreamTrack, MessageEvent,
+    MediaStreamAudioSourceNode, MediaStreamConstraints, MessageEvent,
 };
 
-use super::codecs::{self, AudioData, AudioEncoder, EncodedAudioChunk, object, words};
+use super::{
+    capture::{self, Kind, Tracks},
+    codecs::{self, AudioData, AudioEncoder, EncodedAudioChunk, object, words},
+};
 
 /// The script that gathers what the microphone captures, next to the page,
 /// and the name it gives itself.
@@ -29,7 +32,6 @@ const PIECE: u32 = VOICE_RATE / 1000 * VOICE_PACKET.as_millis() as u32;
 /// Bits per second, as in the desktop app: plenty for a voice.
 const BIT_RATE: u32 = 48_000;
 
-const STOPPED: &str = "The microphone stopped. It may have been unplugged.";
 const NOT_ENCODED: &str = "The browser could not encode the microphone.";
 
 /// Captures the browser's microphone and encodes it.
@@ -47,22 +49,6 @@ pub struct Microphone {
     gathered: Closure<dyn FnMut(MessageEvent)>,
     _encoded: Closure<dyn FnMut(EncodedAudioChunk)>,
     _failed: Closure<dyn FnMut(JsValue)>,
-}
-
-/// The tracks of a microphone the browser handed over. It captures until
-/// they are stopped, which dropping this does.
-struct Tracks {
-    tracks: Vec<MediaStreamTrack>,
-    _ended: Closure<dyn FnMut()>,
-}
-
-impl Drop for Tracks {
-    fn drop(&mut self) {
-        for track in &self.tracks {
-            track.set_onended(None);
-            track.stop();
-        }
-    }
 }
 
 impl Microphone {
@@ -236,11 +222,6 @@ impl Drop for Microphone {
 async fn capture(
     stopped: &Rc<Cell<Option<&'static str>>>,
 ) -> Result<(Tracks, MediaStream), String> {
-    let nothing = || "This browser gives this page no microphone.".to_owned();
-    let devices = web_sys::window().ok_or_else(nothing)?.navigator().media_devices();
-    // Missing on a page that did not come over HTTPS.
-    let devices = devices.ok().filter(|devices| !devices.is_undefined()).ok_or_else(nothing)?;
-
     // A voice for people on the PC: the browser takes out the echo of what
     // the page plays and the noise of the room, as it does for a call.
     let voice = object(&[
@@ -251,47 +232,11 @@ async fn capture(
     ]);
     let wanted = MediaStreamConstraints::new();
     wanted.set_audio(&voice);
-    let asked =
-        devices.get_user_media_with_constraints(&wanted).map_err(|error| refused(&error))?;
-    let stream: MediaStream =
-        JsFuture::from(asked).await.map_err(|error| refused(&error))?.unchecked_into();
-
-    let gone = Rc::clone(stopped);
-    let ended = Closure::new(move || gone.set(Some(STOPPED)));
-    let tracks: Vec<MediaStreamTrack> =
-        stream.get_audio_tracks().iter().map(JsCast::unchecked_into).collect();
-    for track in &tracks {
-        track.set_onended(Some(ended.as_ref().unchecked_ref()));
-    }
-    let tracks = Tracks { tracks, _ended: ended };
-    if tracks.tracks.is_empty() {
-        return Err("This device has no microphone.".to_owned());
-    }
-    Ok((tracks, stream))
-}
-
-/// Why the browser gave no microphone, in words for the person.
-fn refused(error: &JsValue) -> String {
-    let name =
-        Reflect::get(error, &JsValue::from_str("name")).ok().and_then(|name| name.as_string());
-    match name.as_deref() {
-        Some("NotAllowedError" | "SecurityError") => {
-            "The browser does not let this page use the microphone. Allow it in the browser's \
-             settings for this page."
-                .to_owned()
-        }
-        Some("NotFoundError" | "OverconstrainedError") => {
-            "This device has no microphone.".to_owned()
-        }
-        Some("NotReadableError" | "AbortError") => {
-            "The microphone could not be opened. Another app may be using it.".to_owned()
-        }
-        _ => not_opened(error),
-    }
+    capture::ask(Kind::Microphone, &wanted, stopped).await
 }
 
 fn not_opened(error: &JsValue) -> String {
-    format!("The microphone could not be opened: {}.", words(error).trim_end_matches('.'))
+    capture::not_opened(Kind::Microphone, error)
 }
 
 /// How loud `samples` are: 1 for a tone that reaches the limits.
