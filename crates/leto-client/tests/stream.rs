@@ -17,7 +17,7 @@ use std::{
 use leto_client::{
     Client, Counter, Ended, Error, HostKind, HostSummary, Permission, StreamSettings, Tally,
 };
-use leto_testhost::{FakeHost, Options, permission};
+use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, Options, permission};
 
 /// A small picture, so the tests spend their time on the protocol.
 const SMALL: StreamSettings =
@@ -133,9 +133,13 @@ fn leaving_keeps_the_app_running_and_playing_again_resumes_it() {
     wait_for_stream(&first);
     session.stop();
 
-    wait_for("the host to notice the client left", || {
-        host.stream_report().is_some_and(|report| report.client_left)
-    });
+    // Nobody tells the host: it has to miss the client, which takes it
+    // seconds at best.
+    let start = Instant::now();
+    while !host.stream_report().is_some_and(|report| report.client_left) {
+        assert!(start.elapsed() < CLIENT_MISSED_WITHIN, "the host never noticed the client left");
+        thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(host.running_app(), Some(1), "the app keeps running");
     let seen = client.refresh().into_iter().find(|seen| seen.id == paired.id).unwrap();
     assert!(seen.busy);

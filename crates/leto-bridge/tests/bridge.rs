@@ -26,7 +26,7 @@ use leto_core::{
     model::HostId,
 };
 use leto_media::{Picture, PictureEncoder, Sending};
-use leto_testhost::{FakeHost, quiet_voice};
+use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, quiet_voice};
 use rustls::{
     ClientConfig, RootCertStore,
     pki_types::{CertificateDer, ServerName, pem::PemObject as _},
@@ -565,10 +565,12 @@ async fn a_stream_reaches_the_browser_and_input_reaches_the_pc() {
     assert!(host.stream_report().unwrap().keyframes_requested > asked_before);
 
     // The browser closes its tab: the stream is left, the app keeps running.
+    // Nobody tells the host: it has to miss the client, which takes it
+    // seconds at best.
     drop(browser);
     let start = Instant::now();
     while !host.stream_report().is_some_and(|report| report.client_left) {
-        assert!(start.elapsed() < PATIENCE, "the stream was never left");
+        assert!(start.elapsed() < CLIENT_MISSED_WITHIN, "the stream was never left");
         sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(host.running_app(), Some(1));

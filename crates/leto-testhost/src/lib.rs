@@ -52,7 +52,7 @@ use rustls::{
 };
 
 pub use camera::{CameraReport, Seen};
-pub use stream::StreamReport;
+pub use stream::{CLIENT_MISSED_WITHIN, StreamReport};
 
 /// A tiny valid PNG: one transparent pixel.
 pub const COVER_PNG: &[u8] = &[
@@ -394,6 +394,14 @@ impl Drop for FakeHost {
         self.shared.stop.store(true, Ordering::SeqCst);
         self.shared.playing.lock().unwrap().end_stream(false);
         for thread in self.threads.drain(..) {
+            // The thread that takes the camera waits for a packet as long
+            // as it takes: it is sent one, and another should that be lost.
+            while !thread.is_finished() {
+                if let Some(cameras) = &self.shared.cameras {
+                    cameras.wake();
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
             let _ = thread.join();
         }
     }

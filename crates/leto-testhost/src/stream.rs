@@ -108,12 +108,28 @@ pub(crate) struct Launch {
     pub camera: Option<Arc<Cameras>>,
 }
 
+/// How long the host may take to say that a client left
+/// ([`StreamReport::client_left`]) when the client went away without a word,
+/// which is how a client built on the protocol library leaves.
+///
+/// The host is told nothing: it gives up on a client that stopped answering.
+/// It looks at that each time its wait for an answer runs out, and doubles
+/// the wait each time. It gives up the first time it looks after thirty
+/// seconds, or after five once it has asked six times: the defaults of ENet,
+/// in `rusty_enet` 0.4.1. The first wait is as long as the host thinks an
+/// answer takes. With a client on the same computer that makes five to ten
+/// seconds. A host that was held up for a moment as it met its client thinks
+/// answers are slow: held up for 150 milliseconds, it was seen to take 29
+/// seconds, and by the rule above it can take up to a minute.
+pub const CLIENT_MISSED_WITHIN: Duration = Duration::from_secs(65);
+
 /// What a test can observe of a stream.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StreamReport {
     /// The client finished the handshake and opened the control connection.
     pub connected: bool,
-    /// The client closed the control connection.
+    /// The client said that it leaves, or stopped answering for so long that
+    /// the host gave up on it: see [`CLIENT_MISSED_WITHIN`].
     pub client_left: bool,
     pub width: u32,
     pub height: u32,
