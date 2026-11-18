@@ -58,6 +58,20 @@ pub const COVER_PNG: &[u8] = &[
     0x42, 0x60, 0x82,
 ];
 
+/// Twenty milliseconds of silence, as a client's microphone sends them: one
+/// Opus frame, one channel at 48 kHz.
+pub fn quiet_voice() -> Vec<u8> {
+    use opus_rs::{Application, OpusEncoder};
+
+    let mut encoder = OpusEncoder::new(48_000, 1, Application::RestrictedLowDelay)
+        .expect("an encoder for one channel at 48 kHz");
+    let mut packet = vec![0u8; 1500];
+    let written =
+        encoder.encode(&[0.0; 960], 960, &mut packet).expect("silence is not hard to encode");
+    packet.truncate(written);
+    packet
+}
+
 /// What Apollo lets its owner allow or refuse, device by device, as the bits
 /// it reports in `serverinfo`. From `crypto.h` of Apollo.
 pub mod permission {

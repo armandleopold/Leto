@@ -19,7 +19,7 @@ use leto_client::{
     engine::{Event, Request, StreamEnd},
     input::{Input, InputAllowed, Key, Modifiers},
 };
-use leto_testhost::{FakeHost, Options, permission};
+use leto_testhost::{FakeHost, Options, permission, quiet_voice};
 
 /// How long any step may take before the test gives up.
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -224,7 +224,7 @@ fn a_stream_starts_takes_input_and_is_left() {
     }
 
     // The microphone goes the other way.
-    let quiet = quiet_frame();
+    let quiet = quiet_voice();
     let start = Instant::now();
     let mut frames = 0;
     while host.stream_report().is_none_or(|report| report.microphone_packets == 0) {
@@ -241,17 +241,6 @@ fn a_stream_starts_takes_input_and_is_left() {
     assert_eq!(host.running_app(), Some(1));
 }
 
-/// Twenty milliseconds of silence, as a microphone would send them.
-fn quiet_frame() -> Vec<u8> {
-    use opus_rs::{Application, OpusEncoder};
-
-    let mut encoder = OpusEncoder::new(48_000, 1, Application::RestrictedLowDelay).unwrap();
-    let mut packet = vec![0u8; 1500];
-    let written = encoder.encode(&[0.0; 960], 960, &mut packet).unwrap();
-    packet.truncate(written);
-    packet
-}
-
 #[test]
 fn a_pc_that_takes_no_microphone_says_so_and_gets_none() {
     let host = FakeHost::start_with(Options { microphone: false, ..Options::default() });
@@ -264,7 +253,7 @@ fn a_pc_that_takes_no_microphone_says_so_and_gets_none() {
         _ => None,
     });
     assert!(!microphone);
-    assert!(!desk.service.microphone(Duration::ZERO, &quiet_frame()));
+    assert!(!desk.service.microphone(Duration::ZERO, &quiet_voice()));
 }
 
 #[test]
