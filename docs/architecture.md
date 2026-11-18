@@ -35,6 +35,7 @@ crates/
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers, the microphone, the camera and its encoder. No networking
+  leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
@@ -108,6 +109,34 @@ crates that know nothing of each other:
 Leaving a stream keeps the app running on the PC, like closing Moonlight. The
 apps screen then offers to resume it or to close it.
 
+A stream is made for the screen it is shown on. When the person picks an
+app, the window says what its screen is like (`window::screen`): its pixels
+and its pace as Windows reports them (`leto_system::display`), elsewhere as
+egui does at 60 pictures per second, and how large the system draws text.
+The request carries it (`Request::Play::screen`), and the engine asks for a
+stream of that size and pace (`StreamSettings::for_screen`), within what
+H.264 carries, with a bit rate that grows with the pixels from Moonlight's
+20 Mbit/s for Full HD at 60. It also asks the PC for a screen of its own in
+that mode and text size (`virtualDisplay` and `scaleFactor`), which Apollo
+makes for the stream. A screen the owner set for the device on Apollo's side
+wins. Sunshine ignores the question and shows its own screen. A browser says
+its screen's size but not its pace: it gets 60, lying down.
+
+The window fills the screen as the stream connects, and gives it back when
+the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
+Moonlight: what the PC sends, what arrives, what is lost, decoded and shown
+per second, how long a picture takes to decode and to make on the PC, and the
+time to the PC and back (`stats.rs`, counted by the backend).
+
+The work follows the person's attention. While another window has the
+keyboard the video sink still decodes every picture, since the next ones
+build on it, but turns only one a second into pixels, which is most of the
+work; the window then draws once a second. While the window is out of sight
+nothing is decoded, and the PC is asked for a keyframe when it is back. What
+the PC sends stays the same: the protocol has no way to slow a PC down during
+a stream, and Moonlight does not either (it can mute the sound when it loses
+the keyboard). A browser slows a page out of sight down by itself.
+
 Apollo lets its owner decide what each paired device may do. The first device
 paired with it may do everything. Every device paired after that may only
 list the apps and watch one that is already running, until the owner ticks
@@ -157,11 +186,23 @@ passes them on.
   games that turn the view with it.
 - **While a stream is connected the keyboard is the PC's.** The app takes
   the keys away from egui before it acts on them (`raw_input_hook`), Tab and
-  Escape included. Four combinations stay on this device, as in Moonlight:
-  Ctrl+Alt+Shift with Q leaves, with X fills the screen, with M switches the
-  mouse mode, with T turns the microphone on or off. Everything held down is
-  let go of when the window loses the keyboard and before leaving, so nothing
+  Escape included. Some combinations stay on this device, as in Moonlight,
+  found by the letter the layout prints: Ctrl+Alt+Shift with Q leaves, with X
+  fills the screen, with M switches the mouse mode, with T turns the
+  microphone on or off, with C the camera, with S the statistics, and with Z
+  gives the keyboard and the mouse back to this device until Z again or a
+  click on the picture. Everything held down is let go of when the window
+  loses the keyboard, when it is given back and before leaving, so nothing
   stays stuck on the PC.
+- **On Windows the system's own shortcuts are the PC's too**: the Windows
+  key, Alt+Tab, Alt+F4. Windows acts on them before any window hears of them,
+  so while a stream has the keyboard `leto-system` listens to the keyboard
+  ahead of Windows with a low-level hook, on a thread of its own, and keeps
+  every key from going further while Leto's window is in front. Keys are
+  named by their scan code, the numeric keypad included. A key goes back to
+  whoever got it go down, so nothing stays held on either side, and the Ctrl
+  that AltGr makes up is dropped: the PC makes up its own. Ctrl+Alt+Del and
+  Windows+L stay with Windows, which no program can take.
 - eframe would turn Ctrl+C, Ctrl+X and Ctrl+V into clipboard events and keep
   those keys from the PC, so that is turned off, and `clipboard.rs` does it
   for Leto's own text fields when no stream has the keyboard.
@@ -494,4 +535,5 @@ with a comment that says why it does not apply and when to remove it.
 `unsafe` is denied across the workspace. A crate that has to call the
 operating system directly (capture, codecs, virtual devices) opts back in with
 `#![allow(unsafe_code)]` at its top, and keeps that code in as few modules as
-possible.
+possible. `leto-system` is one: its `unsafe` is in the modules for Windows,
+each call with the reason it is sound.

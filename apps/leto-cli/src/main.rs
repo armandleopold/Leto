@@ -11,7 +11,7 @@ mod stream;
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{Parser, Subcommand};
-use leto_client::{Client, Pin, StreamSettings};
+use leto_client::{Client, Pin, StreamSettings, VirtualDisplay};
 use leto_core::{brand, platform::Platform};
 use leto_protocol::ports::{DEFAULT_BASE_PORT, PortMap, Service, Transport};
 use serde::Serialize;
@@ -91,6 +91,10 @@ enum Command {
         /// Video bit rate to ask for, in kilobits per second.
         #[arg(long, default_value_t = StreamSettings::default().bitrate_kbps, value_name = "KBPS")]
         bitrate: u32,
+        /// Ask the PC for a screen of its own in that size and pace, with
+        /// text this large, in percent. Apollo makes one; others ignore it.
+        #[arg(long, value_name = "PERCENT", num_args = 0..=1, default_missing_value = "100")]
+        virtual_display: Option<u32>,
         /// Send the PC this device's microphone meanwhile, if it takes one.
         #[arg(long)]
         microphone: bool,
@@ -172,12 +176,25 @@ fn run(cli: &Cli) -> Result<String, String> {
         Command::Pair { pc, pin } => pcs::pair(&client(cli)?, pc, *pin, json),
         Command::Apps { pc } => pcs::apps(&client(cli)?, pc, json),
         Command::Forget { pc } => pcs::forget(&client(cli)?, pc, json),
-        Command::Play { pc, app, seconds, width, height, fps, bitrate, microphone, camera } => {
+        Command::Play {
+            pc,
+            app,
+            seconds,
+            width,
+            height,
+            fps,
+            bitrate,
+            virtual_display,
+            microphone,
+            camera,
+        } => {
             let settings = StreamSettings {
                 width: *width,
                 height: *height,
                 fps: *fps,
                 bitrate_kbps: *bitrate,
+                virtual_display: virtual_display
+                    .map(|scale_percent| VirtualDisplay { scale_percent }),
             };
             let card = std::env::var_os("LETO_CAMERA").is_some_and(|camera| camera == "card");
             let which = if card { stream::WhichCamera::Card } else { stream::WhichCamera::System };

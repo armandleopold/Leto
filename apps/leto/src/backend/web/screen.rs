@@ -5,7 +5,12 @@
 //! it. A picture goes from the decoder to the screen without passing
 //! through the app, which need not draw anything for it to show.
 
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::Rc,
+    time::Duration,
+};
 
 use js_sys::{Object, Uint8Array};
 use leto_core::bridge::VideoFormat;
@@ -13,7 +18,10 @@ use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 use web_sys::HtmlCanvasElement;
 
 use super::codecs::{self, EncodedVideoChunk, Surface, VideoDecoder, VideoFrame, object, words};
-use crate::backend::flow::{Pictures, Verdict};
+use crate::{
+    backend::flow::{Pictures, Verdict},
+    stats::Counts,
+};
 
 /// Failures in a row, with no picture in between, after which a decoder is
 /// not given another chance.
@@ -101,6 +109,27 @@ struct Status {
     failed: Cell<bool>,
     /// Failures since the last picture came out.
     failures: Cell<u32>,
+    /// What happened to the pictures so far.
+    counts: Cell<Counts>,
+    /// When each picture still in the decoder was given to it, by its
+    /// timestamp, in seconds.
+    given_at: RefCell<VecDeque<(f64, f64)>>,
+}
+
+impl Status {
+    /// How long the picture given with `timestamp` took to come out of the
+    /// decoder, when its giving was noted.
+    fn took(&self, timestamp: f64) -> Option<Duration> {
+        let mut given_at = self.given_at.borrow_mut();
+        // Pictures come out in the order they went in.
+        while let Some(&(given, at)) = given_at.front() {
+            given_at.pop_front();
+            if given == timestamp {
+                return Some(Duration::from_secs_f64((now() - at).max(0.0)));
+            }
+        }
+        None
+    }
 }
 
 /// What became of a picture given to the screen.
@@ -142,7 +171,13 @@ impl Screen {
         let output = Closure::new(move |frame: VideoFrame| {
             canvas.draw(&frame);
             let size = [frame.width() as usize, frame.height() as usize];
+            let took = shown.took(frame.timestamp());
             frame.close();
+            let mut counts = shown.counts.get();
+            counts.decoded(took);
+            // Drawn on the canvas as it comes out.
+            *counts.shown.get_or_insert(0) += 1;
+            shown.counts.set(counts);
             shown.failures.set(0);
             if shown.size.replace(Some(size)) != Some(size) {
                 // The app makes room for pictures of this size.
@@ -195,8 +230,18 @@ impl Screen {
         self.status.size.get()
     }
 
+    /// What happened to the pictures so far.
+    pub fn counts(&self) -> Counts {
+        self.status.counts.get()
+    }
+
     /// Takes the next picture of the stream.
     pub fn show(&mut self, keyframe: bool, data: &[u8]) -> Shown {
+        let mut counts = self.status.counts.get();
+        // The bridge passes on what arrives, and says nothing of what did
+        // not.
+        counts.received(data.len(), None, None);
+        self.status.counts.set(counts);
         if self.status.failed.replace(false) {
             if let Err(why) = self.start_over(true) {
                 return Shown::Never(why);
@@ -214,11 +259,20 @@ impl Screen {
             Verdict::Skip { ask: false } => return Shown::Yes,
         }
 
+        let timestamp = f64::from(self.given) * self.step;
         let picture = object(&[
             ("type", if keyframe { "key" } else { "delta" }.into()),
-            ("timestamp", (f64::from(self.given) * self.step).into()),
+            ("timestamp", timestamp.into()),
             ("data", Uint8Array::from(data).into()),
         ]);
+        let mut given_at = self.status.given_at.borrow_mut();
+        // A decoder that loses pictures leaves their times behind: a few
+        // seconds of them are plenty.
+        if given_at.len() >= 240 {
+            given_at.pop_front();
+        }
+        given_at.push_back((timestamp, now()));
+        drop(given_at);
         self.given = self.given.wrapping_add(1);
         let given = EncodedVideoChunk::new(&picture).and_then(|chunk| self.decoder.decode(&chunk));
         if let Err(error) = given {

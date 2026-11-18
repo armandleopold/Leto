@@ -7,6 +7,8 @@ use egui::{
     text::{LayoutJob, TextWrapping},
     vec2,
 };
+use std::time::Duration;
+
 use leto_core::input::Input;
 
 use super::{icons, widgets};
@@ -14,6 +16,7 @@ use crate::{
     backend::{Filming, Picture},
     input::{Controls, Shortcut},
     state::{Cam, Mic, State, StreamView},
+    stats::{Counts, Rates},
     theme, window,
 };
 
@@ -31,18 +34,29 @@ const BAR_MARGIN: f32 = 10.0;
 /// A browser fills the screen with F11 on its own, without telling the
 /// page: there, F11 is not Leto's to act on.
 const F11_FILLS: bool = cfg!(not(target_arch = "wasm32"));
+/// A stream fills the screen as soon as it connects, as in Moonlight. A
+/// browser only lets a page fill the screen right after a click.
+const FILLS_ON_CONNECT: bool = cfg!(not(target_arch = "wasm32"));
+/// Seconds between two updates of the statistics.
+const STATISTICS_EVERY: f64 = 1.0;
 
 /// The quietest sound the microphone's meter shows, in decibels below the
 /// loudest a microphone captures.
 const METER_FLOOR: f32 = -50.0;
 
 /// A key that went down or came up while a stream had the keyboard.
-struct KeyStroke {
-    /// The key by what the layout prints on it.
-    printed: Key,
-    /// The key by where it sits, when the system says.
-    place: Option<Key>,
-    down: bool,
+enum KeyStroke {
+    /// As the window heard of it.
+    Window {
+        /// The key by what the layout prints on it.
+        printed: Key,
+        /// The key by where it sits, when the system says.
+        place: Option<Key>,
+        down: bool,
+    },
+    /// Taken from the system before it acted on it: the Windows key,
+    /// Alt+Tab and every other key, which the window never hears of.
+    System(window::Stroke),
 }
 
 /// What the pictures of the stream are shown on.
@@ -95,6 +109,34 @@ pub struct Player {
     /// What the last thing worth a line in the bar was about, when it was
     /// about something this device sends.
     talks_of: Option<Told>,
+    /// The keyboard and the mouse are this device's again: the PC hears
+    /// nothing of them until the person gives them back.
+    released: bool,
+    /// Pictures the window was given to show so far.
+    shown: u64,
+    /// The statistics over the picture, while they show.
+    statistics: Option<Statistics>,
+}
+
+/// What the statistics show, and what they were worked out from.
+struct Statistics {
+    /// App time they were last worked out at, what the backend had counted
+    /// then and what the window had shown.
+    since: f64,
+    counts: Counts,
+    shown: u64,
+    rates: Option<Rates>,
+}
+
+/// Where the keyboard and the mouse of this device go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hands {
+    /// To the PC, the mouse moving its pointer.
+    Pointer,
+    /// To the PC, the mouse turning the view of a game.
+    GameMouse,
+    /// Nowhere: they are this device's.
+    Released,
 }
 
 /// What of this device the bar has something new to say about.
@@ -110,12 +152,23 @@ impl Player {
         match (picture, &mut self.surface) {
             (Picture::Pixels(pixels), Some(Surface::Texture(texture))) => {
                 texture.set(pixels, TextureOptions::LINEAR);
+                self.shown += 1;
             }
             (Picture::Pixels(pixels), _) => {
                 let texture = ctx.load_texture("stream", pixels, TextureOptions::LINEAR);
                 self.surface = Some(Surface::Texture(texture));
+                self.shown += 1;
             }
             (Picture::Behind(size), _) => self.surface = Some(Surface::Behind(size)),
+        }
+    }
+
+    /// Where the keyboard and the mouse go.
+    fn hands(&self) -> Hands {
+        match (self.released, self.game_mouse) {
+            (true, _) => Hands::Released,
+            (false, true) => Hands::GameMouse,
+            (false, false) => Hands::Pointer,
         }
     }
 
@@ -131,7 +184,7 @@ impl Player {
     pub fn take_keyboard(&mut self, raw: &mut egui::RawInput) {
         raw.events.retain(|event| match event {
             Event::Key { key, physical_key, pressed, .. } => {
-                self.strokes.push(KeyStroke {
+                self.strokes.push(KeyStroke::Window {
                     printed: *key,
                     place: *physical_key,
                     down: *pressed,
@@ -174,6 +227,11 @@ pub struct Status<'a> {
     pub voice: Option<f32>,
     /// How the camera is doing, while it captures.
     pub film: Option<Filming>,
+    /// What happened to the pictures so far, where the backend counts it.
+    pub counts: Option<Counts>,
+    /// How long a message takes to reach the PC and come back, once
+    /// measured.
+    pub round_trip: Option<Duration>,
 }
 
 /// Draws the stream and returns what the person did since the last frame,
@@ -190,8 +248,9 @@ pub fn show(
     let fills_screen = window::fills_screen(ui.ctx());
     let mut asked = Asked::default();
     // Once connected, every key is the PC's, the system's shortcuts too
-    // where the system lets go of them.
-    window::keep_keyboard(view.connected);
+    // where the system lets go of them, until the person takes them back.
+    window::keep_keyboard(view.connected && !player.released);
+    player.strokes.extend(window::keys().into_iter().map(KeyStroke::System));
 
     player.hole = None;
     let picture = player.surface.as_ref().map(|surface| {
@@ -218,22 +277,45 @@ pub fn show(
     }
 
     if view.connected {
+        if player.bar_until.is_none() && FILLS_ON_CONNECT && !fills_screen {
+            // Just connected.
+            asked.fill = true;
+        }
         let bar_until = *player.bar_until.get_or_insert(now + BAR_STAYS);
         let mut refused = false;
 
         for stroke in player.strokes.drain(..) {
-            refused |= stroke.down && !view.input.keyboard;
-            match player.controls.key(stroke.printed, stroke.place, stroke.down) {
+            let (shortcut, down) = match stroke {
+                KeyStroke::Window { printed, place, down } => {
+                    (player.controls.key(printed, place, down), down)
+                }
+                KeyStroke::System(stroke) => (
+                    player.controls.stroke(Some(stroke.key), stroke.letter, stroke.down),
+                    stroke.down,
+                ),
+            };
+            refused |= down && !view.input.keyboard && !player.released;
+            match shortcut {
                 Some(Shortcut::Leave) => asked.leave = true,
                 Some(Shortcut::FullScreen) => asked.fill = true,
                 Some(Shortcut::GameMouse) => asked.game_mouse = true,
                 Some(Shortcut::Microphone) => asked.microphone = true,
                 Some(Shortcut::Camera) => asked.camera = true,
+                Some(Shortcut::Statistics) => asked.statistics = true,
+                Some(Shortcut::Release) => asked.release = true,
                 None => {}
             }
         }
         if let Some((place, size)) = picture {
-            refused |= mouse(ui, player, place, size) && !view.input.mouse;
+            let clicked = mouse(ui, player, place, size);
+            if player.released {
+                // A click on the picture gives the keyboard and the mouse
+                // back to the PC, as in Moonlight. The PC hears nothing of
+                // the click itself.
+                asked.release |= clicked;
+            } else {
+                refused |= clicked && !view.input.mouse;
+            }
         }
         if !focused && player.controls.holds_anything() {
             // Another window has the keyboard: nothing may stay held down
@@ -269,8 +351,9 @@ pub fn show(
         }
         if view.microphone == Mic::On {
             // The meter moves, and a microphone that stops is noticed, even
-            // while the picture stands still.
-            ui.ctx().request_repaint_after_secs(0.05);
+            // while the picture stands still. Once a second is enough for a
+            // window that is only glanced at.
+            ui.ctx().request_repaint_after_secs(if focused { 0.05 } else { 1.0 });
         }
     } else {
         // Nothing to play with yet: the keys are still Leto's.
@@ -285,6 +368,14 @@ pub fn show(
     }
 
     overlay(ui, window, view, player, status, now, &mut asked);
+    if view.connected
+        && let Some(statistics) = &mut player.statistics
+    {
+        statistics.update(status.counts, player.shown, now);
+        statistics_panel(ui.ctx(), statistics, status);
+        // The numbers change even while the picture stands still.
+        ui.ctx().request_repaint_after_secs(STATISTICS_EVERY as f32 / 2.0);
+    }
 
     if asked.microphone {
         state.switch_microphone();
@@ -298,6 +389,19 @@ pub fn show(
         player.bar_until = Some(now + BAR_RETURNS);
         player.talks_of = None;
     }
+    if asked.release {
+        player.released = !player.released;
+        // Whatever the PC held, it lets go of.
+        player.controls.mute(player.released);
+        player.bar_until = Some(now + BAR_RETURNS);
+        player.talks_of = None;
+    }
+    if asked.statistics {
+        player.statistics = match player.statistics {
+            Some(_) => None,
+            None => Some(Statistics::new(status.counts, player.shown, now)),
+        };
+    }
     if player.pointer_kept && window::pointer_lost() {
         // A browser gives the pointer back when Escape is pressed, whoever
         // asked for it: the game mouse is over.
@@ -306,7 +410,7 @@ pub fn show(
         player.bar_until = Some(now + BAR_RETURNS);
         player.talks_of = None;
     }
-    let keep = player.game_mouse && view.connected && focused && !asked.leave;
+    let keep = player.game_mouse && view.connected && focused && !asked.leave && !player.released;
     if keep != player.pointer_kept {
         player.pointer_kept = keep;
         window::keep_pointer(ui.ctx(), keep);
@@ -334,6 +438,10 @@ struct Asked {
     microphone: bool,
     /// Turn the camera on, or off again.
     camera: bool,
+    /// Show the statistics, or stop showing them.
+    statistics: bool,
+    /// Give the keyboard and the mouse back to this device, or to the PC.
+    release: bool,
 }
 
 /// Passes what the mouse did on to the controls. Returns whether a button
@@ -404,7 +512,8 @@ fn overlay(
         ui.input(|input| (input.pointer.time_since_last_movement(), input.pointer.hover_pos()));
     // With the game mouse the pointer is hidden and going nowhere: it opens
     // nothing.
-    let pointing = pointer.filter(|_| !player.game_mouse);
+    let game_mouse = player.hands() == Hands::GameMouse;
+    let pointing = pointer.filter(|_| !game_mouse);
     let grip_zone =
         Rect::from_center_size(window.center_top() + vec2(0.0, GRIP_ZONE.y / 2.0), GRIP_ZONE);
     let on_bar = pointing.is_some_and(|pointer| {
@@ -425,12 +534,12 @@ fn overlay(
             view,
             picture: player.surface.as_ref().map(Surface::size),
             sound_problem: status.sound_problem,
-            game_mouse: player.game_mouse,
+            game_mouse: player.game_mouse && !player.released,
             voice: status.voice.map(meter),
             film: status.film,
             note: bar_note(
                 view,
-                player.game_mouse,
+                player.hands(),
                 timed,
                 player.talks_of.map(|told| match told {
                     Told::Microphone => News::Microphone(status.voice.is_some()),
@@ -468,7 +577,7 @@ fn overlay(
     if !view.connected || !has_picture {
         return;
     }
-    if player.game_mouse || (pointer.is_some() && !on_bar) {
+    if game_mouse || (pointer.is_some() && !on_bar && !player.released) {
         // The PC draws its own pointer in the picture.
         ui.ctx().set_cursor_icon(CursorIcon::None);
     }
@@ -476,6 +585,101 @@ fn overlay(
         grip(ui, window);
         ui.ctx().request_repaint_after_secs(0.25);
     }
+}
+
+impl Statistics {
+    fn new(counts: Option<Counts>, shown: u64, now: f64) -> Self {
+        Self { since: now, counts: counts.unwrap_or_default(), shown, rates: None }
+    }
+
+    /// Works the rates out again, once a second.
+    fn update(&mut self, counts: Option<Counts>, shown: u64, now: f64) {
+        let Some(counts) = counts else { return };
+        if now - self.since < STATISTICS_EVERY {
+            return;
+        }
+        let shown_since = shown.saturating_sub(self.shown);
+        self.rates = Rates::between(&self.counts, &counts, shown_since, now - self.since);
+        (self.since, self.counts, self.shown) = (now, counts, shown);
+    }
+}
+
+/// What decodes the pictures, for the statistics.
+const DECODER: &str =
+    if cfg!(target_arch = "wasm32") { "The browser's" } else { "In software, on the processor" };
+
+/// The statistics over the picture, in a corner, as in Moonlight.
+fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status<'_>) {
+    let lines = statistics_lines(statistics, status.counts, status.round_trip);
+    egui::Area::new(Id::unique("stream-statistics"))
+        .order(Order::Foreground)
+        .anchor(Align2::LEFT_TOP, vec2(10.0, 10.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_black_alpha(200))
+                .stroke(Stroke::new(1.0, theme::LINE))
+                .corner_radius(theme::CARD_RADIUS)
+                .inner_margin(Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    egui::Grid::new(Id::unique("stream-statistics-lines"))
+                        .num_columns(2)
+                        .spacing(vec2(14.0, 3.0))
+                        .show(ui, |ui| {
+                            for (name, value) in lines {
+                                ui.label(widgets::dim(name).size(theme::SMALL));
+                                ui.label(
+                                    RichText::new(value).color(theme::MOON).size(theme::SMALL),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(4.0);
+                    let hide = format!("{} hides these.", Shortcut::Statistics.keys());
+                    ui.label(widgets::dim(hide).size(theme::SMALL - 1.0));
+                });
+        });
+}
+
+/// The lines of the statistics: a name, and what it is at.
+fn statistics_lines(
+    statistics: &Statistics,
+    counts: Option<Counts>,
+    round_trip: Option<Duration>,
+) -> Vec<(&'static str, String)> {
+    let Some(counts) = counts else {
+        return vec![("Stream", "Leto does not count its pictures here.".to_owned())];
+    };
+    let mut lines = Vec::new();
+    if let Some([width, height, fps]) = counts.sent {
+        lines.push(("Video", format!("{width} × {height}, {fps} per second, H.264")));
+    }
+    lines.push(("Decoder", DECODER.to_owned()));
+    let Some(rates) = statistics.rates else {
+        lines.push(("Arrived", "Counting…".to_owned()));
+        return lines;
+    };
+    let per_second = |rate: f64| format!("{rate:.1} per second");
+    lines
+        .push(("Arrived", format!("{}, {:.1} Mbit/s", per_second(rates.received), rates.megabits)));
+    if let Some((share, lost)) = rates.lost {
+        lines.push(("Lost on the way", format!("{lost} in all, {share:.1} % lately")));
+    }
+    lines.push((
+        "Decoded",
+        match rates.decoding_ms {
+            Some(took) => format!("{}, {took:.1} ms each", per_second(rates.decoded)),
+            None => per_second(rates.decoded),
+        },
+    ));
+    lines.push(("Shown", per_second(rates.shown)));
+    if let Some(took) = rates.host_ms {
+        lines.push(("On the PC", format!("{took:.1} ms to capture and encode")));
+    }
+    if let Some(round_trip) = round_trip {
+        lines.push(("Network", format!("{} ms there and back", round_trip.as_millis())));
+    }
+    lines
 }
 
 /// A small handle at the top of the picture: where to rest the pointer to
@@ -728,11 +932,11 @@ fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
 /// not every time the pointer passes. `timed` says the bar is there on its
 /// own, because something changed. `news` is set when the change was the
 /// microphone's or the camera's.
-fn bar_note(view: &StreamView, game_mouse: bool, timed: bool, news: Option<News>) -> Option<Note> {
+fn bar_note(view: &StreamView, hands: Hands, timed: bool, news: Option<News>) -> Option<Note> {
     let host = &view.host.name;
-    if view.connected && !(view.input.keyboard && view.input.mouse) {
+    if view.connected && !(view.input.keyboard && view.input.mouse) && hands != Hands::Released {
         // What does not work stays said for as long as the bar shows.
-        return Some(note(view, game_mouse));
+        return Some(note(view, hands));
     }
     // So does what failed: the one that just did first.
     let failed = match (&view.microphone, &view.camera, news) {
@@ -777,14 +981,22 @@ fn bar_note(view: &StreamView, game_mouse: bool, timed: bool, news: Option<News>
         },
         None => {}
     }
-    timed.then(|| note(view, game_mouse))
+    timed.then(|| note(view, hands))
 }
 
 /// What the bar has to say about playing on this PC.
-fn note(view: &StreamView, game_mouse: bool) -> Note {
+fn note(view: &StreamView, hands: Hands) -> Note {
     let host = &view.host.name;
     let allowed = view.input;
     let apollo = "on Apollo's PIN page, under Device Management";
+    if hands == Hands::Released {
+        let text = format!(
+            "Keyboard and mouse are this device's: {host} hears nothing of them. {} or a click \
+             on the picture gives them back.",
+            Shortcut::Release.keys()
+        );
+        return Note { text, problem: false };
+    }
     let text = match (allowed.keyboard, allowed.mouse) {
         (false, false) => {
             let names = if allowed.gamepad {
@@ -803,14 +1015,15 @@ fn note(view: &StreamView, game_mouse: bool) -> Note {
              {apollo}."
         ),
         (true, true) => {
-            let mut text = if game_mouse {
+            let mut text = if hands == Hands::GameMouse {
                 format!(
                     "Game mouse on: the mouse turns the view. {} gives the pointer back.",
                     Shortcut::GameMouse.keys()
                 )
             } else {
                 format!(
-                    "Keyboard and mouse now go to {host}. {} brings you back.",
+                    "Keyboard and mouse now go to {host}. {} gives them back, {} leaves.",
+                    Shortcut::Release.keys(),
                     Shortcut::Leave.keys()
                 )
             };
@@ -907,14 +1120,15 @@ mod tests {
 
     #[test]
     fn the_bar_says_how_to_get_out_of_the_stream() {
-        let said = note(&view(InputAllowed::ALL), false);
+        let said = note(&view(InputAllowed::ALL), Hands::Pointer);
         assert_eq!(
             said.text,
-            "Keyboard and mouse now go to Salon. Ctrl+Alt+Shift+Q brings you back."
+            "Keyboard and mouse now go to Salon. Ctrl+Alt+Shift+Z gives them back, \
+             Ctrl+Alt+Shift+Q leaves."
         );
         assert!(!said.problem);
 
-        let said = note(&view(InputAllowed::ALL), true);
+        let said = note(&view(InputAllowed::ALL), Hands::GameMouse);
         assert_eq!(
             said.text,
             "Game mouse on: the mouse turns the view. Ctrl+Alt+Shift+M gives the pointer back."
@@ -922,15 +1136,64 @@ mod tests {
     }
 
     #[test]
+    fn the_bar_says_how_to_give_the_keyboard_and_mouse_back_to_the_pc() {
+        let said = note(&view(InputAllowed::ALL), Hands::Released);
+        assert_eq!(
+            said.text,
+            "Keyboard and mouse are this device's: Salon hears nothing of them. \
+             Ctrl+Alt+Shift+Z or a click on the picture gives them back."
+        );
+        assert!(!said.problem);
+        // What the PC would ignore matters only once they go to it again.
+        let watching = view(InputAllowed { keyboard: false, mouse: false, gamepad: false });
+        assert_eq!(bar_note(&watching, Hands::Released, false, None), None);
+        assert_eq!(bar_note(&watching, Hands::Released, true, None), Some(said));
+    }
+
+    #[test]
+    fn the_statistics_say_how_the_stream_is_doing() {
+        let mut counts = Counts { sent: Some([2560, 1440, 144]), ..Counts::default() };
+        let mut statistics = Statistics::new(Some(counts), 0, 10.0);
+        let lines = statistics_lines(&statistics, Some(counts), None);
+        assert_eq!(lines.last(), Some(&("Arrived", "Counting…".to_owned())));
+
+        for _ in 0..144 {
+            counts.received(20_000, Some(0), Some(Duration::from_millis(5)));
+            counts.decoded(Some(Duration::from_millis(9)));
+        }
+        // Not a second yet: nothing changes.
+        statistics.update(Some(counts), 140, 10.5);
+        assert_eq!(statistics.rates, None);
+        statistics.update(Some(counts), 144, 11.0);
+        let lines = statistics_lines(&statistics, Some(counts), Some(Duration::from_millis(3)));
+        let said: Vec<_> = lines.iter().map(|(name, value)| format!("{name}: {value}")).collect();
+        assert_eq!(
+            said,
+            [
+                "Video: 2560 × 1440, 144 per second, H.264".to_owned(),
+                format!("Decoder: {DECODER}"),
+                "Arrived: 144.0 per second, 23.0 Mbit/s".to_owned(),
+                "Lost on the way: 0 in all, 0.0 % lately".to_owned(),
+                "Decoded: 144.0 per second, 9.0 ms each".to_owned(),
+                "Shown: 144.0 per second".to_owned(),
+                "On the PC: 5.0 ms to capture and encode".to_owned(),
+                "Network: 3 ms there and back".to_owned(),
+            ]
+        );
+        // A backend that counts nothing says so.
+        assert_eq!(statistics_lines(&statistics, None, None).len(), 1);
+    }
+
+    #[test]
     fn the_bar_says_what_the_microphone_just_did() {
         let mut view = view(InputAllowed::ALL);
         // Nothing to say when the pointer merely passes.
-        assert_eq!(bar_note(&view, false, false, None), None);
+        assert_eq!(bar_note(&view, Hands::Pointer, false, None), None);
         // A stream that starts says how to get out of it.
-        assert_eq!(bar_note(&view, false, true, None), Some(note(&view, false)));
+        assert_eq!(bar_note(&view, Hands::Pointer, true, None), Some(note(&view, Hands::Pointer)));
 
         view.microphone = Mic::On;
-        let said = bar_note(&view, false, true, Some(News::Microphone(true)))
+        let said = bar_note(&view, Hands::Pointer, true, Some(News::Microphone(true)))
             .expect("a line about the microphone");
         assert_eq!(
             said.text,
@@ -939,11 +1202,14 @@ mod tests {
         assert!(!said.problem);
         // Later on, the lit switch says it, and the bar has other things to
         // say.
-        assert_eq!(bar_note(&view, true, true, None), Some(note(&view, true)));
-        assert_eq!(bar_note(&view, false, false, None), None);
+        assert_eq!(
+            bar_note(&view, Hands::GameMouse, true, None),
+            Some(note(&view, Hands::GameMouse))
+        );
+        assert_eq!(bar_note(&view, Hands::Pointer, false, None), None);
 
         view.microphone = Mic::Off;
-        let said = bar_note(&view, false, true, Some(News::Microphone(false)))
+        let said = bar_note(&view, Hands::Pointer, true, Some(News::Microphone(false)))
             .expect("a line about the microphone");
         assert_eq!(said.text, "The microphone is off: Salon no longer hears this device.");
     }
@@ -955,21 +1221,22 @@ mod tests {
         // The camera opens and the PC is asked before anything leaves.
         let opening = [Some(News::Camera(None)), Some(News::Camera(Some(Filming::Opening)))];
         for news in opening {
-            let said = bar_note(&view, false, true, news).expect("a line about the camera");
+            let said =
+                bar_note(&view, Hands::Pointer, true, news).expect("a line about the camera");
             assert_eq!(said.text, "Opening the camera: Salon sees nothing yet.");
             assert!(!said.problem);
         }
         let sending = Some(News::Camera(Some(Filming::Sending([1280, 720]))));
-        let said = bar_note(&view, false, true, sending).expect("a line about the camera");
+        let said = bar_note(&view, Hands::Pointer, true, sending).expect("a line about the camera");
         assert_eq!(
             said.text,
             "The camera is on: Salon sees this device. Ctrl+Alt+Shift+C turns it off."
         );
         // Later on, the lit switch says it.
-        assert_eq!(bar_note(&view, false, false, sending), None);
+        assert_eq!(bar_note(&view, Hands::Pointer, false, sending), None);
 
         view.camera = Cam::Off;
-        let said = bar_note(&view, false, true, Some(News::Camera(None)))
+        let said = bar_note(&view, Hands::Pointer, true, Some(News::Camera(None)))
             .expect("a line about the camera");
         assert_eq!(said.text, "The camera is off: Salon no longer sees this device.");
     }
@@ -978,13 +1245,13 @@ mod tests {
     fn a_camera_that_failed_stays_said_and_the_one_that_just_failed_comes_first() {
         let mut view = view(InputAllowed::ALL);
         view.camera = Cam::Failed("This device has no camera.".into());
-        let said = bar_note(&view, false, false, None).expect("a problem is always said");
+        let said = bar_note(&view, Hands::Pointer, false, None).expect("a problem is always said");
         assert_eq!(said, Note { text: "This device has no camera.".into(), problem: true });
 
         view.microphone = Mic::Failed("This device has no microphone.".into());
-        let said = bar_note(&view, false, false, None).expect("a problem is always said");
+        let said = bar_note(&view, Hands::Pointer, false, None).expect("a problem is always said");
         assert_eq!(said.text, "This device has no microphone.");
-        let said = bar_note(&view, false, true, Some(News::Camera(None)))
+        let said = bar_note(&view, Hands::Pointer, true, Some(News::Camera(None)))
             .expect("a problem is always said");
         assert_eq!(said.text, "This device has no camera.");
     }
@@ -994,7 +1261,7 @@ mod tests {
         // A browser asks the person before it hands a microphone over.
         let mut view = view(InputAllowed::ALL);
         view.microphone = Mic::On;
-        let said = bar_note(&view, false, true, Some(News::Microphone(false)))
+        let said = bar_note(&view, Hands::Pointer, true, Some(News::Microphone(false)))
             .expect("a line about the microphone");
         assert_eq!(said.text, "Opening the microphone: Salon hears nothing yet.");
         assert!(!said.problem);
@@ -1004,11 +1271,11 @@ mod tests {
     fn a_microphone_that_failed_stays_said_and_what_the_pc_ignores_comes_first() {
         let mut view = view(InputAllowed::ALL);
         view.microphone = Mic::Failed("This device has no microphone.".into());
-        let said = bar_note(&view, false, false, None).expect("a problem is always said");
+        let said = bar_note(&view, Hands::Pointer, false, None).expect("a problem is always said");
         assert_eq!(said, Note { text: "This device has no microphone.".into(), problem: true });
 
         view.input = InputAllowed { keyboard: false, ..InputAllowed::ALL };
-        let said = bar_note(&view, false, false, None).expect("a problem is always said");
+        let said = bar_note(&view, Hands::Pointer, false, None).expect("a problem is always said");
         assert!(said.text.contains("\"Keyboard Input\""), "{}", said.text);
     }
 
@@ -1028,7 +1295,7 @@ mod tests {
     #[test]
     fn the_bar_says_what_apollo_does_not_let_this_device_do() {
         let nothing = InputAllowed { keyboard: false, mouse: false, gamepad: false };
-        let said = note(&view(nothing), false);
+        let said = note(&view(nothing), Hands::Pointer);
         assert_eq!(
             said.text,
             "Salon lets this device watch only. To play, allow \"Keyboard Input\", \"Mouse \
@@ -1038,18 +1305,18 @@ mod tests {
         assert!(said.problem);
 
         let no_keyboard = InputAllowed { keyboard: false, ..InputAllowed::ALL };
-        let said = note(&view(no_keyboard), false);
+        let said = note(&view(no_keyboard), Hands::Pointer);
         assert!(said.problem);
         assert!(said.text.contains("\"Keyboard Input\"") && !said.text.contains("Mouse Input"));
 
         let no_mouse = InputAllowed { mouse: false, ..InputAllowed::ALL };
-        let said = note(&view(no_mouse), true);
+        let said = note(&view(no_mouse), Hands::GameMouse);
         assert!(said.problem);
         assert!(said.text.contains("\"Mouse Input\"") && !said.text.contains("Keyboard Input"));
 
         // No gamepad is no reason for alarm: many people have none.
         let no_gamepad = InputAllowed { gamepad: false, ..InputAllowed::ALL };
-        let said = note(&view(no_gamepad), false);
+        let said = note(&view(no_gamepad), Hands::Pointer);
         assert!(!said.problem);
         assert!(said.text.ends_with(
             "Gamepads are ignored until you allow \"Controller Input\" for this device on \

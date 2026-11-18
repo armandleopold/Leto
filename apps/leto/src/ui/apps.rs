@@ -11,7 +11,7 @@ use leto_core::model::{AppSummary, HostId, Reachability};
 use super::{icons, widgets};
 use crate::{
     state::{AppsView, Loadable, State},
-    theme,
+    theme, window,
 };
 
 const TILE_MIN_WIDTH: f32 = 132.0;
@@ -130,7 +130,8 @@ pub fn show(ui: &mut Ui, state: &mut State, view: &AppsView, covers: &Covers, no
             if quit {
                 state.quit_app();
             } else if let Some(app) = chosen {
-                state.play(app);
+                // The stream is made for the screen the window is on.
+                state.play(app, window::screen(ui.ctx()));
             }
         }
     }

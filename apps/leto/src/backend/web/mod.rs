@@ -20,6 +20,7 @@ mod speaker;
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
+    time::Duration,
 };
 
 use js_sys::{ArrayBuffer, Uint8Array};
@@ -40,8 +41,11 @@ use self::{
     screen::{Canvas, Screen, Shown},
     speaker::Speaker,
 };
-use super::{Door, Filming, Picture, Seen, Unavailable, decode_cover};
-use crate::state::{Event, Request};
+use super::{Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover};
+use crate::{
+    state::{Event, Request},
+    stats::Counts,
+};
 
 /// Where the browser keeps the key its bridge gave it.
 const KEY: &str = "leto-bridge-key";
@@ -451,6 +455,22 @@ impl Backend {
         let stream = inner.stream.as_mut()?;
         let size = stream.screen.as_ref()?.size()?;
         (stream.told.replace(size) != Some(size)).then_some(Picture::Behind(size))
+    }
+
+    /// How many pictures the person sees. A browser already slows down a
+    /// page that is out of sight, and decodes with the graphics card.
+    pub fn pace(&self, _pace: Pace) {}
+
+    /// What happened to the pictures of the stream so far.
+    pub fn counts(&self) -> Option<Counts> {
+        let inner = self.page.inner.borrow();
+        Some(inner.stream.as_ref()?.screen.as_ref()?.counts())
+    }
+
+    /// How long a message takes to reach the PC and come back. The bridge
+    /// does not say.
+    pub fn round_trip(&self) -> Option<Duration> {
+        None
     }
 
     /// Shows the pictures at `place`, in the app's points, or hides them.

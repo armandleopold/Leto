@@ -19,6 +19,7 @@ leto-core = { path = "crates/leto-core" }
 leto-media = { path = "crates/leto-media" }
 leto-protocol = { path = "crates/leto-protocol" }
 leto-return = { path = "crates/leto-return" }
+leto-system = { path = "crates/leto-system" }
 leto-testhost = { path = "crates/leto-testhost" }
 
 # Third-party

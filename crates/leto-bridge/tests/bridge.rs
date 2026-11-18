@@ -253,7 +253,7 @@ impl Browser {
     /// Starts a stream and waits for the news of what camera its PC takes,
     /// which comes once the stream plays.
     async fn play(&mut self, host: HostId, attempt: u64) -> Option<CameraOffer> {
-        self.say(&Up::Ask(Request::Play { host, app: 1, attempt })).await;
+        self.say(&Up::Ask(Request::Play { host, app: 1, attempt, screen: None })).await;
         self.news(|event| match event {
             Event::Camera { attempt: told, offer } if told == attempt => Some(offer),
             Event::PlayFailed { message, .. } => panic!("{message}"),
@@ -467,7 +467,7 @@ async fn a_stream_reaches_the_browser_and_input_reaches_the_pc() {
     let mut browser = setup.welcomed().await;
     let id = browser.pair(&host).await;
 
-    browser.say(&Up::Ask(Request::Play { host: id, app: 1, attempt: 5 })).await;
+    browser.say(&Up::Ask(Request::Play { host: id, app: 1, attempt: 5, screen: None })).await;
 
     // In whatever order they come: the news that it plays, what the
     // pictures and the sound are made of, then pictures and sound.

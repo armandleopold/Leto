@@ -4,7 +4,7 @@ use egui::{Align, Layout, RichText, Sense, Vec2};
 use leto_core::{brand, platform::Platform};
 
 use crate::{
-    backend::{Backend, Door, Unavailable},
+    backend::{Backend, Door, Pace, Unavailable},
     state::{Cam, Device, Devices, Event, Mic, Screen, State, Trial},
     theme,
     ui::{
@@ -140,6 +140,20 @@ impl eframe::App for LetoApp {
         match (&door, self.state.screen.clone()) {
             // A stream takes the whole window: no bar, no margins.
             (Door::Open, Screen::Stream(view)) => {
+                // Only the pictures the person sees are worth the work, and
+                // the battery: one a second while another window has the
+                // person's attention, none while this one is out of sight.
+                let pace = ui.input(|input| {
+                    let window = input.viewport();
+                    if window.minimized == Some(true) || window.occluded == Some(true) {
+                        Pace::Hidden
+                    } else if input.focused {
+                        Pace::Full
+                    } else {
+                        Pace::Glance
+                    }
+                });
+                self.backend.pace(pace);
                 if let Some(picture) = self.backend.take_picture() {
                     self.player.picture(ui.ctx(), picture);
                 }
@@ -162,8 +176,13 @@ impl eframe::App for LetoApp {
                 let inputs = egui::CentralPanel::default()
                     .frame(egui::Frame::new())
                     .show(ui, |ui| {
-                        let status =
-                            Status { sound_problem: sound_problem.as_deref(), voice, film };
+                        let status = Status {
+                            sound_problem: sound_problem.as_deref(),
+                            voice,
+                            film,
+                            counts: self.backend.counts(),
+                            round_trip: self.backend.round_trip(),
+                        };
                         ui::stream::show(ui, &mut self.state, &view, &mut self.player, status)
                     })
                     .inner;

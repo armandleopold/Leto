@@ -144,8 +144,11 @@ impl<S: Shell> Service<S> {
                 }
                 shell.tell(Event::Hosts(client.hosts()));
             }
-            Request::Play { host, app, attempt } => {
-                play(&client, &shell, &watching, &host, app, attempt);
+            Request::Play { host, app, attempt, screen } => {
+                // A screen this device knows is filled as it is.
+                let settings =
+                    screen.map_or_else(StreamSettings::default, StreamSettings::for_screen);
+                play(&client, &shell, &watching, &host, app, attempt, settings);
             }
             Request::Leave => {
                 // Winding a stream down takes a moment: not on the
@@ -247,6 +250,13 @@ impl<S: Shell> Service<S> {
         let watching = lock(&self.watching);
         watching.session.as_ref().and(watching.wanted)
     }
+
+    /// How long a message takes to reach the PC streamed from and come
+    /// back, when a stream plays and has measured it.
+    pub fn round_trip(&self) -> Option<Duration> {
+        let watching = lock(&self.watching);
+        watching.session.as_ref().filter(|session| !session.is_over())?.round_trip()
+    }
 }
 
 impl<S: Shell> Drop for Service<S> {
@@ -336,6 +346,7 @@ fn play<S: Shell>(
     host: &HostId,
     app: u32,
     attempt: u64,
+    settings: StreamSettings,
 ) {
     let started = shell.sinks().and_then(|(video, audio)| {
         let ended = {
@@ -358,9 +369,7 @@ fn play<S: Shell>(
                 shell.tell(Event::StreamEnded { attempt, why });
             }
         };
-        client
-            .play(host, app, StreamSettings::default(), video, audio, ended)
-            .map_err(|error| explain(&error))
+        client.play(host, app, settings, video, audio, ended).map_err(|error| explain(&error))
     });
     // The PC is running the app now, or still runs another one.
     shell.tell(Event::Hosts(client.hosts()));

@@ -2089,6 +2089,7 @@ dependencies = [
  "leto-core",
  "leto-media",
  "leto-protocol",
+ "leto-system",
  "leto-testhost",
  "log",
  "serde_json",
@@ -2198,6 +2199,15 @@ dependencies = [
  "aes-gcm",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "leto-system"
+version = "0.0.1"
+dependencies = [
+ "leto-core",
+ "log",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

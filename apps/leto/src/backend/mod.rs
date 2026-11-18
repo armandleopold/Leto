@@ -68,6 +68,22 @@ pub enum Picture {
     Behind([usize; 2]),
 }
 
+/// How often the person sees the pictures of a stream, which is how many of
+/// them are worth making into pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+// A browser slows down a page that is out of sight by itself.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub enum Pace {
+    /// Every picture: the window has the person's attention.
+    #[default]
+    Full,
+    /// One picture a second: another window has it, and this one is only
+    /// glanced at.
+    Glance,
+    /// None: the window is out of sight.
+    Hidden,
+}
+
 /// What the camera of this device shows, as the backend hands it to the
 /// interface that tries the camera out.
 pub struct Seen {

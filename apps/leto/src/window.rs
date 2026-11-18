@@ -1,9 +1,13 @@
 //! What a stream asks of the window it is shown in: to fill the screen, to
-//! keep the pointer, to leave the keyboard to the PC.
+//! keep the pointer, to leave the keyboard to the PC, and what the screen it
+//! fills is like.
 //!
-//! A desktop window is asked through egui. A browser page is not egui's to
-//! command: the browser is asked itself, and may refuse or change its mind
-//! when the person presses Escape.
+//! A desktop window is asked through egui, and the system for what egui
+//! does not do. A browser page is not egui's to command: the browser is
+//! asked itself, and may refuse or change its mind when the person presses
+//! Escape.
+
+pub use leto_system::keyboard::Stroke;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use desktop::*;
@@ -13,6 +17,10 @@ pub use page::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod desktop {
     use egui::{Context, CursorGrab, ViewportCommand};
+    use leto_core::engine::ScreenMode;
+    use leto_system::{display, keyboard};
+
+    use super::Stroke;
 
     /// How the pointer is kept in the window. Each system offers one way
     /// only.
@@ -41,9 +49,47 @@ mod desktop {
         false
     }
 
-    /// Leaves every key to the stream, or not. A desktop window gets every
-    /// key the system lets through as it is.
-    pub fn keep_keyboard(_keep: bool) {}
+    /// Starts listening to the system. Called once, when the app starts.
+    pub fn watch(ctx: &Context) {
+        // A key taken for the stream is passed on at the next frame.
+        let ctx = ctx.clone();
+        keyboard::set_wake(move || ctx.request_repaint());
+    }
+
+    /// Leaves every key to the stream, the system's shortcuts too, or gives
+    /// them back. Where the system does not let go of its shortcuts, the
+    /// stream gets the keys the window gets. Cheap to call every frame.
+    pub fn keep_keyboard(keep: bool) {
+        keyboard::capture(keep);
+    }
+
+    /// The keys the system gave the stream since the last call, in order.
+    /// They never reach the window.
+    pub fn keys() -> Vec<Stroke> {
+        keyboard::take()
+    }
+
+    /// The screen the window is on: its pixels and its pace as the system
+    /// says, or as egui does, at 60 pictures per second.
+    pub fn screen(ctx: &Context) -> Option<ScreenMode> {
+        let (scale, monitor) = ctx.input(|input| {
+            let viewport = input.viewport();
+            (viewport.native_pixels_per_point, viewport.monitor_size)
+        });
+        let scale = scale.unwrap_or(1.0);
+        let scale_percent = (scale * 100.0).round() as u32;
+        if let Some(mode) = display::of_active_window() {
+            let display::Mode { width, height, refresh_hz } = mode;
+            return Some(ScreenMode { width, height, refresh_hz, scale_percent });
+        }
+        let size = monitor? * scale;
+        Some(ScreenMode {
+            width: size.x.round() as u32,
+            height: size.y.round() as u32,
+            refresh_hz: 60,
+            scale_percent,
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -52,6 +98,7 @@ mod page {
 
     use egui::{Context, Vec2, vec2};
     use js_sys::{Function, Reflect};
+    use leto_core::engine::ScreenMode;
     use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
     use web_sys::{AddEventListenerOptions, Document, KeyboardEvent, MouseEvent};
 
@@ -223,6 +270,29 @@ mod page {
     /// Keeps the browser's own shortcuts from acting, or lets them.
     pub fn keep_keyboard(keep: bool) {
         KEYBOARD_KEPT.set(keep);
+    }
+
+    /// Keys taken from the system: a page gets every key it gets from its
+    /// browser.
+    pub fn keys() -> Vec<super::Stroke> {
+        Vec::new()
+    }
+
+    /// The screen of this device, lying down: a PC makes a screen for a
+    /// phone as wide as the phone is long. A browser does not tell its pace.
+    pub fn screen(_ctx: &Context) -> Option<ScreenMode> {
+        let window = web_sys::window()?;
+        let screen = window.screen().ok()?;
+        let ratio = window.device_pixel_ratio();
+        let (width, height) = (screen.width().ok()?, screen.height().ok()?);
+        let pixels = |points: i32| (f64::from(points) * ratio).round() as u32;
+        let (long, short) = (pixels(width.max(height)), pixels(width.min(height)));
+        Some(ScreenMode {
+            width: long,
+            height: short,
+            refresh_hz: 60,
+            scale_percent: (ratio * 100.0).round() as u32,
+        })
     }
 
     /// How the mouse moved while the pointer was kept, since the last call.

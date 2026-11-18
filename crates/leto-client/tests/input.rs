@@ -21,7 +21,7 @@ use leto_testhost::{FakeHost, Options, permission};
 
 /// A small picture, so the tests spend their time on the protocol.
 const SMALL: StreamSettings =
-    StreamSettings { width: 320, height: 180, fps: 30, bitrate_kbps: 2000 };
+    StreamSettings { width: 320, height: 180, fps: 30, bitrate_kbps: 2000, virtual_display: None };
 
 /// A fresh settings folder per test.
 struct Settings(PathBuf);

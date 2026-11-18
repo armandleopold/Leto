@@ -218,6 +218,20 @@ struct Playing {
     last_inputs: Vec<Input>,
     /// What its microphone had sent.
     last_heard: Vec<f32>,
+    /// What the client asked of its screen when it last launched or resumed.
+    screen_asked: Option<ScreenAsked>,
+}
+
+/// What a client asked of the screen of its stream when it launched an app
+/// or went back to one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenAsked {
+    /// The `mode` it sent: width, height and pace, as in `1920x1080x60`.
+    pub mode: Option<String>,
+    /// It asked for a screen of its own, as Apollo makes one.
+    pub virtual_display: bool,
+    /// How large text should be on that screen, in percent.
+    pub scale_percent: Option<u32>,
 }
 
 impl Playing {
@@ -314,6 +328,12 @@ impl FakeHost {
     /// The app the host is running, whether or not a client is watching.
     pub fn running_app(&self) -> Option<u32> {
         self.shared.playing.lock().unwrap().app
+    }
+
+    /// What the client asked of its screen when it last launched or resumed
+    /// an app.
+    pub fn screen_asked(&self) -> Option<ScreenAsked> {
+        self.shared.playing.lock().unwrap().screen_asked.clone()
     }
 
     /// What the current stream has done so far, or the last one if it ended.
@@ -771,6 +791,11 @@ fn launch(
         camera: shared.cameras.clone(),
     };
 
+    playing.screen_asked = Some(ScreenAsked {
+        mode: query.get("mode").map(|mode| (*mode).to_owned()),
+        virtual_display: query.get("virtualDisplay") == Some(&"1"),
+        scale_percent: query.get("scaleFactor").and_then(|scale| scale.parse().ok()),
+    });
     playing.end_stream(false);
     let session = match stream::Session::start(local, launch) {
         Ok(session) => session,
