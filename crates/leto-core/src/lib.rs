@@ -5,6 +5,8 @@
 //! web (WebAssembly).
 
 pub mod brand;
+pub mod bridge;
+pub mod engine;
 pub mod input;
 pub mod model;
 pub mod platform;

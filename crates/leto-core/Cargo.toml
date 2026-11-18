@@ -13,4 +13,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# Covers travel as text between the bridge and a browser.
+base64 = "0.22"
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

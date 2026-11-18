@@ -2,9 +2,8 @@
 //! and the mouse of this device go to the PC.
 
 use egui::{
-    Align, Align2, Color32, CursorGrab, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order,
-    Pos2, Rect, RichText, Sense, Stroke, TextFormat, TextureHandle, TextureOptions, Ui, UiBuilder,
-    Vec2, ViewportCommand,
+    Align, Align2, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order, Pos2, Rect,
+    RichText, Sense, Stroke, TextFormat, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -12,9 +11,10 @@ use leto_core::input::Input;
 
 use super::{icons, widgets};
 use crate::{
+    backend::Picture,
     input::{Controls, Shortcut},
     state::{State, StreamView},
-    theme,
+    theme, window,
 };
 
 /// Seconds the bar stays when a stream starts, to say how to get out of it.
@@ -28,13 +28,9 @@ const GRIP_ZONE: Vec2 = Vec2::new(150.0, 16.0);
 /// The pointer still counts as over the bar this close to it.
 const BAR_MARGIN: f32 = 10.0;
 
-/// How the pointer is kept in the window for the game mouse. Each system
-/// offers one way only.
-const KEEP_POINTER: CursorGrab = if cfg!(any(target_os = "macos", target_arch = "wasm32")) {
-    CursorGrab::Locked
-} else {
-    CursorGrab::Confined
-};
+/// A browser fills the screen with F11 on its own, without telling the
+/// page: there, F11 is not Leto's to act on.
+const F11_FILLS: bool = cfg!(not(target_arch = "wasm32"));
 
 /// A key that went down or came up while a stream had the keyboard.
 struct KeyStroke {
@@ -45,10 +41,31 @@ struct KeyStroke {
     down: bool,
 }
 
+/// What the pictures of the stream are shown on.
+enum Surface {
+    /// The window draws them.
+    Texture(TextureHandle),
+    /// The backend shows them behind the window, this large: the window
+    /// leaves a hole.
+    Behind([usize; 2]),
+}
+
+impl Surface {
+    /// Width and height of the pictures.
+    fn size(&self) -> [usize; 2] {
+        match self {
+            Self::Texture(texture) => texture.size(),
+            Self::Behind(size) => *size,
+        }
+    }
+}
+
 /// The stream on screen: its picture, and what the person does to it.
 #[derive(Default)]
 pub struct Player {
-    texture: Option<TextureHandle>,
+    surface: Option<Surface>,
+    /// Where the window lets pictures shown behind it through.
+    hole: Option<Rect>,
     /// The stream screen made the window fill the screen, so leaving the
     /// stream gives the window back.
     filled_screen: bool,
@@ -68,13 +85,23 @@ pub struct Player {
 
 impl Player {
     /// Shows `picture` from now on.
-    pub fn picture(&mut self, ctx: &egui::Context, picture: egui::ColorImage) {
-        match &mut self.texture {
-            Some(texture) => texture.set(picture, TextureOptions::LINEAR),
-            None => {
-                self.texture = Some(ctx.load_texture("stream", picture, TextureOptions::LINEAR));
+    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture) {
+        match (picture, &mut self.surface) {
+            (Picture::Pixels(pixels), Some(Surface::Texture(texture))) => {
+                texture.set(pixels, TextureOptions::LINEAR);
             }
+            (Picture::Pixels(pixels), _) => {
+                let texture = ctx.load_texture("stream", pixels, TextureOptions::LINEAR);
+                self.surface = Some(Surface::Texture(texture));
+            }
+            (Picture::Behind(size), _) => self.surface = Some(Surface::Behind(size)),
         }
+    }
+
+    /// Where the backend should show its pictures, when it is the one
+    /// showing them: the hole the window leaves, in points.
+    pub fn hole(&self) -> Option<Rect> {
+        self.hole
     }
 
     /// Takes the keyboard away from the interface, for the PC: while a
@@ -104,11 +131,12 @@ impl Player {
     /// back.
     pub fn clear(&mut self, ctx: &egui::Context) {
         if self.filled_screen {
-            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
+            window::fill_screen(ctx, false);
         }
         if self.pointer_kept {
-            ctx.send_viewport_cmd(ViewportCommand::CursorGrab(CursorGrab::None));
+            window::keep_pointer(ctx, false);
         }
+        window::keep_keyboard(false);
         *self = Self::default();
     }
 }
@@ -123,17 +151,34 @@ pub fn show(
     sound_problem: Option<&str>,
 ) -> Vec<Input> {
     let window = ui.max_rect();
-    let (now, focused, fills_screen) =
-        ui.input(|input| (input.time, input.focused, input.viewport().fullscreen.unwrap_or(false)));
+    let (now, focused) = ui.input(|input| (input.time, input.focused));
+    let fills_screen = window::fills_screen(ui.ctx());
     let mut asked = Asked::default();
+    // Once connected, every key is the PC's, the system's shortcuts too
+    // where the system lets go of them.
+    window::keep_keyboard(view.connected);
 
-    ui.painter().rect_filled(window, 0, Color32::BLACK);
-    let picture = player.texture.as_ref().map(|texture| {
-        let place = fit(texture.size_vec2(), window);
-        egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
-        (place, texture.size())
+    player.hole = None;
+    let picture = player.surface.as_ref().map(|surface| {
+        let size = surface.size();
+        let place = fit(vec2(size[0] as f32, size[1] as f32), window);
+        match surface {
+            Surface::Texture(texture) => {
+                ui.painter().rect_filled(window, 0, Color32::BLACK);
+                egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
+            }
+            Surface::Behind(_) => {
+                // Black around the pictures, and nothing over them.
+                for side in around(place, window) {
+                    ui.painter().rect_filled(side, 0, Color32::BLACK);
+                }
+                player.hole = Some(place);
+            }
+        }
+        (place, size)
     });
     if picture.is_none() {
+        ui.painter().rect_filled(window, 0, Color32::BLACK);
         asked.leave |= waiting(ui, window, view);
     }
 
@@ -166,7 +211,7 @@ pub fn show(
         player.strokes.clear();
         let (escape, f11) =
             ui.input(|input| (input.key_pressed(Key::Escape), input.key_pressed(Key::F11)));
-        asked.fill |= f11;
+        asked.fill |= f11 && F11_FILLS;
         // The way out of the full screen first, then out of the stream.
         if escape {
             if fills_screen { asked.fill = true } else { asked.leave = true }
@@ -180,15 +225,21 @@ pub fn show(
         // The bar says what just changed, and how to change it back.
         player.bar_until = Some(now + BAR_RETURNS);
     }
+    if player.pointer_kept && window::pointer_lost() {
+        // A browser gives the pointer back when Escape is pressed, whoever
+        // asked for it: the game mouse is over.
+        player.pointer_kept = false;
+        player.game_mouse = false;
+        player.bar_until = Some(now + BAR_RETURNS);
+    }
     let keep = player.game_mouse && view.connected && focused && !asked.leave;
     if keep != player.pointer_kept {
         player.pointer_kept = keep;
-        let grab = if keep { KEEP_POINTER } else { CursorGrab::None };
-        ui.ctx().send_viewport_cmd(ViewportCommand::CursorGrab(grab));
+        window::keep_pointer(ui.ctx(), keep);
     }
     if asked.fill {
         player.filled_screen = !fills_screen;
-        ui.ctx().send_viewport_cmd(ViewportCommand::Fullscreen(!fills_screen));
+        window::fill_screen(ui.ctx(), !fills_screen);
     }
     if asked.leave {
         player.controls.release_all();
@@ -270,7 +321,7 @@ fn overlay(
     now: f64,
     asked: &mut Asked,
 ) {
-    let has_picture = player.texture.is_some();
+    let has_picture = player.surface.is_some();
     let (idle, pointer) =
         ui.input(|input| (input.pointer.time_since_last_movement(), input.pointer.hover_pos()));
     // With the game mouse the pointer is hidden and going nowhere: it opens
@@ -289,7 +340,7 @@ fn overlay(
     if opacity > 0.0 {
         let content = Bar {
             view,
-            picture: player.texture.as_ref().map(TextureHandle::size),
+            picture: player.surface.as_ref().map(Surface::size),
             sound_problem,
             game_mouse: player.game_mouse,
             // A note under the buttons when there is something to say, not
@@ -411,8 +462,10 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 asked.game_mouse |= switch.clicked() && content.view.connected;
                                 let fill = if content.view.connected {
                                     format!("Full screen ({})", Shortcut::FullScreen.keys())
-                                } else {
+                                } else if F11_FILLS {
                                     "Full screen (F11)".to_owned()
+                                } else {
+                                    "Full screen".to_owned()
                                 };
                                 asked.fill |=
                                     widgets::icon_button(ui, icons::expand, &fill).clicked();
@@ -505,6 +558,16 @@ fn fit(picture: Vec2, window: Rect) -> Rect {
     }
     let scale = (window.width() / picture.x).min(window.height() / picture.y);
     Rect::from_center_size(window.center(), picture * scale)
+}
+
+/// What is left of `window` around `place`: above, below, left and right.
+fn around(place: Rect, window: Rect) -> [Rect; 4] {
+    [
+        Rect::from_min_max(window.min, Pos2::new(window.max.x, place.min.y)),
+        Rect::from_min_max(Pos2::new(window.min.x, place.max.y), window.max),
+        Rect::from_min_max(Pos2::new(window.min.x, place.min.y), place.left_bottom()),
+        Rect::from_min_max(place.right_top(), Pos2::new(window.max.x, place.max.y)),
+    ]
 }
 
 #[cfg(test)]

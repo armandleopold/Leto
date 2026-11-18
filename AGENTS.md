@@ -16,6 +16,7 @@ cargo run -p leto          # the app
 cargo run -p leto-cli -- pcs
 cargo xtask ci             # everything the pipeline checks
 cargo xtask web            # the web client, into dist/web
+cargo run -p leto-cli -- bridge   # serves the web client to browsers
 ```
 
 Building needs a C++ compiler, for the H.264 codec (OpenH264, built from
@@ -47,6 +48,13 @@ seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 cargo run -p leto-cli -- play Salon Desktop --seconds 10
 ```
 
+The web client needs its bridge: `cargo xtask web` builds the client, then
+`leto-cli bridge` serves it on port 5386 and prints the address to open and
+the code a new browser has to be given. The address is HTTPS with a
+certificate the bridge made itself, so the browser warns once. With `--local`
+only this computer can reach it. The bridge keeps its certificate and the
+browsers it knows in a `bridge` folder next to the client's settings.
+
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
 and `targets` (a compile check for macOS, the web, Android and iOS). Each is
 also a command of its own, for example `cargo xtask clippy`. Run
@@ -73,6 +81,12 @@ builds and tests it for real.
   goes in `backend/`, and `ui/` only draws. See `docs/architecture.md`.
 - `leto-client` hands a stream over still encoded and `leto-media` decodes
   it. Neither depends on the other: the app's backend joins them.
+- `leto-bridge` relays a stream to a browser still encoded, and the browser
+  decodes it. What the two say to each other is in `leto_core::bridge`:
+  change both ends together.
+- Code of the web build that needs no browser goes outside
+  `apps/leto/src/backend/web/`, where the desktop tests run it. Nothing runs
+  a browser in the pipeline.
 - `xtask/`: automation. Add a command there instead of a shell script.
 - `docs/`: decisions and designs. Update them in the same pull request as the
   code they describe.
@@ -95,6 +109,8 @@ builds and tests it for real.
   Leto is GPL-3.0-only.
 - **A paired PC is recognised by its certificate.** Never add a way to talk to
   a paired PC that skips that check.
+- **A browser has to be known to the bridge.** Never add a way to ask the
+  bridge for anything, or to send it input, that skips its gate.
 - **Code ported from another project** says so in a comment at the top of the
   module: which project, which file, which commit.
 - Write code, comments, documentation and commit messages in English.

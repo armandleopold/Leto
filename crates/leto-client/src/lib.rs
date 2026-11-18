@@ -6,12 +6,15 @@
 //! and Apollo hosts as they are. All calls block; a shell with an interface
 //! runs them on worker threads.
 //!
-//! A stream arrives still encoded. See [`session`] for where it goes.
+//! A stream arrives still encoded. See [`session`] for where it goes. A
+//! shell that would rather ask and be told than call and wait uses
+//! [`service`].
 //!
 //! It does not compile for the web: browsers have no sockets. The web client
 //! reaches hosts through a bridge instead.
 
 pub mod discovery;
+pub mod service;
 pub mod session;
 pub mod store;
 mod transport;
@@ -19,14 +22,14 @@ mod transport;
 use std::{
     collections::BTreeMap,
     fmt, io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
     time::Duration,
 };
 
 pub use leto_core::{
-    input,
+    engine, input,
     model::{
         AppSummary, HostId, HostKind, HostSummary, Pin, Reachability, join_address, parse_address,
     },
@@ -42,12 +45,21 @@ use moonlight_common::{
     },
     stream::{AesIv, AesKey, std::MoonlightStream},
 };
+pub use service::{Service, Shell};
 pub use session::{
     AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings, Tally,
     VideoFrame, VideoSetup, VideoSink,
 };
 use store::{Identity, Saved, SavedHost, Store};
 use transport::Transport;
+
+/// Where Leto keeps its settings on this system: the user's configuration
+/// folder.
+pub fn default_directory() -> Result<PathBuf, Error> {
+    let folders = directories::ProjectDirs::from("re", "leto", "Leto")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this system has no home folder"))?;
+    Ok(folders.config_dir().to_owned())
+}
 
 type Host = MoonlightHost<Transport>;
 type ProtocolError = moonlight_common::error::Error;
@@ -165,10 +177,7 @@ pub struct Client {
 impl Client {
     /// Opens the client with its settings in the user's configuration folder.
     pub fn open_default() -> Result<Self, Error> {
-        let folders = directories::ProjectDirs::from("re", "leto", "Leto").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "this system has no home folder")
-        })?;
-        Self::open(folders.config_dir())
+        Self::open(&default_directory()?)
     }
 
     /// Opens the client with its settings in `directory`, creating the

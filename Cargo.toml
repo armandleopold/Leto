@@ -13,6 +13,7 @@ publish = false
 
 [workspace.dependencies]
 # Leto crates
+leto-bridge = { path = "crates/leto-bridge" }
 leto-client = { path = "crates/leto-client" }
 leto-core = { path = "crates/leto-core" }
 leto-media = { path = "crates/leto-media" }
