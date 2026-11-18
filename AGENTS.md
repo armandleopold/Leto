@@ -33,6 +33,11 @@ would, or `drop` to break the stream:
 cargo run -p leto-testhost --example serve -- --port 47989 --announce
 ```
 
+With `--apollo` it behaves as an Apollo that already knows another device: a
+newly paired one may list the apps and watch, and nothing else. Type `allow`
+to give it every permission, as on Apollo's PIN page, and `restrict` to take
+them back.
+
 To check a stream without the window, `leto-cli play` streams an app for a few
 seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 

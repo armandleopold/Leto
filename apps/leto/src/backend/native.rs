@@ -10,6 +10,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use leto_client::Permission;
 use leto_client::{Client, Ended, Error, HostId, Session, StreamSettings};
 
 use super::{
@@ -315,6 +317,11 @@ fn explain(error: &Error) -> String {
         Error::OtherAppRunning => {
             "Another app is running on this PC. Close it first, then start this one.".to_owned()
         }
+        Error::NotAllowed(permission) => format!(
+            "This PC does not let this device {permission}. On the PC, open Apollo's PIN page \
+             and, under Device Management, allow \"{}\" for this device.",
+            permission.apollo_name()
+        ),
         Error::Unsupported(reason) => format!("This PC cannot stream to Leto yet: {reason}."),
         Error::Storage(error) => format!("Leto could not read or write its settings: {error}"),
         Error::Discovery(_) | Error::Protocol(_) => sentence(&error.to_string()),
@@ -337,6 +344,7 @@ mod tests {
             Error::NotPaired,
             Error::UnknownHost,
             Error::OtherAppRunning,
+            Error::NotAllowed(Permission::LaunchApps),
             Error::Unsupported("the host is too old".into()),
             Error::Discovery("no network interface".into()),
             Error::Protocol("unexpected answer".into()),

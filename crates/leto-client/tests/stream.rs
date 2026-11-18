@@ -14,8 +14,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use leto_client::{Client, Counter, Ended, Error, HostSummary, StreamSettings, Tally};
-use leto_testhost::{FakeHost, Options};
+use leto_client::{
+    Client, Counter, Ended, Error, HostKind, HostSummary, Permission, StreamSettings, Tally,
+};
+use leto_testhost::{FakeHost, Options, permission};
 
 /// A small picture, so the tests spend their time on the protocol.
 const SMALL: StreamSettings =
@@ -251,4 +253,54 @@ fn an_unpaired_device_cannot_start_a_stream() {
 
     assert!(matches!(refused, Err(Error::NotPaired)));
     assert_eq!(host.running_app(), None);
+}
+
+#[test]
+fn a_device_that_may_only_watch_cannot_start_or_close_an_app() {
+    // What Apollo gives every device but the first one paired with it.
+    let settings = Settings::new();
+    let host = FakeHost::start_with(Options {
+        permissions: Some(permission::DEFAULT),
+        ..Options::default()
+    });
+    let client = settings.open();
+    let paired = pair(&client, &host);
+    assert_eq!(paired.kind, HostKind::Apollo);
+    assert_eq!(client.apps(&paired.id).unwrap().len(), 2);
+
+    let counter = Counter::default();
+    let refused = client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {});
+    assert!(matches!(refused, Err(Error::NotAllowed(Permission::LaunchApps))));
+    assert_eq!(host.running_app(), None);
+
+    // The owner of the PC ticks the boxes.
+    host.set_permissions(Some(permission::ALL));
+    let session =
+        client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+    wait_for_stream(&counter);
+    session.stop();
+
+    // Watching the app that runs takes less than starting one.
+    host.set_permissions(Some(permission::DEFAULT));
+    let again = Counter::default();
+    let session = client.play(&paired.id, 1, SMALL, again.video(), again.audio(), |_| {}).unwrap();
+    wait_for_stream(&again);
+    session.stop();
+
+    assert!(matches!(client.quit_app(&paired.id), Err(Error::NotAllowed(Permission::LaunchApps))));
+    assert_eq!(host.running_app(), Some(1), "the app keeps running");
+}
+
+#[test]
+fn a_device_that_may_do_nothing_is_told_so_instead_of_shown_a_fake_app() {
+    let settings = Settings::new();
+    let host = FakeHost::start_with(Options { permissions: Some(0), ..Options::default() });
+    let client = settings.open();
+    let paired = pair(&client, &host);
+
+    assert!(matches!(client.apps(&paired.id), Err(Error::NotAllowed(Permission::ListApps))));
+
+    let counter = Counter::default();
+    let refused = client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {});
+    assert!(matches!(refused, Err(Error::NotAllowed(Permission::LaunchApps))));
 }

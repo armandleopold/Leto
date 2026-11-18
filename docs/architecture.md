@@ -101,6 +101,14 @@ that know nothing of each other:
 Leaving a stream keeps the app running on the PC, like closing Moonlight. The
 apps screen then offers to resume it or to close it.
 
+Apollo lets its owner decide what each paired device may do. The first device
+paired with it may do everything. Every device paired after that may only
+list the apps and watch one that is already running, until the owner ticks
+more boxes on Apollo's PIN page, under "Device Management". Apollo reports the
+permissions in `serverinfo`, so the engine checks them before it asks, and
+says which one is missing (`Error::NotAllowed`) instead of passing on Apollo's
+bare "Permission denied".
+
 What this first version does, and what it leaves for later:
 
 - Video is H.264, decoded in software by OpenH264 and converted to RGB on the

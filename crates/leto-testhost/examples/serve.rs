@@ -8,6 +8,11 @@
 //! you would in the pairing page of a real host. While a client is streaming,
 //! type `close` to close the app as its owner would on the host, or `drop`
 //! to break the stream and leave the app running.
+//!
+//! With `--apollo` the host behaves as an Apollo that already knows another
+//! device: this one may only list the apps and watch. Type `allow` to give it
+//! every permission, as on Apollo's PIN page, and `restrict` to take them
+//! back.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -19,16 +24,18 @@ use std::{
 
 use image::{ImageFormat, Rgb, RgbImage};
 use leto_core::model::Pin;
-use leto_testhost::{App, FakeHost, HOST_ID, Options};
+use leto_testhost::{App, FakeHost, HOST_ID, Options, permission};
 
 const USAGE: &str = "\
-Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce]
+Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
 
   --name NAME   The name the host gives itself (default: Salon)
   --id ID       The unique id it reports (default: a fixed one)
   --port PORT   The port to listen on (default: any free port)
   --announce    Listen on every interface and announce the host on the
                 network, so that clients find it on their own
+  --apollo      Behave as an Apollo host that lets a newly paired device
+                list the apps and watch, and nothing else
 ";
 
 fn main() -> ExitCode {
@@ -59,6 +66,10 @@ fn main() -> ExitCode {
                 .map(|port| options.port = port),
             "--announce" => {
                 announce = true;
+                Ok(())
+            }
+            "--apollo" => {
+                options.permissions = Some(permission::DEFAULT);
                 Ok(())
             }
             _ => Err(()),
@@ -96,6 +107,7 @@ fn main() -> ExitCode {
 
     println!("Pair from a client, then type the PIN it shows here and press Enter.");
     println!("Type \"close\" to close the running app, \"drop\" to break the stream.");
+    println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         match line.trim() {
@@ -106,6 +118,14 @@ fn main() -> ExitCode {
             "drop" => {
                 host.drop_stream();
                 println!("The stream is broken. The app keeps running.");
+            }
+            "allow" => {
+                host.set_permissions(Some(permission::ALL));
+                println!("Paired devices may do everything.");
+            }
+            "restrict" => {
+                host.set_permissions(Some(permission::DEFAULT));
+                println!("Paired devices may list the apps and watch.");
             }
             other => match other.parse::<Pin>() {
                 Ok(pin) => {

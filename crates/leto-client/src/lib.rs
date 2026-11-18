@@ -18,7 +18,7 @@ mod transport;
 
 use std::{
     collections::BTreeMap,
-    io,
+    fmt, io,
     path::Path,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
@@ -35,6 +35,7 @@ use moonlight_common::{
     http::{
         ClientIdentifier, ClientSecret, ServerIdentifier,
         pair::{PairPin, PairingCryptoBackend},
+        server_info::ApolloPermissions,
     },
     stream::{AesIv, AesKey, std::MoonlightStream},
 };
@@ -69,6 +70,12 @@ pub enum Error {
     UnknownHost,
     #[error("another app is running on the PC")]
     OtherAppRunning,
+    #[error(
+        "the PC does not let this device {0}: allow \"{name}\" for it on Apollo's PIN page, \
+         under Device Management",
+        name = .0.apollo_name()
+    )]
+    NotAllowed(Permission),
     #[error("the PC cannot stream with these settings: {0}")]
     Unsupported(String),
     #[error("Leto could not read or write its settings: {0}")]
@@ -77,6 +84,39 @@ pub enum Error {
     Discovery(String),
     #[error("the PC answered in a way Leto did not expect: {0}")]
     Protocol(String),
+}
+
+/// Something the owner of a PC allows or refuses device by device.
+///
+/// Apollo does it: the first device paired with it may do everything, and
+/// every device paired after that may only list the apps and watch, until the
+/// owner gives it more on Apollo's PIN page, under "Device Management".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    ListApps,
+    ViewStreams,
+    LaunchApps,
+}
+
+impl Permission {
+    /// The name Apollo gives this permission on its page.
+    pub const fn apollo_name(self) -> &'static str {
+        match self {
+            Self::ListApps => "List Apps",
+            Self::ViewStreams => "View Streams",
+            Self::LaunchApps => "Launch Apps",
+        }
+    }
+}
+
+impl fmt::Display for Permission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ListApps => "list its apps",
+            Self::ViewStreams => "watch what is running",
+            Self::LaunchApps => "start or close apps",
+        })
+    }
 }
 
 impl From<ProtocolError> for Error {
@@ -89,6 +129,8 @@ impl From<ProtocolError> for Error {
             ProtocolError::Unauthenticated
             | ProtocolError::NotPaired
             | ProtocolError::StatusCode { code: 401, .. } => Self::NotPaired,
+            // Apollo's answer to a device that may not start or close apps.
+            ProtocolError::StatusCode { code: 403, .. } => Self::NotAllowed(Permission::LaunchApps),
             ProtocolError::SettingHdrNotSupported | ProtocolError::ServerVersionNotSupported(_) => {
                 Self::Unsupported(error.to_string())
             }
@@ -291,6 +333,14 @@ impl Client {
         }
         // Ask again: the list changes when the host's owner edits it.
         handle.update()?;
+        // Apollo would answer with a single app named "Permission Denied".
+        if let Some(allowed) = handle.apollo_permissions()?
+            && !allowed.intersects(
+                ApolloPermissions::LIST | ApolloPermissions::VIEW | ApolloPermissions::LAUNCH,
+            )
+        {
+            return Err(Error::NotAllowed(Permission::ListApps));
+        }
         let apps = handle.app_list()?;
         Ok(apps
             .into_iter()
@@ -327,6 +377,18 @@ impl Client {
         let running = handle.current_game()?;
         if running != 0 && running != app {
             return Err(Error::OtherAppRunning);
+        }
+        // A device that may only watch can join the app that is running, and
+        // nothing more.
+        if let Some(allowed) = handle.apollo_permissions()? {
+            let (needed, missing) = if running == app {
+                (ApolloPermissions::VIEW | ApolloPermissions::LAUNCH, Permission::ViewStreams)
+            } else {
+                (ApolloPermissions::LAUNCH, Permission::LaunchApps)
+            };
+            if !allowed.intersects(needed) {
+                return Err(Error::NotAllowed(missing));
+            }
         }
 
         let mut protocol = settings.to_protocol();

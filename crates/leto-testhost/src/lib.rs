@@ -58,6 +58,24 @@ pub const COVER_PNG: &[u8] = &[
     0x42, 0x60, 0x82,
 ];
 
+/// What Apollo lets its owner allow or refuse, device by device, as the bits
+/// it reports in `serverinfo`. From `crypto.h` of Apollo.
+pub mod permission {
+    pub const GAMEPAD: u32 = 1 << 8;
+    pub const TOUCH: u32 = 1 << 9;
+    pub const PEN: u32 = 1 << 10;
+    pub const MOUSE: u32 = 1 << 11;
+    pub const KEYBOARD: u32 = 1 << 12;
+    pub const LIST_APPS: u32 = 1 << 24;
+    pub const VIEW_STREAMS: u32 = 1 << 25;
+    pub const LAUNCH_APPS: u32 = 1 << 26;
+    /// What the first device paired with Apollo gets.
+    pub const ALL: u32 = 0x1F00 | 0x1F_0000 | LIST_APPS | VIEW_STREAMS | LAUNCH_APPS;
+    /// What every device paired after the first gets, until the owner of the
+    /// PC gives it more.
+    pub const DEFAULT: u32 = LIST_APPS | VIEW_STREAMS;
+}
+
 pub const HOST_NAME: &str = "Salon";
 pub const HOST_ID: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 
@@ -95,6 +113,10 @@ pub struct Options {
     /// by default. Without it the handshake is in clear text, as a host
     /// configured to never encrypt does it.
     pub encrypt_rtsp: bool,
+    /// With some bits of [`permission`], the host behaves as Apollo: it
+    /// reports them and refuses what they do not cover. Without, it is a
+    /// Sunshine, where a paired device may do everything.
+    pub permissions: Option<u32>,
 }
 
 impl Default for Options {
@@ -110,6 +132,7 @@ impl Default for Options {
                 App::new(881_448_767, "Steam Big Picture", false),
             ],
             encrypt_rtsp: true,
+            permissions: None,
         }
     }
 }
@@ -142,6 +165,8 @@ struct Shared {
     /// Certificates of paired clients, DER encoded.
     paired: Mutex<Vec<Vec<u8>>>,
     playing: Mutex<Playing>,
+    /// See [`Options::permissions`]. The owner can change them at any time.
+    permissions: Mutex<Option<u32>>,
     options: Options,
     http_port: u16,
     https_port: u16,
@@ -194,6 +219,7 @@ impl FakeHost {
             pairing: Mutex::new(Pairing::default()),
             paired: Mutex::new(Vec::new()),
             playing: Mutex::new(Playing::default()),
+            permissions: Mutex::new(options.permissions),
             options,
             http_port: http.local_addr().unwrap().port(),
             https_port: https.local_addr().unwrap().port(),
@@ -218,6 +244,12 @@ impl FakeHost {
     /// Someone types a PIN in the host's pairing page.
     pub fn type_pin(&self, pin: Pin) {
         *self.shared.typed_pin.lock().unwrap() = Some(pin);
+    }
+
+    /// The host's owner changes what paired devices may do. See
+    /// [`Options::permissions`].
+    pub fn set_permissions(&self, permissions: Option<u32>) {
+        *self.shared.permissions.lock().unwrap() = permissions;
     }
 
     /// The host's owner removes every paired device.
@@ -437,6 +469,8 @@ fn unauthorized(path: &str) -> (&'static str, Vec<u8>) {
     (XML, text.into_bytes())
 }
 
+const VIEW_OR_LAUNCH: u32 = permission::VIEW_STREAMS | permission::LAUNCH_APPS;
+
 /// Answers one request. `client` is `None` over plain HTTP, and over HTTPS it
 /// is the certificate the client presented, if any.
 fn respond(
@@ -456,6 +490,9 @@ fn respond(
     if secure && !authorized {
         return unauthorized(path);
     }
+    let permissions = *shared.permissions.lock().unwrap();
+    // Whether the device may do something that needs one of `needed`.
+    let allowed = |needed: u32| permissions.is_none_or(|granted| granted & needed != 0);
 
     match path {
         "/serverinfo" => {
@@ -467,6 +504,13 @@ fn respond(
                 }
                 playing.app
             };
+            // Apollo tells a paired device what it may do, and a device it
+            // does not know that it may do nothing.
+            let permission = match (authorized, permissions) {
+                (true, Some(granted)) => format!("<Permission>{granted}</Permission>"),
+                (false, Some(_)) => "<Permission>0</Permission>".to_owned(),
+                (_, None) => String::new(),
+            };
             xml(&format!(
                 "<appversion>{}</appversion><hostname>{}</hostname>\
              <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
@@ -474,7 +518,7 @@ fn respond(
              <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>00:11:22:33:44:55</mac>\
              <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>3</ServerCodecModeSupport>\
              <PairStatus>{}</PairStatus><currentgame>{}</currentgame>\
-             <state>{}</state>",
+             <state>{}</state>{permission}",
                 stream::APP_VERSION,
                 shared.options.name,
                 shared.options.id,
@@ -489,6 +533,12 @@ fn respond(
         "/unpair" => {
             shared.paired.lock().unwrap().clear();
             xml("")
+        }
+        // Apollo answers a device that may not even list the apps with one
+        // app of that name.
+        "/applist" if secure && !allowed(permission::LIST_APPS | VIEW_OR_LAUNCH) => {
+            xml("<App><IsHdrSupported>0</IsHdrSupported><AppTitle>Permission Denied</AppTitle>\
+             <ID>114514</ID></App>")
         }
         "/applist" if secure => {
             let apps: String = shared
@@ -507,7 +557,20 @@ fn respond(
                 .collect();
             xml(&apps)
         }
-        "/launch" | "/resume" if secure => launch(shared, path == "/resume", &query, local),
+        "/launch" | "/resume" if secure => {
+            // A device that may only watch can join the app that is running.
+            let running = shared.playing.lock().unwrap().app;
+            let wanted = query.get("appid").and_then(|id| id.parse::<u32>().ok());
+            let joins = path == "/resume" || (running.is_some() && running == wanted);
+            let needed = if joins { VIEW_OR_LAUNCH } else { permission::LAUNCH_APPS };
+            if !allowed(needed) {
+                return failure(403, "Permission denied");
+            }
+            launch(shared, path == "/resume", &query, local)
+        }
+        "/cancel" if secure && !allowed(permission::LAUNCH_APPS) => {
+            failure(403, "Permission denied")
+        }
         "/cancel" if secure => {
             let mut playing = shared.playing.lock().unwrap();
             playing.end_stream(true);
