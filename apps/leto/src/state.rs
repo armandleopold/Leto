@@ -4,7 +4,10 @@
 //! something, the backend's [`Event`]s are fed to [`State::apply`], and the
 //! work the backend has to do comes out of [`State::take_requests`].
 
-use leto_core::model::{AppSummary, HostId, HostSummary, Pin, Reachability};
+use leto_core::{
+    input::InputAllowed,
+    model::{AppSummary, HostId, HostSummary, Pin, Reachability},
+};
 
 /// Seconds between two searches while the list of PCs is on screen.
 const SEARCH_EVERY: f64 = 15.0;
@@ -67,9 +70,11 @@ pub enum Event {
         app: u32,
         image: Option<egui::ColorImage>,
     },
-    /// The stream is connected: pictures and sound are on their way.
+    /// The stream is connected: pictures and sound are on their way, and
+    /// the PC accepts `input` from this device.
     Playing {
         attempt: u64,
+        input: InputAllowed,
     },
     /// The stream did not start.
     PlayFailed {
@@ -186,6 +191,8 @@ pub struct StreamView {
     pub attempt: u64,
     /// The stream is connected. Before that, the PC is starting the app.
     pub connected: bool,
+    /// What the PC lets this device play with, known once connected.
+    pub input: InputAllowed,
 }
 
 /// The form that adds a PC by address.
@@ -315,6 +322,7 @@ impl State {
             app: app.clone(),
             attempt: self.attempts,
             connected: false,
+            input: InputAllowed::ALL,
         });
     }
 
@@ -458,11 +466,12 @@ impl State {
                     };
                 }
             }
-            Event::Playing { attempt } => {
+            Event::Playing { attempt, input } => {
                 if let Screen::Stream(view) = &mut self.screen
                     && view.attempt == attempt
                 {
                     view.connected = true;
+                    view.input = input;
                 }
             }
             Event::PlayFailed { attempt, message } => {
@@ -740,7 +749,7 @@ mod tests {
         let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert!(!view.connected);
 
-        state.apply(Event::Playing { attempt: 1 }, 3.0);
+        state.apply(Event::Playing { attempt: 1, input: InputAllowed::ALL }, 3.0);
         let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert!(view.connected);
 
@@ -775,7 +784,7 @@ mod tests {
         ] {
             let mut state = state_with_apps(&salon);
             state.play(&app(2, "Steam"));
-            state.apply(Event::Playing { attempt: 1 }, 3.0);
+            state.apply(Event::Playing { attempt: 1, input: InputAllowed::ALL }, 3.0);
             state.take_requests();
 
             state.apply(Event::StreamEnded { attempt: 1, why }, 9.0);
@@ -794,7 +803,7 @@ mod tests {
         state.take_requests();
         let before = state.screen.clone();
 
-        state.apply(Event::Playing { attempt: 1 }, 5.0);
+        state.apply(Event::Playing { attempt: 1, input: InputAllowed::ALL }, 5.0);
         state.apply(Event::PlayFailed { attempt: 1, message: "Too late.".into() }, 5.0);
         state.apply(Event::StreamEnded { attempt: 1, why: StreamEnd::ConnectionLost }, 5.0);
         assert_eq!(state.screen, before);

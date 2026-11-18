@@ -43,6 +43,8 @@ impl Key {
     /// The key that opens the context menu.
     pub const MENU: Self = Self(0x5D);
     pub const SLEEP: Self = Self(0x5F);
+    /// The plus of the numeric keypad.
+    pub const KEYPAD_PLUS: Self = Self(0x6B);
     pub const NUM_LOCK: Self = Self(0x90);
     pub const SCROLL_LOCK: Self = Self(0x91);
     pub const LEFT_SHIFT: Self = Self(0xA0);
@@ -264,6 +266,26 @@ pub enum Input {
     GamepadLeft {
         number: u8,
     },
+}
+
+/// The kinds of input the owner of the PC lets this device send. All of them
+/// on every host but Apollo, which decides it device by device and gives a
+/// newly paired one none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputAllowed {
+    pub keyboard: bool,
+    pub mouse: bool,
+    pub gamepad: bool,
+}
+
+impl InputAllowed {
+    pub const ALL: Self = Self { keyboard: true, mouse: true, gamepad: true };
+}
+
+impl Default for InputAllowed {
+    fn default() -> Self {
+        Self::ALL
+    }
 }
 
 /// One notch of a mouse wheel, in the unit of [`Input::Scroll`].

@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use leto_core::input::{GamepadButtons, GamepadKind, Input, MouseButton};
+use leto_core::input::{GamepadButtons, GamepadKind, Input, InputAllowed, MouseButton};
 use moonlight_common::{
     error::Error as ProtocolError,
     http::server_info::ApolloPermissions,
@@ -174,25 +174,14 @@ pub enum InputError {
     NotConnected,
 }
 
-/// The kinds of input the owner of the PC lets this device send. All of them
-/// on every host but Apollo, where a newly paired device starts with none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InputAllowed {
-    pub keyboard: bool,
-    pub mouse: bool,
-    pub gamepad: bool,
-}
-
-impl InputAllowed {
-    pub const ALL: Self = Self { keyboard: true, mouse: true, gamepad: true };
-
-    fn from_apollo(permissions: Option<&ApolloPermissions>) -> Self {
-        permissions.map_or(Self::ALL, |granted| Self {
-            keyboard: granted.contains(ApolloPermissions::INPUT_KEYBOARD),
-            mouse: granted.contains(ApolloPermissions::INPUT_MOUSE),
-            gamepad: granted.contains(ApolloPermissions::INPUT_CONTROLLER),
-        })
-    }
+/// What Apollo's permissions for this device mean for input. No permissions
+/// at all is every host but Apollo: nobody decides, everything is allowed.
+fn input_allowed(permissions: Option<&ApolloPermissions>) -> InputAllowed {
+    permissions.map_or(InputAllowed::ALL, |granted| InputAllowed {
+        keyboard: granted.contains(ApolloPermissions::INPUT_KEYBOARD),
+        mouse: granted.contains(ApolloPermissions::INPUT_MOUSE),
+        gamepad: granted.contains(ApolloPermissions::INPUT_CONTROLLER),
+    })
 }
 
 /// A running stream. Dropping it leaves the stream. The app keeps running on
@@ -217,7 +206,7 @@ impl Session {
     ) -> Result<Self, moonlight_common::error::Error> {
         let control = Arc::new(Control::default());
         let leaving = Arc::new(AtomicBool::new(false));
-        let input_allowed = InputAllowed::from_apollo(config.apollo_permissions.as_ref());
+        let input_allowed = input_allowed(config.apollo_permissions.as_ref());
         let sideways_wheel = config.version.is_sunshine_like();
 
         let stream = MoonlightStream::connect(

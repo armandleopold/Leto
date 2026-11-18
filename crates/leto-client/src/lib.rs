@@ -43,8 +43,8 @@ use moonlight_common::{
     stream::{AesIv, AesKey, std::MoonlightStream},
 };
 pub use session::{
-    AudioSetup, AudioSink, Counter, Decoded, Ended, InputAllowed, InputError, Session,
-    StreamSettings, Tally, VideoFrame, VideoSetup, VideoSink,
+    AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings, Tally,
+    VideoFrame, VideoSetup, VideoSink,
 };
 use store::{Identity, Saved, SavedHost, Store};
 use transport::Transport;

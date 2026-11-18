@@ -1,6 +1,8 @@
 //! The backend of the web build: a placeholder until the bridge exists.
 
 use super::Unavailable;
+use leto_core::input::Input;
+
 use crate::state::{Event, Request};
 
 pub struct Backend;
@@ -21,6 +23,8 @@ impl Backend {
     }
 
     pub fn send(&self, _request: Request) {}
+
+    pub fn input(&self, _inputs: Vec<Input>) {}
 
     pub fn events(&self) -> Vec<Event> {
         Vec::new()

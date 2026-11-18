@@ -12,8 +12,10 @@ use std::{
 };
 
 use leto_client::{
-    Client, Counter, InputAllowed, InputError, Session, StreamSettings,
-    input::{GamepadButtons, GamepadKind, GamepadState, Input, Key, Modifiers, MouseButton},
+    Client, Counter, InputError, Session, StreamSettings,
+    input::{
+        GamepadButtons, GamepadKind, GamepadState, Input, InputAllowed, Key, Modifiers, MouseButton,
+    },
 };
 use leto_testhost::{FakeHost, Options, permission};
 

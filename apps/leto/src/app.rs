@@ -7,7 +7,7 @@ use crate::{
     backend::{Backend, Unavailable},
     state::{Event, Screen, State},
     theme,
-    ui::{self, apps::Covers, icons, stream::Canvas, widgets},
+    ui::{self, apps::Covers, icons, stream::Player, widgets},
 };
 
 /// Displayed size of the logo in the top bar, in points. The image is larger,
@@ -19,7 +19,7 @@ pub struct LetoApp {
     backend: Backend,
     state: State,
     covers: Covers,
-    canvas: Canvas,
+    player: Player,
 }
 
 impl LetoApp {
@@ -31,12 +31,23 @@ impl LetoApp {
             backend: Backend::new(&cc.egui_ctx),
             state: State::new(),
             covers: Covers::default(),
-            canvas: Canvas::default(),
+            player: Player::default(),
         }
     }
 }
 
 impl eframe::App for LetoApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // While a stream is connected the keyboard is the PC's: the
+        // interface must not act on Tab, Enter or Escape itself.
+        if matches!(&self.state.screen, Screen::Stream(view) if view.connected) {
+            self.player.take_keyboard(raw_input);
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::clipboard::shortcuts(raw_input);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = ui.input(|input| input.time);
         let unavailable = self.backend.unavailable();
@@ -57,18 +68,22 @@ impl eframe::App for LetoApp {
             // A stream takes the whole window: no bar, no margins.
             (None, Screen::Stream(view)) => {
                 if let Some(picture) = self.backend.take_picture() {
-                    self.canvas.show(ui.ctx(), picture);
+                    self.player.picture(ui.ctx(), picture);
                 }
                 let sound_problem = self.backend.sound_problem();
-                egui::CentralPanel::default()
+                let inputs = egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::BLACK))
                     .show(ui, |ui| {
                         let problem = sound_problem.as_deref();
-                        ui::stream::show(ui, &mut self.state, &view, &mut self.canvas, problem);
-                    });
+                        ui::stream::show(ui, &mut self.state, &view, &mut self.player, problem)
+                    })
+                    .inner;
+                // Before anything else is asked of the backend: what was
+                // held down is let go of before the stream is left.
+                self.backend.input(inputs);
             }
             (unavailable, screen) => {
-                self.canvas.clear(ui.ctx());
+                self.player.clear(ui.ctx());
                 let ground = egui::Frame::new().fill(theme::GROUND);
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
