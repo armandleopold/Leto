@@ -42,6 +42,10 @@ const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 /// Largest response head (status line and headers) accepted.
 const MAX_HEAD: usize = 64 * 1024;
 
+/// Longest wait for a connection to open. A PC that is on answers at once,
+/// even far away. One that is off never does.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Makes requests to one host, with or without the pairing certificates.
 #[derive(Clone)]
 pub struct Transport {
@@ -147,7 +151,7 @@ fn connect(hostport: &str, timeout: Duration) -> Result<TcpStream, Error> {
     let addresses = hostport.to_socket_addrs().map_err(|_| Error::ConnectionFailed)?;
     let mut last = Error::ConnectionFailed;
     for address in addresses {
-        match TcpStream::connect_timeout(&address, timeout) {
+        match TcpStream::connect_timeout(&address, timeout.min(CONNECT_TIMEOUT)) {
             Ok(stream) => {
                 stream.set_read_timeout(Some(timeout))?;
                 stream.set_write_timeout(Some(timeout))?;

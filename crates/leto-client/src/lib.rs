@@ -17,6 +17,7 @@ use std::{
     io,
     path::Path,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
+    thread,
     time::Duration,
 };
 
@@ -210,17 +211,20 @@ impl Client {
             })
             .collect();
 
-        for (id, address, port) in known {
-            match self.probe(&address, port) {
-                // The address now belongs to another PC: the one asked for is gone.
-                Ok(summary) if summary.id != id => self.mark_offline(&id),
-                Ok(_) => {}
-                Err(error) => {
-                    log::debug!("{address} did not answer: {error}");
-                    self.mark_offline(&id);
-                }
+        // All at once: a PC that is off takes seconds to give up on.
+        thread::scope(|scope| {
+            for (id, address, port) in known {
+                scope.spawn(move || match self.probe(&address, port) {
+                    // The address now belongs to another PC: the one asked for is gone.
+                    Ok(summary) if summary.id != id => self.mark_offline(&id),
+                    Ok(_) => {}
+                    Err(error) => {
+                        log::debug!("{address} did not answer: {error}");
+                        self.mark_offline(&id);
+                    }
+                });
             }
-        }
+        });
         self.hosts()
     }
 
