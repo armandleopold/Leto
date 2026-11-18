@@ -8,7 +8,7 @@ mod bridge;
 mod pcs;
 mod stream;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use leto_client::{Client, Pin, StreamSettings};
@@ -94,6 +94,10 @@ enum Command {
         /// Send the PC this device's microphone meanwhile, if it takes one.
         #[arg(long)]
         microphone: bool,
+        /// Send the PC this device's camera meanwhile, if it takes one. With
+        /// LETO_CAMERA=card in the environment, a test card instead.
+        #[arg(long)]
+        camera: bool,
     },
     /// Close the app running on a PC.
     Quit {
@@ -159,14 +163,17 @@ fn run(cli: &Cli) -> Result<String, String> {
         Command::Pair { pc, pin } => pcs::pair(&client(cli)?, pc, *pin, json),
         Command::Apps { pc } => pcs::apps(&client(cli)?, pc, json),
         Command::Forget { pc } => pcs::forget(&client(cli)?, pc, json),
-        Command::Play { pc, app, seconds, width, height, fps, bitrate, microphone } => {
+        Command::Play { pc, app, seconds, width, height, fps, bitrate, microphone, camera } => {
             let settings = StreamSettings {
                 width: *width,
                 height: *height,
                 fps: *fps,
                 bitrate_kbps: *bitrate,
             };
-            stream::play(&client(cli)?, pc, app, *seconds, settings, *microphone, json)
+            let card = std::env::var_os("LETO_CAMERA").is_some_and(|camera| camera == "card");
+            let which = if card { stream::WhichCamera::Card } else { stream::WhichCamera::System };
+            let back = stream::Back { microphone: *microphone, camera: camera.then_some(which) };
+            stream::play(&Arc::new(client(cli)?), pc, app, *seconds, settings, back, json)
         }
         Command::Quit { pc } => stream::quit(&client(cli)?, pc, json),
         Command::Bridge { port, web, local, forget_browsers } => {

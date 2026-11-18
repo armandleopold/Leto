@@ -3,7 +3,7 @@
 //! `play` shows nothing and plays nothing: it measures. It tells whether a
 //! PC streams to Leto at all, whether Leto can decode its pictures, and how
 //! well they arrive, without the graphical app. Asked to, it also sends the
-//! PC this device's microphone, and tells how that went.
+//! PC this device's microphone and its camera, and tells how that went.
 
 use std::{
     sync::{
@@ -11,20 +11,43 @@ use std::{
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
+    thread,
     time::{Duration, Instant},
 };
 
 use leto_client::{
-    AppSummary, Client, Counter, Decoded, Ended, Session, StreamSettings, VideoFrame, VideoSetup,
-    VideoSink,
+    AppSummary, CameraLink, CameraSettings, Client, Counter, Decoded, Ended, HostId, Session,
+    StreamSettings, VideoFrame, VideoSetup, VideoSink, engine::CameraOffer,
 };
-use leto_media::{Microphone, Picture, VOICE_FRAME, VideoDecoder};
+use leto_media::{
+    CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Picture, Sending, VOICE_FRAME,
+    VideoDecoder,
+};
 use serde::Serialize;
 
 use crate::{pcs::find, to_json};
 
 /// How often the microphone is asked how loud it is.
 const LISTEN_EVERY: Duration = Duration::from_millis(50);
+
+/// How long a camera gets to open and the PC to agree to take it.
+const CAMERA_PATIENCE: Duration = Duration::from_secs(10);
+
+/// What of this device goes to the PC while it streams.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Back {
+    pub microphone: bool,
+    pub camera: Option<WhichCamera>,
+}
+
+/// The camera that is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhichCamera {
+    /// The one of this device.
+    System,
+    /// A test card, where there is none.
+    Card,
+}
 
 /// What a stream delivered while it was watched.
 #[derive(Debug, Serialize)]
@@ -61,17 +84,28 @@ struct Report {
     microphone_loudest: Option<f32>,
     /// Why the microphone that was asked for was not sent.
     microphone_problem: Option<String>,
+    /// The PC takes the camera of this device.
+    takes_camera: bool,
+    /// Pictures of this device's camera that left for the PC, when it was
+    /// asked for, and how they were sent.
+    camera_pictures: Option<u64>,
+    camera_width: Option<u32>,
+    camera_height: Option<u32>,
+    camera_fps: Option<u32>,
+    camera_kbps: Option<u64>,
+    /// Why the camera that was asked for was not sent, or stopped.
+    camera_problem: Option<String>,
     /// Why the stream ended, when it ended before the time was up.
     ended: Option<String>,
 }
 
 pub fn play(
-    client: &Client,
+    client: &Arc<Client>,
     pc: &str,
     app: &str,
     seconds: u64,
     settings: StreamSettings,
-    microphone: bool,
+    back: Back,
     json: bool,
 ) -> Result<String, String> {
     let host = find(client, pc, false)?;
@@ -97,7 +131,20 @@ pub fn play(
     let connected = Instant::now();
     eprintln!("Streaming {} from {} for {seconds} seconds…", app.title, host.name);
     let takes_microphone = session.takes_microphone();
-    let listening = microphone.then(|| Listening::start(&session));
+    let listening = back.microphone.then(|| Listening::start(&session));
+    // Few PCs take a camera, and one that takes none may be slow to say so.
+    // The stream is not kept waiting for it: only a camera to send is.
+    let mut asking = Some({
+        let (client, id) = (Arc::clone(client), host.id.clone());
+        thread::spawn(move || client.camera_offer(&id).ok().flatten())
+    });
+    let mut answered = move || asking.take().and_then(|asking| asking.join().ok()).flatten();
+    let mut takes_camera = None;
+    let filming = back.camera.map(|which| {
+        let offer = answered();
+        takes_camera = Some(offer.is_some());
+        Filming::start(client, &host.id, offer, which)
+    });
 
     // Until the time is up, or the stream ends on its own.
     let mut loudest = 0f32;
@@ -120,6 +167,9 @@ pub fn play(
     // of it.
     let voice = listening
         .map(|listening| listening.map(|listening| listening.frames.load(Ordering::Relaxed)));
+    // So does the camera, and the PC is told before this returns.
+    let film = filming.map(|filming| filming.map(Filming::stop));
+    let takes_camera = takes_camera.unwrap_or_else(|| answered().is_some());
     drop(session);
 
     let kbps = |bytes: u64| (bytes as f64 * 8.0 / 1000.0 / watched.max(0.001)).round() as u64;
@@ -145,6 +195,17 @@ pub fn play(
         microphone_frames: voice.as_ref().and_then(|voice| voice.as_ref().ok().copied()),
         microphone_loudest: voice.as_ref().and_then(|voice| voice.as_ref().ok().map(|_| loudest)),
         microphone_problem: voice.and_then(Result::err),
+        takes_camera,
+        camera_pictures: filmed(&film).map(|film| film.pictures),
+        camera_width: filmed(&film).map(|film| film.sending.width),
+        camera_height: filmed(&film).map(|film| film.sending.height),
+        camera_fps: filmed(&film).map(|film| film.sending.fps),
+        camera_kbps: filmed(&film).map(|film| kbps(film.bytes)),
+        camera_problem: match &film {
+            Some(Ok(film)) => film.problem.clone(),
+            Some(Err(problem)) => Some(problem.clone()),
+            None => None,
+        },
         ended: ended.map(|reason| match reason {
             Ended::ByHost => "the app closed on the PC".to_owned(),
             Ended::ConnectionLost => "the connection was lost".to_owned(),
@@ -193,6 +254,25 @@ pub fn play(
             (None, None, false) => "Voice  the PC takes no microphone".to_owned(),
         },
     ];
+    lines.extend(match (&report.camera_problem, &film, report.takes_camera) {
+        (Some(problem), Some(Err(_)), _) => vec![format!("Camera not sent: {problem}")],
+        (problem, Some(Ok(film)), _) => {
+            let mut lines = vec![format!(
+                "Camera sent {} pictures of this device's camera as {}x{} at {} fps, {} kbit/s",
+                film.pictures,
+                film.sending.width,
+                film.sending.height,
+                film.sending.fps,
+                kbps(film.bytes)
+            )];
+            lines.extend(problem.iter().map(|problem| format!("       it stopped: {problem}")));
+            lines
+        }
+        (_, _, true) => {
+            vec!["Camera the PC takes a camera: `--camera` sends it this device's".to_owned()]
+        }
+        (_, _, false) => vec!["Camera the PC takes no camera".to_owned()],
+    });
     lines.push(match &report.ended {
         Some(reason) => format!("The stream ended early: {reason}."),
         None => format!(
@@ -237,6 +317,109 @@ impl Listening {
         })
         .map_err(|error| error.to_string())?;
         Ok(Self { microphone, frames })
+    }
+}
+
+/// What a camera sent to a PC.
+struct Film {
+    sending: Sending,
+    pictures: u64,
+    bytes: u64,
+    /// Why it stopped before it was asked to.
+    problem: Option<String>,
+}
+
+/// What was sent of a camera that was asked for and got going.
+fn filmed(film: &Option<Result<Film, String>>) -> Option<&Film> {
+    film.as_ref().and_then(|film| film.as_ref().ok())
+}
+
+/// The camera of this device, sent to a PC for as long as this is kept.
+struct Filming {
+    feed: CameraFeed,
+    sending: Sending,
+}
+
+impl Filming {
+    /// Starts sending a camera to the PC that made `offer`, or says why
+    /// not. Waits until pictures leave.
+    fn start(
+        client: &Arc<Client>,
+        host: &HostId,
+        offer: Option<CameraOffer>,
+        which: WhichCamera,
+    ) -> Result<Self, String> {
+        let offer = offer.ok_or("the PC takes no camera")?;
+        let limits =
+            Limits { width: offer.max_width, height: offer.max_height, fps: offer.max_fps };
+        let carrier = ToPc { client: Arc::clone(client), host: host.clone(), link: None };
+        let (told, news) = mpsc::channel();
+        let told = move || {
+            let _ = told.send(());
+        };
+        let feed = match which {
+            WhichCamera::System => CameraFeed::open(limits, carrier, told),
+            WhichCamera::Card => CameraFeed::test_card(limits, carrier, told),
+        };
+        let asked = Instant::now();
+        loop {
+            match feed.state() {
+                Feeding::Sending(sending) => return Ok(Self { feed, sending }),
+                Feeding::Starting if asked.elapsed() < CAMERA_PATIENCE => {
+                    let _ = news.recv_timeout(LISTEN_EVERY);
+                }
+                Feeding::Starting => return Err("the camera gave no picture".to_owned()),
+                Feeding::Over => return Err("the PC stopped taking it".to_owned()),
+                Feeding::Lost(problem) | Feeding::Refused(problem) => return Err(problem),
+            }
+        }
+    }
+
+    /// Stops sending, tells the PC, and says what left.
+    fn stop(self) -> Film {
+        let problem = match self.feed.state() {
+            Feeding::Starting | Feeding::Sending(_) => None,
+            Feeding::Over => Some("the PC stopped taking it".to_owned()),
+            Feeding::Lost(problem) | Feeding::Refused(problem) => Some(problem),
+        };
+        let fed = self.feed.fed();
+        self.feed.stop();
+        Film { sending: self.sending, pictures: fed.pictures, bytes: fed.bytes, problem }
+    }
+}
+
+/// Carries the pictures of a camera to a PC.
+struct ToPc {
+    client: Arc<Client>,
+    host: HostId,
+    /// The way there, once the PC agreed.
+    link: Option<CameraLink>,
+}
+
+impl Carrier for ToPc {
+    fn open(&mut self, sending: Sending) -> Result<(), String> {
+        let settings = CameraSettings {
+            width: sending.width,
+            height: sending.height,
+            fps: sending.fps,
+            bitrate_kbps: sending.bitrate_kbps,
+        };
+        let link = self.client.send_camera(&self.host, settings).map_err(|e| e.to_string())?;
+        self.link = Some(link);
+        Ok(())
+    }
+
+    fn carry(&mut self, at: Duration, picture: Encoded<'_>) -> Option<bool> {
+        self.link.as_mut().map(|link| link.send(at, picture.key_frame, picture.data))
+    }
+}
+
+impl Drop for ToPc {
+    /// The PC knows that the camera stopped before the command ends.
+    fn drop(&mut self) {
+        if let Some(link) = self.link.take() {
+            link.close();
+        }
     }
 }
 
@@ -316,16 +499,17 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("leto-cli-{}-play", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         let host = FakeHost::start();
-        let client = Client::open(&folder).unwrap();
+        let client = Arc::new(Client::open(&folder).unwrap());
         let pin: Pin = "4821".parse().unwrap();
         host.type_pin(pin);
         pair(&client, &host.address(), Some(pin), false).unwrap();
+        let nothing = Back::default();
 
-        let error = play(&client, HOST_NAME, "Solitaire", 1, SMALL, false, false).unwrap_err();
+        let error = play(&client, HOST_NAME, "Solitaire", 1, SMALL, nothing, false).unwrap_err();
         assert!(error.contains("no app called \"Solitaire\""), "{error}");
 
         // By title, whatever the letter case.
-        let json = play(&client, HOST_NAME, "desktop", 2, SMALL, false, true).unwrap();
+        let json = play(&client, HOST_NAME, "desktop", 2, SMALL, nothing, true).unwrap();
         let report: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(report["app"], "Desktop");
         assert!(report["pictures"].as_u64().unwrap() >= 30, "{json}");
@@ -340,19 +524,88 @@ mod tests {
         // The stand-in PC takes a microphone, and nobody asked to send one.
         assert_eq!(report["takes_microphone"], true, "{json}");
         assert_eq!(report["microphone_frames"], serde_json::Value::Null, "{json}");
+        // The same goes for the camera.
+        assert_eq!(report["takes_camera"], true, "{json}");
+        assert_eq!(report["camera_pictures"], serde_json::Value::Null, "{json}");
+        assert!(!host.camera_report().open);
         assert_eq!(report["ended"], serde_json::Value::Null);
         assert_eq!(host.running_app(), Some(1));
 
         // By id, in plain text. The app was left running, so this resumes it.
-        let text = play(&client, HOST_NAME, "1", 1, SMALL, false, false).unwrap();
+        let text = play(&client, HOST_NAME, "1", 1, SMALL, nothing, false).unwrap();
         assert!(text.contains("Video  asked for 320x180 at 30 fps"), "{text}");
         assert!(text.contains("Voice  the PC takes a microphone"), "{text}");
+        assert!(text.contains("Camera the PC takes a camera"), "{text}");
         assert!(
             text.ends_with("Desktop keeps running on the PC. `leto-cli quit Salon` closes it.")
         );
 
         assert_eq!(quit(&client, HOST_NAME, false).unwrap(), "No app is running on Salon now.");
         assert_eq!(host.running_app(), None);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_camera_is_sent_to_a_pc_that_takes_one_and_stops_with_the_stream() {
+        let folder = std::env::temp_dir().join(format!("leto-cli-{}-camera", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let host = FakeHost::start();
+        let client = Arc::new(Client::open(&folder).unwrap());
+        let pin: Pin = "4821".parse().unwrap();
+        host.type_pin(pin);
+        pair(&client, &host.address(), Some(pin), false).unwrap();
+        let card = Back { microphone: false, camera: Some(WhichCamera::Card) };
+
+        let json = play(&client, HOST_NAME, "desktop", 2, SMALL, card, true).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(report["takes_camera"], true, "{json}");
+        assert_eq!(report["camera_problem"], serde_json::Value::Null, "{json}");
+        let sent = report["camera_pictures"].as_u64().unwrap();
+        assert!(sent >= 20, "{json}");
+        assert_eq!(
+            (&report["camera_width"], &report["camera_height"], &report["camera_fps"]),
+            (&640.into(), &360.into(), &30.into())
+        );
+
+        // What left arrived, decoded, and the PC knows that it is over.
+        let seen = host.camera_report();
+        assert!(!seen.open);
+        assert_eq!(seen.asked, Some((640, 360, 30)));
+        assert_eq!(seen.refused, 0);
+        // On a computer that is busy with other tests a packet may be lost
+        // on the way, and the pictures until the next key frame with it.
+        assert!(seen.pictures >= sent / 2 && seen.key_frames >= 1, "{seen:?} of {sent}");
+        assert_eq!(seen.size, Some((640, 360)));
+
+        // The owner of the PC says no: the stream goes on without a camera.
+        host.refuse_camera(true);
+        let text = play(&client, HOST_NAME, "1", 1, SMALL, card, false).unwrap();
+        assert!(
+            text.contains("Camera not sent: the PC does not take the camera of this device"),
+            "{text}"
+        );
+        assert!(text.contains("Video  asked for 320x180 at 30 fps"), "{text}");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_pc_that_takes_no_camera_is_sent_none() {
+        let folder = std::env::temp_dir().join(format!("leto-cli-{}-stock", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let host = FakeHost::start_with(leto_testhost::Options {
+            camera: None,
+            ..leto_testhost::Options::default()
+        });
+        let client = Arc::new(Client::open(&folder).unwrap());
+        let pin: Pin = "4821".parse().unwrap();
+        host.type_pin(pin);
+        pair(&client, &host.address(), Some(pin), false).unwrap();
+
+        let text = play(&client, HOST_NAME, "1", 1, SMALL, Back::default(), false).unwrap();
+        assert!(text.contains("Camera the PC takes no camera"), "{text}");
+        let card = Back { microphone: false, camera: Some(WhichCamera::Card) };
+        let text = play(&client, HOST_NAME, "1", 1, SMALL, card, false).unwrap();
+        assert!(text.contains("Camera not sent: the PC takes no camera"), "{text}");
         let _ = std::fs::remove_dir_all(&folder);
     }
 }
