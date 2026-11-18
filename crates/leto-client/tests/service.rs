@@ -281,6 +281,14 @@ fn a_service_that_goes_away_leaves_its_stream() {
     let id = desk.pair(&host);
     desk.service.ask(Request::Play { host: id, app: 1, attempt: 1 });
     desk.wait(|event| matches!(event, Event::Playing { attempt: 1, .. }).then_some(()));
+    // A host only misses a client it has met. The engine says that the
+    // stream plays once the host has answered on the control connection,
+    // which is a moment before the host hears that its answer arrived.
+    let start = Instant::now();
+    while !host.stream_report().is_some_and(|report| report.connected) {
+        assert!(start.elapsed() < PATIENCE, "the host never met the client");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert!(host.stream_report().is_some_and(|report| !report.client_left));
 
     drop(desk);
