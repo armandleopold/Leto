@@ -11,6 +11,7 @@ mod backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod clipboard;
 mod input;
+mod settings;
 mod state;
 mod stats;
 mod theme;
@@ -32,12 +33,15 @@ fn main() -> eframe::Result {
         leto_client::logs::start("leto", &settings);
     }
 
+    // V-Sync is chosen once, before the window opens.
+    let settings = settings::load();
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!(
         "../../../assets/brand/png/leto-icon-256.png"
     ))
     .expect("the embedded app icon is a valid PNG");
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(leto_core::brand::NAME)
             .with_inner_size([960.0, 600.0])
@@ -48,11 +52,12 @@ fn main() -> eframe::Result {
         clipboard_shortcuts: false,
         ..Default::default()
     };
+    options.glow_options.vsync = settings.vsync;
 
     eframe::run_native(
         leto_core::brand::NAME,
         options,
-        Box::new(|cc| Ok(Box::new(app::LetoApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(app::LetoApp::new(cc, settings)))),
     )
 }
 
@@ -76,7 +81,7 @@ fn main() {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|cc| Ok(Box::new(app::LetoApp::new(cc)))),
+                Box::new(|cc| Ok(Box::new(app::LetoApp::new(cc, settings::load())))),
             )
             .await;
 

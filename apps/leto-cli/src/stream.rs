@@ -497,6 +497,8 @@ mod tests {
         fps: 30,
         bitrate_kbps: 2000,
         virtual_display: None,
+        optimize_games: true,
+        sound_on_pc: false,
     };
 
     #[test]

@@ -10,6 +10,7 @@ use leto_core::model::{AppSummary, HostId, Reachability};
 
 use super::{icons, widgets};
 use crate::{
+    settings::Settings,
     state::{AppsView, Loadable, State},
     theme, window,
 };
@@ -60,7 +61,14 @@ enum Cover<'a> {
     Ready(&'a TextureHandle),
 }
 
-pub fn show(ui: &mut Ui, state: &mut State, view: &AppsView, covers: &Covers, now: f64) {
+pub fn show(
+    ui: &mut Ui,
+    state: &mut State,
+    view: &AppsView,
+    covers: &Covers,
+    settings: &Settings,
+    now: f64,
+) {
     let host = &view.host;
     let mut leave = ui.input(|input| input.key_pressed(Key::Escape));
     let mut forget = false;
@@ -130,8 +138,10 @@ pub fn show(ui: &mut Ui, state: &mut State, view: &AppsView, covers: &Covers, no
             if quit {
                 state.quit_app();
             } else if let Some(app) = chosen {
-                // The stream is made for the screen the window is on.
-                state.play(app, window::screen(ui.ctx()));
+                // The stream is made for the screen the window is on, as
+                // the person chose.
+                let (screen, choices) = settings.stream(window::screen(ui.ctx()));
+                state.play(app, screen, choices);
             }
         }
     }

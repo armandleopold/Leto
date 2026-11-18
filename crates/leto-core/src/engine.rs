@@ -38,6 +38,10 @@ pub enum Request {
         /// stream is Full HD at 60 pictures per second.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         screen: Option<ScreenMode>,
+        /// What the person chose for their streams. A shell that offers no
+        /// choice sends the defaults.
+        #[serde(default)]
+        choices: Choices,
     },
     /// Stop watching. The app keeps running on the PC.
     Leave,
@@ -150,6 +154,46 @@ pub struct ScreenMode {
     /// How large the system draws text and windows on it, in percent: 100
     /// as designed, 150 half as large again.
     pub scale_percent: u32,
+}
+
+/// What the person chose for their streams, besides the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Choices {
+    /// Video bit rate, in kilobits per second. `None`: as much as the
+    /// picture's size and pace call for.
+    pub bitrate_kbps: Option<u32>,
+    /// A PC that can make a screen of its own for the stream, as Apollo
+    /// does, is asked to.
+    pub virtual_display: bool,
+    /// The PC may change a game's settings to suit the stream.
+    pub optimize_games: bool,
+    /// The PC's own speakers keep playing. Otherwise only this device does.
+    pub sound_on_pc: bool,
+}
+
+impl Default for Choices {
+    fn default() -> Self {
+        Self { bitrate_kbps: None, virtual_display: true, optimize_games: true, sound_on_pc: false }
+    }
+}
+
+/// The video bit rates a person can choose, in kilobits per second.
+/// Moonlight offers the same.
+pub const BITRATES_KBPS: (u32, u32) = (500, 150_000);
+
+/// The video bit rate a stream of `width` by `height` pixels at `fps`
+/// pictures per second calls for, in kilobits per second.
+///
+/// It grows with the pixels, from the 20 Mbit/s of Full HD at 60 pictures
+/// per second. Beyond 60 it grows more slowly than the pace: each picture
+/// differs less from the one before. Never under 2 Mbit/s.
+pub fn bitrate_for(width: u32, height: u32, fps: u32) -> u32 {
+    let pixels = f64::from(width) * f64::from(height) / (1920.0 * 1080.0);
+    let pace = f64::from(fps) / 60.0;
+    let pace = if pace > 1.0 { pace.sqrt() } else { pace };
+    let bitrate = (20_000.0 * pixels * pace).round() as u32;
+    bitrate.clamp(2_000, BITRATES_KBPS.1)
 }
 
 /// The camera a PC takes from the device that watches it.
@@ -285,6 +329,7 @@ mod tests {
                 app: 881_448_767,
                 attempt: 4,
                 screen: None,
+                choices: Choices::default(),
             },
             Request::Play {
                 host: HostId("salon".into()),
@@ -296,6 +341,12 @@ mod tests {
                     refresh_hz: 144,
                     scale_percent: 125,
                 }),
+                choices: Choices {
+                    bitrate_kbps: Some(50_000),
+                    virtual_display: false,
+                    optimize_games: false,
+                    sound_on_pc: true,
+                },
             },
             Request::Leave,
         ];
@@ -306,13 +357,27 @@ mod tests {
 
     #[test]
     fn a_play_request_from_a_shell_that_knows_no_screen_still_reads() {
-        // What a page of an older bridge says.
+        // What a page of an older bridge says: no screen, no choices.
         let text = r#"{"Play":{"host":"salon","app":1,"attempt":2}}"#;
         let request: Request = serde_json::from_str(text).expect("an older request reads");
         assert_eq!(
             request,
-            Request::Play { host: HostId("salon".into()), app: 1, attempt: 2, screen: None }
+            Request::Play {
+                host: HostId("salon".into()),
+                app: 1,
+                attempt: 2,
+                screen: None,
+                choices: Choices::default()
+            }
         );
+    }
+
+    #[test]
+    fn a_choice_left_out_is_its_default() {
+        // A page that knows only of the bit rate.
+        let choices: Choices =
+            serde_json::from_str(r#"{"bitrate_kbps":8000}"#).expect("part of the choices reads");
+        assert_eq!(choices, Choices { bitrate_kbps: Some(8000), ..Choices::default() });
     }
 
     #[test]

@@ -195,6 +195,7 @@ fn run(cli: &Cli) -> Result<String, String> {
                 bitrate_kbps: *bitrate,
                 virtual_display: virtual_display
                     .map(|scale_percent| VirtualDisplay { scale_percent }),
+                ..StreamSettings::default()
             };
             let card = std::env::var_os("LETO_CAMERA").is_some_and(|camera| camera == "card");
             let which = if card { stream::WhichCamera::Card } else { stream::WhichCamera::System };

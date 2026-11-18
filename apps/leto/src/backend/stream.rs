@@ -5,7 +5,10 @@
 //! They are decoded there, so the interface's thread only shows the result.
 
 use std::{
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -31,6 +34,8 @@ pub struct Outlet {
     counts: Mutex<Counts>,
     /// How often the person sees the pictures.
     pace: Mutex<Pace>,
+    /// The sound is decoded and not played.
+    muted: AtomicBool,
 }
 
 impl Outlet {
@@ -54,6 +59,13 @@ impl Outlet {
         if *was != pace {
             log::debug!("the stream is shown at {pace:?} pace");
             *was = pace;
+        }
+    }
+
+    /// Silences the sound from now on, or lets it be heard again.
+    pub fn set_muted(&self, muted: bool) {
+        if self.muted.swap(muted, Ordering::Relaxed) != muted {
+            log::debug!("the stream is {}", if muted { "muted" } else { "heard" });
         }
     }
 
@@ -199,7 +211,9 @@ impl AudioSink for Sound {
 
     fn packet(&mut self, opus: &[u8]) {
         let Some((decoder, speaker)) = &mut self.playing else { return };
+        // Decoded even when muted: the next packets build on this one.
         match decoder.decode(opus) {
+            Ok(_) if self.outlet.muted.load(Ordering::Relaxed) => {}
             Ok(samples) => speaker.play(samples),
             Err(error) => log::debug!("a packet of sound is lost: {error}"),
         }
@@ -247,6 +261,8 @@ mod tests {
             fps: 30,
             bitrate_kbps: 4000,
             virtual_display: None,
+            optimize_games: true,
+            sound_on_pc: false,
         };
         let session = client.play(&paired.id, 1, settings, screen, sound.audio(), |_| {}).unwrap();
 
@@ -316,6 +332,8 @@ mod tests {
             fps: 30,
             bitrate_kbps: 2000,
             virtual_display: None,
+            optimize_games: true,
+            sound_on_pc: false,
         };
         let session = client.play(&paired.id, 1, settings, screen, sound.audio(), |_| {}).unwrap();
         assert!(next_picture(&outlet, Duration::from_secs(10)).is_some(), "no picture arrived");

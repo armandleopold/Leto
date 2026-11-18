@@ -14,7 +14,7 @@ use std::{
 };
 
 use leto_core::{
-    engine::ScreenMode,
+    engine::{BITRATES_KBPS, Choices, ScreenMode, bitrate_for},
     input::{GamepadButtons, GamepadKind, Input, InputAllowed, MouseButton},
 };
 use moonlight_common::{
@@ -51,10 +51,6 @@ const LARGEST: (u32, u32) = (4096, 2304);
 /// The pace of a stream stays within these, whatever a screen says.
 const SLOWEST: u32 = 10;
 const FASTEST: u32 = 240;
-/// The bit rate of a stream stays within these, in kilobits per second.
-/// Moonlight goes up to 150 Mbit/s too.
-const LEAST_BITRATE: u32 = 2_000;
-const MOST_BITRATE: u32 = 150_000;
 
 /// What to ask the host for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +65,10 @@ pub struct StreamSettings {
     /// pace, instead of showing one of its own screens. Apollo makes one;
     /// the others ignore the question.
     pub virtual_display: Option<VirtualDisplay>,
+    /// The host may change a game's settings to suit the stream.
+    pub optimize_games: bool,
+    /// The host's own speakers keep playing too.
+    pub sound_on_pc: bool,
 }
 
 /// The screen a host makes for a stream.
@@ -82,7 +82,15 @@ impl Default for StreamSettings {
     /// Full HD at 60 pictures per second and 20 Mbit/s: what Moonlight asks
     /// for by default, and what a home network carries without trouble.
     fn default() -> Self {
-        Self { width: 1920, height: 1080, fps: 60, bitrate_kbps: 20_000, virtual_display: None }
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_kbps: 20_000,
+            virtual_display: None,
+            optimize_games: true,
+            sound_on_pc: false,
+        }
     }
 }
 
@@ -90,25 +98,36 @@ impl StreamSettings {
     /// A stream that fills `screen` as it is: its size and its pace, on a
     /// screen the host makes just like it, with text drawn as large.
     ///
-    /// The bit rate grows with the pixels, from the 20 Mbit/s of Full HD at
-    /// 60 pictures per second. Beyond 60 it grows more slowly than the
-    /// pace: each picture differs less from the one before.
+    /// The bit rate is the one [`bitrate_for`] gives the stream's size and
+    /// pace.
     pub fn for_screen(screen: ScreenMode) -> Self {
         let (width, height) = fit(screen.width, screen.height);
         let fps = screen.refresh_hz.clamp(SLOWEST, FASTEST);
-        let pixels = f64::from(width) * f64::from(height) / (1920.0 * 1080.0);
-        let pace = f64::from(fps) / 60.0;
-        let pace = if pace > 1.0 { pace.sqrt() } else { pace };
-        let bitrate = (20_000.0 * pixels * pace).round() as u32;
         Self {
             width,
             height,
             fps,
-            bitrate_kbps: bitrate.clamp(LEAST_BITRATE, MOST_BITRATE),
+            bitrate_kbps: bitrate_for(width, height, fps),
             virtual_display: Some(VirtualDisplay {
                 scale_percent: screen.scale_percent.clamp(100, 400),
             }),
+            ..Self::default()
         }
+    }
+
+    /// A stream for `screen`, when the shell knows it, as the person chose.
+    /// Without a screen, it is the default one, and the host makes none.
+    pub fn chosen(screen: Option<ScreenMode>, choices: Choices) -> Self {
+        let mut settings = screen.map_or_else(Self::default, Self::for_screen);
+        if !choices.virtual_display {
+            settings.virtual_display = None;
+        }
+        if let Some(kbps) = choices.bitrate_kbps {
+            settings.bitrate_kbps = kbps.clamp(BITRATES_KBPS.0, BITRATES_KBPS.1);
+        }
+        settings.optimize_games = choices.optimize_games;
+        settings.sound_on_pc = choices.sound_on_pc;
+        settings
     }
 
     /// What the host's launch is told besides what the protocol says,
@@ -138,13 +157,13 @@ impl StreamSettings {
             encryption_flags: EncryptionFlags::AUDIO | EncryptionFlags::VIDEO,
             streaming_remotely: StreamingConfig::Auto,
             // Let the host set the game's resolution to the stream's.
-            sops: true,
+            sops: self.optimize_games,
             hdr: false,
             supported_video_formats: VideoFormats::H264,
             // What a software decoder converts to the screen's colours.
             color_space: ColorSpace::Rec601,
             color_range: ColorRange::Limited,
-            local_audio_play_mode: false,
+            local_audio_play_mode: self.sound_on_pc,
             audio_config: AudioConfig::STEREO,
             gamepads_attached: ActiveGamepads::empty(),
             gamepads_persist_after_disconnect: false,
@@ -793,6 +812,34 @@ mod tests {
         let settings = StreamSettings::for_screen(screen(1920, 1080, 500, 1000));
         assert_eq!(settings.fps, FASTEST);
         assert_eq!(settings.virtual_display, Some(VirtualDisplay { scale_percent: 400 }));
+    }
+
+    #[test]
+    fn a_stream_is_what_the_person_chose() {
+        let native = screen(2560, 1440, 144, 150);
+        // As Leto would have it.
+        assert_eq!(
+            StreamSettings::chosen(Some(native), Choices::default()),
+            StreamSettings::for_screen(native)
+        );
+        assert_eq!(StreamSettings::chosen(None, Choices::default()), StreamSettings::default());
+        // As the person would.
+        let chosen = Choices {
+            bitrate_kbps: Some(35_000),
+            virtual_display: false,
+            optimize_games: false,
+            sound_on_pc: true,
+        };
+        let settings = StreamSettings::chosen(Some(native), chosen);
+        assert_eq!((settings.width, settings.height, settings.fps), (2560, 1440, 144));
+        assert_eq!(settings.bitrate_kbps, 35_000);
+        assert_eq!(settings.virtual_display, None);
+        let protocol = settings.to_protocol();
+        assert!(!protocol.sops);
+        assert!(protocol.local_audio_play_mode);
+        // Within what a stream can be given.
+        let greedy = Choices { bitrate_kbps: Some(900_000), ..Choices::default() };
+        assert_eq!(StreamSettings::chosen(None, greedy).bitrate_kbps, BITRATES_KBPS.1);
     }
 
     #[test]

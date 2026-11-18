@@ -41,7 +41,7 @@ use self::{
     screen::{Canvas, Screen, Shown},
     speaker::Speaker,
 };
-use super::{Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover};
+use super::{Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, pads};
 use crate::{
     state::{Event, Request},
     stats::Counts,
@@ -89,6 +89,10 @@ struct Inner {
     /// no PC involved: what they capture stays on the page.
     camera: Device<Camera>,
     ear: Device<Microphone>,
+    /// The sound of a stream is not played.
+    muted: bool,
+    /// The person has A and B change places on the gamepads, and X and Y.
+    swapped: bool,
 }
 
 /// The WebSocket to the bridge, with what listens to it.
@@ -180,6 +184,8 @@ impl Backend {
                 asked: 0,
                 camera: Device::Off,
                 ear: Device::Off,
+                muted: false,
+                swapped: false,
             }),
         });
         page.connect();
@@ -460,6 +466,16 @@ impl Backend {
     /// How many pictures the person sees. A browser already slows down a
     /// page that is out of sight, and decodes with the graphics card.
     pub fn pace(&self, _pace: Pace) {}
+
+    /// Silences the stream, or lets it be heard again.
+    pub fn mute(&self, mute: bool) {
+        self.page.inner.borrow_mut().muted = mute;
+    }
+
+    /// Has A and B change places on the gamepads, and X and Y, or not.
+    pub fn swap_gamepad_buttons(&self, swap: bool) {
+        self.page.inner.borrow_mut().swapped = swap;
+    }
 
     /// What happened to the pictures of the stream so far.
     pub fn counts(&self) -> Option<Counts> {
@@ -877,13 +893,14 @@ impl Page {
 
     /// Looks at the gamepads and tells the PC what they did.
     fn gamepads(&self) {
-        let inputs = {
+        let inputs: Vec<Input> = {
             let mut inner = self.inner.borrow_mut();
+            let swapped = inner.swapped;
             let Some(gamepads) = inner.stream.as_mut().and_then(|stream| stream.gamepads.as_mut())
             else {
                 return;
             };
-            gamepads.look()
+            gamepads.look().into_iter().map(|input| pads::as_chosen(input, swapped)).collect()
         };
         if !inputs.is_empty() {
             self.say(&Up::Input(inputs));
@@ -893,6 +910,7 @@ impl Page {
     /// The bridge handed over a piece of the stream.
     fn given(&self, message: &[u8]) -> Then {
         let mut inner = self.inner.borrow_mut();
+        let muted = inner.muted;
         let Some(stream) = &mut inner.stream else { return Then::Nothing };
         match Frame::parse(message) {
             Some(Frame::Picture { keyframe, data, .. }) => {
@@ -903,8 +921,12 @@ impl Page {
                     Shown::Never(message) => Then::GiveUp { attempt: stream.attempt, message },
                 }
             }
+            // Every packet of sound decodes on its own: one left out while
+            // muted is missed by none of the next.
             Some(Frame::Sound(packet)) => {
-                if let Some(speaker) = &mut stream.speaker {
+                if let Some(speaker) = &mut stream.speaker
+                    && !muted
+                {
                     speaker.play(packet);
                 }
                 Then::Nothing

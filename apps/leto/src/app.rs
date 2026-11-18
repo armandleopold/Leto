@@ -5,6 +5,7 @@ use leto_core::{brand, platform::Platform};
 
 use crate::{
     backend::{Backend, Door, Pace, Unavailable},
+    settings::{self, Settings},
     state::{Cam, Device, Devices, Event, Mic, Screen, State, Trial},
     theme,
     ui::{
@@ -33,11 +34,18 @@ pub struct LetoApp {
     gate: gate::Form,
     /// The backend took requests in the last frame.
     was_open: bool,
+    /// What the person chose, and what of it is kept already.
+    settings: Settings,
+    saved: Settings,
+    /// The settings are on screen, over whatever was there: it carries on
+    /// underneath, and is back when they close.
+    settings_open: bool,
 }
 
 impl LetoApp {
-    /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// Called once before the first frame, with the settings kept from
+    /// before.
+    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
         Self {
@@ -48,6 +56,9 @@ impl LetoApp {
             preview: Preview::default(),
             gate: gate::Form::default(),
             was_open: false,
+            settings,
+            saved: settings,
+            settings_open: false,
         }
     }
 }
@@ -130,9 +141,9 @@ impl eframe::App for LetoApp {
         }
 
         // The camera and the microphone are tried out on one screen, and
-        // are off everywhere else.
+        // are off everywhere else, the settings over it included.
         let tried = match (&door, &self.state.screen) {
-            (Door::Open, Screen::Devices(devices)) => devices.clone(),
+            (Door::Open, Screen::Devices(devices)) if !self.settings_open => devices.clone(),
             _ => Devices::default(),
         };
         let heard = self.try_devices(ui.ctx(), &tried);
@@ -154,6 +165,7 @@ impl eframe::App for LetoApp {
                     }
                 });
                 self.backend.pace(pace);
+                self.backend.mute(self.settings.mute_in_background && pace != Pace::Full);
                 if let Some(picture) = self.backend.take_picture() {
                     self.player.picture(ui.ctx(), picture);
                 }
@@ -183,7 +195,15 @@ impl eframe::App for LetoApp {
                             counts: self.backend.counts(),
                             round_trip: self.backend.round_trip(),
                         };
-                        ui::stream::show(ui, &mut self.state, &view, &mut self.player, status)
+                        let settings = &self.settings;
+                        ui::stream::show(
+                            ui,
+                            &mut self.state,
+                            &view,
+                            &mut self.player,
+                            settings,
+                            status,
+                        )
                     })
                     .inner;
                 // Before anything else is asked of the backend: what was
@@ -196,9 +216,27 @@ impl eframe::App for LetoApp {
                 self.backend.place_picture(None);
                 let ground = egui::Frame::new().fill(theme::GROUND);
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
-                    top_bar(ui);
-                    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    if top_bar(ui, self.settings_open) {
+                        self.settings_open = !self.settings_open;
+                    }
+                    // Escape closes the settings, as their back button does.
+                    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+                    if self.settings_open && escape {
+                        self.settings_open = false;
+                    }
+                    let scroll = egui::ScrollArea::vertical().auto_shrink(false);
+                    // The settings and the screens scroll on their own.
+                    let scroll =
+                        scroll.id_salt(if self.settings_open { "settings" } else { "screen" });
+                    scroll.show(ui, |ui| {
                         widgets::page(ui, |ui| match (door, screen) {
+                            _ if self.settings_open => {
+                                let native = crate::window::screen(ui.ctx());
+                                let back_to = back_to(&self.state.screen);
+                                if ui::settings::show(ui, &mut self.settings, native, back_to) {
+                                    self.settings_open = false;
+                                }
+                            }
                             (Door::Closed(problem), _) => out_of_order(ui, problem),
                             (Door::Opening { failed }, _) => gate::reaching(ui, *failed),
                             (Door::Code { refused, checking }, _) => {
@@ -227,7 +265,8 @@ impl eframe::App for LetoApp {
                                 ui::pairing::show(ui, &mut self.state, &pairing, now);
                             }
                             (Door::Open, Screen::Apps(view)) => {
-                                ui::apps::show(ui, &mut self.state, &view, &self.covers, now);
+                                let (covers, settings) = (&self.covers, &self.settings);
+                                ui::apps::show(ui, &mut self.state, &view, covers, settings, now);
                             }
                             // Handled above.
                             (Door::Open, Screen::Stream(_)) => {}
@@ -249,6 +288,13 @@ impl eframe::App for LetoApp {
         for request in self.state.take_requests() {
             self.backend.send(request);
         }
+        // Gamepads are read away from the window, and go straight to the PC.
+        self.backend.swap_gamepad_buttons(self.settings.swap_gamepad_buttons);
+        if self.settings != self.saved {
+            // A change is kept at once: a crash loses none.
+            self.saved = self.settings;
+            settings::save(self.settings);
+        }
         if open && self.state.screen == Screen::Pcs {
             // Wake up for the next search even if nobody touches the app.
             ui.ctx().request_repaint_after_secs(1.0);
@@ -256,15 +302,36 @@ impl eframe::App for LetoApp {
     }
 }
 
-fn top_bar(ui: &mut egui::Ui) {
+/// The bar at the top: the logo, and the settings on the right. Returns
+/// whether the person asked to open the settings, or to close them.
+fn top_bar(ui: &mut egui::Ui, settings_open: bool) -> bool {
     let size = egui::vec2(ui.available_width(), 60.0);
+    let margin = if size.x < 560.0 { 16.0 } else { 32.0 };
     ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
-        ui.add_space(if size.x < 560.0 { 16.0 } else { 32.0 });
+        ui.add_space(margin);
         ui.add(
             egui::Image::new(egui::include_image!("../../../assets/brand/png/leto-logo.png"))
                 .fit_to_exact_size(LOGO),
         );
-    });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_space(margin - 8.0);
+            let name = if settings_open { "Close the settings" } else { "Settings" };
+            widgets::icon_button(ui, icons::gear, name).clicked()
+        })
+        .inner
+    })
+    .inner
+}
+
+/// The name of the screen under the settings, for their back button.
+fn back_to(screen: &Screen) -> &str {
+    match screen {
+        Screen::Pcs => "PCs",
+        Screen::Devices(_) => "Camera and microphone",
+        Screen::Pairing(_) => "Pairing",
+        Screen::Apps(view) => &view.host.name,
+        Screen::Stream(_) => "Stream",
+    }
 }
 
 /// Shown instead of every screen when the backend cannot work at all.
