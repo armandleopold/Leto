@@ -99,3 +99,34 @@ pub fn mouse(painter: &Painter, rect: Rect, color: Color32) {
     painter.rect_stroke(body, rect.width() * 0.3, stroke, StrokeKind::Inside);
     painter.line_segment([at(rect, 0.5, 0.2), at(rect, 0.5, 0.42)], stroke);
 }
+
+/// A microphone on its stand. `level`, from 0 to 1, fills it from the bottom
+/// with what it hears.
+pub fn microphone(painter: &Painter, rect: Rect, color: Color32, level: f32) {
+    let stroke = stroke(rect, color);
+    let head = Rect::from_min_max(at(rect, 0.33, 0.02), at(rect, 0.67, 0.62));
+    let round = head.width() / 2.0;
+    if level > 0.0 {
+        // What it hears, inside the head: the part below the line is full.
+        let line = head.bottom() - head.height() * level.min(1.0);
+        let full = painter.with_clip_rect(Rect::from_min_max(
+            Pos2::new(head.left(), line.max(head.top())),
+            head.max,
+        ));
+        full.rect_filled(head, round, color);
+    }
+    painter.rect_stroke(head, round, stroke, StrokeKind::Inside);
+
+    // The holder: half a circle under the head.
+    let center = at(rect, 0.5, 0.42);
+    let radius = rect.width() * 0.36;
+    let holder: Vec<Pos2> = (0..=16)
+        .map(|step| {
+            let angle = std::f32::consts::PI * step as f32 / 16.0;
+            center + vec2(angle.cos(), angle.sin()) * radius
+        })
+        .collect();
+    painter.line(holder, stroke);
+    painter.line_segment([Pos2::new(center.x, center.y + radius), at(rect, 0.5, 0.96)], stroke);
+    painter.line_segment([at(rect, 0.3, 0.96), at(rect, 0.7, 0.96)], stroke);
+}
