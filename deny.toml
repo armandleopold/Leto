@@ -68,9 +68,7 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# Git dependencies must be listed here one by one.
-allow-git = [
-    # The client protocol core. Not on crates.io, pinned to a commit in the
-    # workspace Cargo.toml.
-    "https://github.com/MrCreativ3001/moonlight-common-rust.git",
-]
+# Git dependencies must be listed here one by one. There are none: the
+# client protocol core, which is not on crates.io, is a copy in
+# vendor/moonlight-common.
+allow-git = []

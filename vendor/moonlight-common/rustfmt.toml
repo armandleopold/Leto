@@ -1,0 +1,2 @@
+# The style of moonlight-common-rust, which is rustfmt's own.
+edition = "2024"
