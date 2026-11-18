@@ -1838,6 +1838,7 @@ dependencies = [
  "log",
  "openh264",
  "opus-decoder",
+ "opus-rs",
  "thiserror 2.0.21",
 ]
 
