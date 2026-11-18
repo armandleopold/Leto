@@ -11,7 +11,7 @@
 //! payloaders and control host.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{self, Read, Write},
     net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::{
@@ -52,6 +52,8 @@ use moonlight_common::{
     },
 };
 
+use opus_decoder::OpusDecoder;
+
 use crate::media::{Hands, Melody, TestCard};
 
 /// The version the stand-in host reports, the one of a current Sunshine.
@@ -61,6 +63,20 @@ pub(crate) const APP_VERSION: &str = "7.1.431.-1";
 const ENCRYPT_CONTROL: u32 = 0x01;
 const ENCRYPT_VIDEO: u32 = 0x02;
 const ENCRYPT_AUDIO: u32 = 0x04;
+/// An extension: the microphone of the client, towards the host.
+const ENCRYPT_MICROPHONE: u32 = 0x08;
+
+/// The microphone extension, as the Apollo microphone fork and Foundation
+/// Sunshine speak it: the client sends one Opus frame per packet, one
+/// channel at 48 kHz, behind this header.
+const MICROPHONE_HEADER: usize = 12;
+const MICROPHONE_PACKET: u8 = 0x61;
+const MICROPHONE_MAGIC: u32 = 0x1234_5678;
+const MICROPHONE_RATE: u32 = 48_000;
+/// The longest frame Opus allows, in samples.
+const MICROPHONE_FRAME: usize = 5760;
+/// How much of what the microphone sent is kept to listen to: ten seconds.
+const HEARD_LIMIT: usize = MICROPHONE_RATE as usize * 10;
 
 /// Size of the header in front of an encrypted RTSP message: type and length,
 /// sequence number, authentication tag.
@@ -82,6 +98,8 @@ pub(crate) struct Launch {
     pub key_id: AesIv,
     /// Answer RTSP encrypted, as a host does for a client that sent `corever=1`.
     pub encrypt_rtsp: bool,
+    /// Take the microphone of a client that offers it.
+    pub microphone: bool,
 }
 
 /// What a test can observe of a stream.
@@ -102,6 +120,10 @@ pub struct StreamReport {
     /// Keyframes the client asked for after the first one.
     pub keyframes_requested: u64,
     pub audio_packets_sent: u64,
+    /// The client set up the microphone stream, encrypted: the host listens.
+    pub microphone: bool,
+    /// Packets of the client's microphone that arrived and decoded.
+    pub microphone_packets: u64,
 }
 
 /// What the client settled in its `ANNOUNCE`.
@@ -123,6 +145,7 @@ struct Inner {
     video: UdpSocket,
     audio: UdpSocket,
     control: UdpSocket,
+    microphone: UdpSocket,
     /// What the client must send on the video and audio ports to be found.
     ping: [u8; 16],
     /// What the client must present when it opens the control connection.
@@ -140,6 +163,11 @@ struct Inner {
     keyframes_sent: AtomicU64,
     keyframes_requested: AtomicU64,
     audio_packets_sent: AtomicU64,
+    /// The client asked for the microphone stream with a `SETUP`.
+    microphone_asked: AtomicBool,
+    microphone_packets: AtomicU64,
+    /// What the client's microphone sent, decoded: one channel at 48 kHz.
+    heard: Mutex<VecDeque<f32>>,
     /// Everything the client did with keyboard, mouse and gamepads, in order.
     inputs: Mutex<Vec<Input>>,
     /// What of it the test card shows.
@@ -173,6 +201,7 @@ impl Session {
             video: UdpSocket::bind((interface, 0))?,
             audio: UdpSocket::bind((interface, 0))?,
             control: UdpSocket::bind((interface, 0))?,
+            microphone: UdpSocket::bind((interface, 0))?,
             ping: ping_bytes,
             connect_data: u32::from_le_bytes([random[8], random[9], random[10], random[11]]) | 1,
             rtsp_sequence: AtomicU32::new(0),
@@ -187,6 +216,9 @@ impl Session {
             keyframes_sent: AtomicU64::new(0),
             keyframes_requested: AtomicU64::new(0),
             audio_packets_sent: AtomicU64::new(0),
+            microphone_asked: AtomicBool::new(false),
+            microphone_packets: AtomicU64::new(0),
+            heard: Mutex::new(VecDeque::new()),
             inputs: Mutex::new(Vec::new()),
             hands: Mutex::new(Hands::default()),
         });
@@ -226,7 +258,15 @@ impl Session {
             keyframes_sent: inner.keyframes_sent.load(Ordering::SeqCst),
             keyframes_requested: inner.keyframes_requested.load(Ordering::SeqCst),
             audio_packets_sent: inner.audio_packets_sent.load(Ordering::SeqCst),
+            microphone: inner.listens(encryption),
+            microphone_packets: inner.microphone_packets.load(Ordering::SeqCst),
         }
+    }
+
+    /// What the client's microphone sent lately, decoded: one channel at
+    /// 48 kHz, the last ten seconds at most.
+    pub fn heard(&self) -> Vec<f32> {
+        lock(&self.inner.heard).iter().copied().collect()
     }
 
     /// What the client did with keyboard, mouse and gamepads so far.
@@ -258,6 +298,17 @@ impl Drop for Session {
 // ---------------------------------------------------------------------------
 // RTSP
 // ---------------------------------------------------------------------------
+
+impl Inner {
+    /// Whether the host takes the microphone of this client, which settled
+    /// on `encryption`. Like the Apollo microphone fork, it refuses one that
+    /// would travel in clear.
+    fn listens(&self, encryption: u32) -> bool {
+        self.launch.microphone
+            && self.microphone_asked.load(Ordering::SeqCst)
+            && encryption & ENCRYPT_MICROPHONE != 0
+    }
+}
 
 /// One RTSP request, decrypted and split.
 struct RtspRequest {
@@ -375,13 +426,27 @@ fn answer_rtsp(inner: &Arc<Inner>, request: &RtspRequest) -> RtspResponse {
     match request.method.as_str() {
         "OPTIONS" | "PLAY" => {}
         "DESCRIBE" => {
-            let supported = ENCRYPT_CONTROL | ENCRYPT_VIDEO | ENCRYPT_AUDIO;
+            let mut supported = ENCRYPT_CONTROL | ENCRYPT_VIDEO | ENCRYPT_AUDIO;
+            let mut requested = ENCRYPT_CONTROL;
+            let mut microphone = String::new();
+            if inner.launch.microphone {
+                // The way the Apollo microphone fork says it takes one.
+                supported |= ENCRYPT_MICROPHONE;
+                requested |= ENCRYPT_MICROPHONE;
+                let port = inner.microphone.local_addr().map_or(0, |address| address.port());
+                microphone = format!(
+                    "m=audio {port} RTP/AVP 96\n\
+                     a=rtpmap:96 opus/48000/1\n\
+                     a=fmtp:96 minptime=10;useinbandfec=1\n"
+                );
+            }
             // Stereo twice (normal and high quality), then the surround
             // layouts, written the way Sunshine writes them.
             response.payload = format!(
                 "a=x-ss-general.featureFlags:0\n\
                  a=x-ss-general.encryptionSupported:{supported}\n\
-                 a=x-ss-general.encryptionRequested:{ENCRYPT_CONTROL}\n\
+                 a=x-ss-general.encryptionRequested:{requested}\n\
+                 {microphone}\
                  a=fmtp:97 surround-params=21101\n\
                  a=fmtp:97 surround-params=21101\n\
                  a=fmtp:97 surround-params=642041235\n\
@@ -401,6 +466,10 @@ fn answer_rtsp(inner: &Arc<Inner>, request: &RtspRequest) -> RtspResponse {
                 "video" => (&inner.video, ("X-SS-Ping-Payload", ascii(&inner.ping))),
                 "control" => {
                     (&inner.control, ("X-SS-Connect-Data", inner.connect_data.to_string()))
+                }
+                "mic" if inner.launch.microphone => {
+                    inner.microphone_asked.store(true, Ordering::SeqCst);
+                    (&inner.microphone, ("X-SS-Ping-Payload", ascii(&inner.ping)))
                 }
                 _ => {
                     response.status = "404 NOT FOUND";
@@ -495,7 +564,7 @@ fn rtsp_iv(sequence: u32, origin: u8) -> [u8; 12] {
 // Control, video, audio
 // ---------------------------------------------------------------------------
 
-/// Starts the three services once the client has announced its settings.
+/// Starts the services once the client has announced its settings.
 fn start_media(inner: &Arc<Inner>, negotiated: Negotiated) {
     {
         let mut slot = lock(&inner.negotiated);
@@ -505,7 +574,7 @@ fn start_media(inner: &Arc<Inner>, negotiated: Negotiated) {
         *slot = Some(negotiated);
     }
     let mut media = lock(&inner.media);
-    for service in [serve_control, serve_video, serve_audio] {
+    for service in [serve_control, serve_video, serve_audio, serve_microphone] {
         let inner = Arc::clone(inner);
         media.push(thread::spawn(move || service(&inner, negotiated)));
     }
@@ -819,6 +888,76 @@ fn serve_audio(inner: &Inner, negotiated: Negotiated) {
         number = number.wrapping_add(1);
         due = pace(due, AUDIO_PACKET);
     }
+}
+
+/// The microphone of the client: the one part of a stream that flows towards
+/// the host. What arrives is decoded and kept, and the test card shows how
+/// loud it is.
+fn serve_microphone(inner: &Inner, negotiated: Negotiated) {
+    if !inner.listens(negotiated.encryption) {
+        return;
+    }
+    let socket = &inner.microphone;
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
+    let Ok(mut decoder) = OpusDecoder::new(MICROPHONE_RATE, 1) else { return };
+    let mut packet = [0u8; 2048];
+    let mut samples = vec![0f32; MICROPHONE_FRAME];
+    lock(&inner.hands).voice = Some(0.0);
+
+    while !inner.stop.load(Ordering::SeqCst) {
+        let Ok((length, _)) = socket.recv_from(&mut packet) else {
+            // Nothing for a moment: the meter falls back.
+            if let Some(voice) = &mut lock(&inner.hands).voice {
+                *voice *= 0.5;
+            }
+            continue;
+        };
+        let Some(frame) = open_microphone_packet(&inner.launch, &packet[..length]) else {
+            continue;
+        };
+        let Ok(decoded) = decoder.decode_float(&frame, &mut samples, false) else { continue };
+        let decoded = &samples[..decoded.min(samples.len())];
+        inner.microphone_packets.fetch_add(1, Ordering::SeqCst);
+
+        let loudness = loudness(decoded);
+        if let Some(voice) = &mut lock(&inner.hands).voice {
+            // Up at once, down slowly: easier to follow by eye.
+            *voice = loudness.max(*voice * 0.85);
+        }
+        let mut heard = lock(&inner.heard);
+        heard.extend(decoded);
+        let extra = heard.len().saturating_sub(HEARD_LIMIT);
+        heard.drain(..extra);
+    }
+}
+
+/// The Opus frame inside a microphone packet, or `None` for anything else
+/// that reaches the port.
+fn open_microphone_packet(launch: &Launch, packet: &[u8]) -> Option<Vec<u8>> {
+    let (header, encrypted) = packet.split_at_checked(MICROPHONE_HEADER)?;
+    let magic = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+    if header[1] != MICROPHONE_PACKET || magic != MICROPHONE_MAGIC || encrypted.is_empty() {
+        return None;
+    }
+    // Every packet has a nonce of its own: the number of the key plus the
+    // number of the packet.
+    let sequence = u16::from_le_bytes([header[2], header[3]]);
+    let mut iv = [0u8; 16];
+    iv[..4].copy_from_slice(&launch.key_id.0.wrapping_add(u32::from(sequence)).to_be_bytes());
+    let mut frame = vec![0u8; encrypted.len() + 16];
+    let length = RustCryptoBackend.decrypt_aes_cbc(&launch.key, &iv, encrypted, &mut frame).ok()?;
+    frame.truncate(length);
+    Some(frame)
+}
+
+/// How loud `samples` are, from 0 for silence to 1 for as loud as it gets.
+fn loudness(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let mean = samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32;
+    // A full sine has a mean square of a half.
+    (mean * 2.0).sqrt().min(1.0)
 }
 
 /// Sends one packet, waiting a little when the system's buffer is full.

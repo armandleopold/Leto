@@ -94,6 +94,20 @@ pub struct StreamView {
     pub connected: bool,
     /// What the PC lets this device play with, known once connected.
     pub input: InputAllowed,
+    pub microphone: Mic,
+}
+
+/// The microphone of this device during a stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mic {
+    /// The PC takes none, or is not connected yet.
+    NotTaken,
+    /// The PC would take it and hears nothing: nobody turned it on.
+    Off,
+    /// The PC hears this device.
+    On,
+    /// It was turned on and cannot be used: why.
+    Failed(String),
 }
 
 /// The form that adds a PC by address.
@@ -224,7 +238,33 @@ impl State {
             attempt: self.attempts,
             connected: false,
             input: InputAllowed::ALL,
+            // Off at the start of every stream: a PC hears this device
+            // only once the person says so.
+            microphone: Mic::NotTaken,
         });
+    }
+
+    /// The person turns the microphone on, or off again. A microphone that
+    /// failed is tried again.
+    pub fn switch_microphone(&mut self) {
+        if let Screen::Stream(view) = &mut self.screen
+            && view.connected
+        {
+            view.microphone = match view.microphone {
+                Mic::NotTaken => Mic::NotTaken,
+                Mic::On => Mic::Off,
+                Mic::Off | Mic::Failed(_) => Mic::On,
+            };
+        }
+    }
+
+    /// The microphone that was turned on cannot be used, for this reason.
+    pub fn microphone_failed(&mut self, why: String) {
+        if let Screen::Stream(view) = &mut self.screen
+            && view.microphone == Mic::On
+        {
+            view.microphone = Mic::Failed(why);
+        }
     }
 
     /// The person stops watching. The app keeps running on the PC.
@@ -367,12 +407,13 @@ impl State {
                     };
                 }
             }
-            Event::Playing { attempt, input } => {
+            Event::Playing { attempt, input, microphone } => {
                 if let Screen::Stream(view) = &mut self.screen
                     && view.attempt == attempt
                 {
                     view.connected = true;
                     view.input = input;
+                    view.microphone = if microphone { Mic::Off } else { Mic::NotTaken };
                 }
             }
             Event::PlayFailed { attempt, message } => {
@@ -639,6 +680,71 @@ mod tests {
         state
     }
 
+    /// The news that stream `attempt` is connected, to a PC that takes a
+    /// microphone or not.
+    fn playing(attempt: u64, microphone: bool) -> Event {
+        Event::Playing { attempt, input: InputAllowed::ALL, microphone }
+    }
+
+    fn microphone(state: &State) -> &Mic {
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        &view.microphone
+    }
+
+    #[test]
+    fn the_microphone_is_off_until_the_person_turns_it_on_in_every_stream() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+
+        // Nothing to switch before the PC said it takes one.
+        state.switch_microphone();
+        assert_eq!(microphone(&state), &Mic::NotTaken);
+
+        state.apply(playing(1, true), 3.0);
+        assert_eq!(microphone(&state), &Mic::Off);
+        state.switch_microphone();
+        assert_eq!(microphone(&state), &Mic::On);
+        state.switch_microphone();
+        assert_eq!(microphone(&state), &Mic::Off);
+
+        // Left on, it is off again in the next stream.
+        state.switch_microphone();
+        state.leave_stream();
+        state.play(&app(1, "Desktop"));
+        state.apply(playing(2, true), 9.0);
+        assert_eq!(microphone(&state), &Mic::Off);
+    }
+
+    #[test]
+    fn a_pc_that_takes_no_microphone_has_nothing_to_switch() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.apply(playing(1, false), 3.0);
+        state.switch_microphone();
+        assert_eq!(microphone(&state), &Mic::NotTaken);
+    }
+
+    #[test]
+    fn a_microphone_that_cannot_be_used_says_why_and_can_be_tried_again() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.apply(playing(1, true), 3.0);
+
+        // A failure nobody asked for a microphone for changes nothing.
+        state.microphone_failed("Too early.".into());
+        assert_eq!(microphone(&state), &Mic::Off);
+
+        state.switch_microphone();
+        state.microphone_failed("This device has no microphone.".into());
+        assert_eq!(microphone(&state), &Mic::Failed("This device has no microphone.".into()));
+
+        state.switch_microphone();
+        assert_eq!(microphone(&state), &Mic::On);
+    }
+
     #[test]
     fn choosing_an_app_streams_it_and_leaving_returns_to_the_apps() {
         let salon = host("Salon", true, Reachability::Online);
@@ -650,7 +756,7 @@ mod tests {
         let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert!(!view.connected);
 
-        state.apply(Event::Playing { attempt: 1, input: InputAllowed::ALL }, 3.0);
+        state.apply(playing(1, false), 3.0);
         let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert!(view.connected);
 
@@ -685,7 +791,7 @@ mod tests {
         ] {
             let mut state = state_with_apps(&salon);
             state.play(&app(2, "Steam"));
-            state.apply(Event::Playing { attempt: 1, input: InputAllowed::ALL }, 3.0);
+            state.apply(playing(1, false), 3.0);
             state.take_requests();
 
             state.apply(Event::StreamEnded { attempt: 1, why }, 9.0);
@@ -704,7 +810,7 @@ mod tests {
         state.take_requests();
         let before = state.screen.clone();
 
-        state.apply(Event::Playing { attempt: 1, input: InputAllowed::ALL }, 5.0);
+        state.apply(playing(1, true), 5.0);
         state.apply(Event::PlayFailed { attempt: 1, message: "Too late.".into() }, 5.0);
         state.apply(Event::StreamEnded { attempt: 1, why: StreamEnd::ConnectionLost }, 5.0);
         assert_eq!(state.screen, before);

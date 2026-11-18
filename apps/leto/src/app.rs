@@ -5,9 +5,15 @@ use leto_core::{brand, platform::Platform};
 
 use crate::{
     backend::{Backend, Door, Unavailable},
-    state::{Event, Screen, State},
+    state::{Event, Mic, Screen, State},
     theme,
-    ui::{self, apps::Covers, gate, icons, stream::Player, widgets},
+    ui::{
+        self,
+        apps::Covers,
+        gate, icons,
+        stream::{Player, Sound},
+        widgets,
+    },
 };
 
 /// Displayed size of the logo in the top bar, in points. The image is larger,
@@ -99,13 +105,20 @@ impl eframe::App for LetoApp {
                     self.player.picture(ui.ctx(), picture);
                 }
                 let sound_problem = self.backend.sound_problem();
+                // The microphone captures while its switch is on, and not a
+                // moment longer.
+                let listening = view.connected && view.microphone == Mic::On;
+                let voice = self.backend.microphone(listening).unwrap_or_else(|problem| {
+                    self.state.microphone_failed(problem);
+                    None
+                });
                 // The stream screen paints its own ground: on the web the
                 // pictures show through the window.
                 let inputs = egui::CentralPanel::default()
                     .frame(egui::Frame::new())
                     .show(ui, |ui| {
-                        let problem = sound_problem.as_deref();
-                        ui::stream::show(ui, &mut self.state, &view, &mut self.player, problem)
+                        let sound = Sound { problem: sound_problem.as_deref(), voice };
+                        ui::stream::show(ui, &mut self.state, &view, &mut self.player, sound)
                     })
                     .inner;
                 // Before anything else is asked of the backend: what was

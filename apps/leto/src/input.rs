@@ -21,6 +21,8 @@ pub enum Shortcut {
     FullScreen,
     /// M: switch between the pointer and the game mouse.
     GameMouse,
+    /// T, for talk: turn the microphone on, or off again.
+    Microphone,
 }
 
 impl Shortcut {
@@ -31,6 +33,7 @@ impl Shortcut {
             egui::Key::Q => Some(Self::Leave),
             egui::Key::X => Some(Self::FullScreen),
             egui::Key::M => Some(Self::GameMouse),
+            egui::Key::T => Some(Self::Microphone),
             _ => None,
         }
     }
@@ -41,6 +44,7 @@ impl Shortcut {
             Self::Leave => "Ctrl+Alt+Shift+Q",
             Self::FullScreen => "Ctrl+Alt+Shift+X",
             Self::GameMouse => "Ctrl+Alt+Shift+M",
+            Self::Microphone => "Ctrl+Alt+Shift+T",
         }
     }
 }
@@ -436,6 +440,7 @@ mod tests {
         assert_eq!(controls.key(egui::Key::Q, Some(egui::Key::A), false), None);
         assert_eq!(controls.key(egui::Key::X, None, true), Some(Shortcut::FullScreen));
         assert_eq!(controls.key(egui::Key::M, None, true), Some(Shortcut::GameMouse));
+        assert_eq!(controls.key(egui::Key::T, None, true), Some(Shortcut::Microphone));
         assert_eq!(controls.take(), [], "the PC hears nothing of a shortcut's letter");
 
         // Any other letter goes to the PC, with the three modifiers.

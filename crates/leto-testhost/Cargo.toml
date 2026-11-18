@@ -17,6 +17,8 @@ leto-core = { workspace = true }
 moonlight-common = { workspace = true }
 # The test card and the melody are encoded for real.
 openh264 = { workspace = true }
+# What the client's microphone sends is decoded, to hear what arrived.
+opus-decoder = "0.1"
 opus-rs = "0.1"
 pem = "3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

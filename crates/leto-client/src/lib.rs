@@ -13,6 +13,7 @@
 //! It does not compile for the web: browsers have no sockets. The web client
 //! reaches hosts through a bridge instead.
 
+mod describe;
 pub mod discovery;
 pub mod service;
 pub mod session;
@@ -416,13 +417,23 @@ impl Client {
         // HTTPS connection, and both sides encrypt the stream with it.
         let key = AesKey::new_random(&RustCryptoBackend)?;
         let key_id = AesIv::new_random(&RustCryptoBackend)?;
-        let config = handle.start_stream(
+        let mut config = handle.start_stream(
             AppId(app),
             &protocol,
             key,
             key_id,
             MoonlightStream::launch_query_parameters(),
         )?;
+        // The protocol library asks for the microphone stream of the one
+        // kind of host it knows to take one. Leto asks the host instead.
+        config.foundation_enable_mic =
+            config.version.is_sunshine_like() && describe::takes_microphone(&config);
+        if config.foundation_enable_mic {
+            // The library also keeps microphone encryption to that kind of
+            // host, and every host that takes a microphone wants it
+            // encrypted. Nothing else in a stream depends on the kind.
+            config.version.server_type = ServerType::FoundationSunshine;
+        }
         let witness = {
             let mut hosts = self.lock();
             let entry = hosts.get_mut(id).ok_or(Error::UnknownHost)?;

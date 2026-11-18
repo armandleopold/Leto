@@ -3,3 +3,6 @@
 *.swp
 .DS_Store
 Thumbs.db
+
+# What the stand-in host heard of a microphone (`voice` in its terminal).
+leto-voice.wav

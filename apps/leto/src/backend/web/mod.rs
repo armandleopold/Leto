@@ -168,6 +168,12 @@ impl Backend {
         self.page.say(&Up::Ask(request));
     }
 
+    /// A browser's microphone does not reach the PC yet: nothing is ever
+    /// captured here, and the interface shows no switch for it.
+    pub fn microphone(&self, _on: bool) -> Result<Option<f32>, String> {
+        Ok(None)
+    }
+
     /// Passes what the person did on to the PC being watched, in order.
     pub fn input(&self, inputs: Vec<Input>) {
         if inputs.is_empty() {

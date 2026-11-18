@@ -13,10 +13,16 @@
 //! device: this one may only list the apps and watch. Type `allow` to give it
 //! every permission, as on Apollo's PIN page, and `restrict` to take them
 //! back.
+//!
+//! The host takes the microphone of a client that sends one, like the
+//! microphone build of Apollo, and shows how loud it is on the test card.
+//! Type `voice` to save what it heard lately as a sound file to listen to.
+//! With `--no-microphone` it takes none, like a stock Sunshine or Apollo.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{
+    fs,
     io::{self, BufRead},
     process::ExitCode,
     time::Duration,
@@ -29,8 +35,14 @@ use leto_testhost::{App, FakeHost, HOST_ID, Options, permission};
 /// How many inputs the "inputs" command prints, counted from the last.
 const SHOWN_INPUTS: usize = 24;
 
+/// Where the "voice" command saves what the client's microphone sent.
+const VOICE_FILE: &str = "leto-voice.wav";
+/// Samples per second in what the host heard.
+const VOICE_RATE: u32 = 48_000;
+
 const USAGE: &str = "\
 Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
+             [--no-microphone]
 
   --name NAME   The name the host gives itself (default: Salon)
   --id ID       The unique id it reports (default: a fixed one)
@@ -39,6 +51,9 @@ Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
                 network, so that clients find it on their own
   --apollo      Behave as an Apollo host that lets a newly paired device
                 list the apps and watch, and nothing else
+  --no-microphone
+                Take no microphone from the client, like a stock Sunshine or
+                Apollo
 ";
 
 fn main() -> ExitCode {
@@ -73,6 +88,10 @@ fn main() -> ExitCode {
             }
             "--apollo" => {
                 options.permissions = Some(permission::DEFAULT);
+                Ok(())
+            }
+            "--no-microphone" => {
+                options.microphone = false;
                 Ok(())
             }
             _ => Err(()),
@@ -112,6 +131,7 @@ fn main() -> ExitCode {
     println!("Type \"close\" to close the running app, \"drop\" to break the stream.");
     println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
     println!("Type \"inputs\" to see what the keyboard, mouse and gamepads of the client sent.");
+    println!("Type \"voice\" to save what the microphone of the client sent to {VOICE_FILE}.");
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         match line.trim() {
@@ -140,6 +160,29 @@ fn main() -> ExitCode {
                     println!("  {input:?}");
                 }
             }
+            "voice" => {
+                let heard = host.heard();
+                if heard.is_empty() {
+                    println!("The microphone of the client sent nothing in this stream.");
+                    continue;
+                }
+                // As loud as the client's own meter says: 1 for a tone that
+                // reaches the limits.
+                let last = &heard[heard.len().saturating_sub(VOICE_RATE as usize)..];
+                let mean =
+                    last.iter().map(|sample| sample * sample).sum::<f32>() / last.len() as f32;
+                println!(
+                    "Heard {:.1} seconds lately, the last one at {:.0}% of the loudest.",
+                    heard.len() as f32 / VOICE_RATE as f32,
+                    (mean * 2.0).sqrt().min(1.0) * 100.0
+                );
+                match fs::write(VOICE_FILE, wav(&heard)) {
+                    Ok(()) => {
+                        println!("Saved to {VOICE_FILE}: play it to hear what the host heard.")
+                    }
+                    Err(error) => println!("Could not save {VOICE_FILE}: {error}"),
+                }
+            }
             other => match other.parse::<Pin>() {
                 Ok(pin) => {
                     host.type_pin(pin);
@@ -150,6 +193,31 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// One channel of sound as a WAV file: 16 bits a sample, uncompressed.
+fn wav(samples: &[f32]) -> Vec<u8> {
+    let data = u32::try_from(samples.len() * 2).expect("ten seconds of sound are small");
+    let mut file = Vec::with_capacity(44 + samples.len() * 2);
+    file.extend_from_slice(b"RIFF");
+    file.extend_from_slice(&(36 + data).to_le_bytes());
+    file.extend_from_slice(b"WAVEfmt ");
+    // A format block of 16 bytes: plain samples, one channel.
+    file.extend_from_slice(&16u32.to_le_bytes());
+    file.extend_from_slice(&1u16.to_le_bytes());
+    file.extend_from_slice(&1u16.to_le_bytes());
+    file.extend_from_slice(&VOICE_RATE.to_le_bytes());
+    // Bytes per second, bytes per sample, bits per sample.
+    file.extend_from_slice(&(VOICE_RATE * 2).to_le_bytes());
+    file.extend_from_slice(&2u16.to_le_bytes());
+    file.extend_from_slice(&16u16.to_le_bytes());
+    file.extend_from_slice(b"data");
+    file.extend_from_slice(&data.to_le_bytes());
+    for sample in samples {
+        let level = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+        file.extend_from_slice(&level.to_le_bytes());
+    }
+    file
 }
 
 /// An app with a generated cover: a gradient in the usual box-art shape.

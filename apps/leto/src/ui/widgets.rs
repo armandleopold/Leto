@@ -66,6 +66,27 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, name: &str) -> Response {
     response.on_hover_text(name).on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// A square button that shows a state: its icon is drawn in `color`, by a
+/// function that knows more than a plain icon does. One that is not
+/// `usable` only says why, in `name`.
+pub fn state_button(
+    ui: &mut Ui,
+    icon: impl Fn(&Painter, Rect, Color32),
+    name: &str,
+    color: Color32,
+    usable: bool,
+) -> Response {
+    let sense = if usable { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(36.0), sense);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, usable, name));
+    if usable && (response.hovered() || response.has_focus()) {
+        ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, theme::SURFACE_HOVER);
+    }
+    icon(ui.painter(), rect.shrink(rect.width() * 0.27), color);
+    let response = response.on_hover_text(name);
+    if usable { response.on_hover_cursor(CursorIcon::PointingHand) } else { response }
+}
+
 /// Like [`icon_button`], on top of something else: at a place chosen by the
 /// caller, and taking no room in the layout. `id` tells it from its twins.
 pub fn icon_button_at(ui: &Ui, rect: Rect, id: egui::Id, icon: Icon, name: &str) -> Response {

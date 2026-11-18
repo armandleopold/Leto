@@ -41,12 +41,20 @@ newly paired one may list the apps and watch, and nothing else. Type `allow`
 to give it every permission, as on Apollo's PIN page, and `restrict` to take
 them back.
 
+The stand-in host takes a microphone, like the microphone build of Apollo. A
+meter on the right of its test card rises with what the client sends, and
+`voice` saves the last ten seconds it heard to `leto-voice.wav`, to listen
+to. With `--no-microphone` it takes none, like a stock Sunshine or Apollo.
+
 To check a stream without the window, `leto-cli play` streams an app for a few
 seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 
 ```sh
 cargo run -p leto-cli -- play Salon Desktop --seconds 10
 ```
+
+It also says whether the PC takes a microphone, and with `--microphone` it
+sends this device's meanwhile.
 
 The web client needs its bridge: `cargo xtask web` builds the client, then
 `leto-cli bridge` serves it on port 5386 and prints the address to open and

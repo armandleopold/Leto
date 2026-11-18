@@ -1,6 +1,6 @@
 [package]
 name = "leto-media"
-description = "Video and audio for Leto: decoders for what a host sends, and the speakers."
+description = "Video and audio for Leto: decoders for what a host sends, the speakers, and the microphone."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,10 +17,8 @@ workspace = true
 cpal = "0.18"
 log = { workspace = true }
 openh264 = { workspace = true }
-# Opus in plain Rust: nothing to install, nothing unsafe.
+# Opus in plain Rust: nothing to install, nothing unsafe. One crate decodes
+# what a PC sends, the other encodes the microphone for it.
 opus-decoder = "0.1"
-thiserror = "2"
-
-[dev-dependencies]
-# Encodes the sound the tests decode.
 opus-rs = "0.1"
+thiserror = "2"

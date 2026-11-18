@@ -117,6 +117,10 @@ pub struct Options {
     /// reports them and refuses what they do not cover. Without, it is a
     /// Sunshine, where a paired device may do everything.
     pub permissions: Option<u32>,
+    /// Take the microphone of a client that offers it, the way the Apollo
+    /// microphone fork and Foundation Sunshine do. Without it the host is
+    /// like a stock Sunshine or Apollo, which knows nothing of microphones.
+    pub microphone: bool,
 }
 
 impl Default for Options {
@@ -133,6 +137,7 @@ impl Default for Options {
             ],
             encrypt_rtsp: true,
             permissions: None,
+            microphone: true,
         }
     }
 }
@@ -184,6 +189,8 @@ struct Playing {
     /// What the client of that stream had done with its keyboard, mouse and
     /// gamepads.
     last_inputs: Vec<Input>,
+    /// What its microphone had sent.
+    last_heard: Vec<f32>,
 }
 
 impl Playing {
@@ -193,6 +200,7 @@ impl Playing {
             session.stop(tell_client);
             self.last = Some(session.report());
             self.last_inputs = session.inputs();
+            self.last_heard = session.heard();
         }
     }
 }
@@ -283,6 +291,17 @@ impl FakeHost {
         match &playing.session {
             Some(session) => session.inputs(),
             None => playing.last_inputs.clone(),
+        }
+    }
+
+    /// What the client's microphone sent during the current stream, or
+    /// during the last one if it ended: one channel at 48 kHz, the last ten
+    /// seconds at most.
+    pub fn heard(&self) -> Vec<f32> {
+        let playing = self.shared.playing.lock().unwrap();
+        match &playing.session {
+            Some(session) => session.heard(),
+            None => playing.last_heard.clone(),
         }
     }
 
@@ -634,6 +653,7 @@ fn launch(
         // Clients that can encrypt RTSP say so with `corever`.
         encrypt_rtsp: shared.options.encrypt_rtsp
             && query.get("corever").and_then(|version| version.parse::<u32>().ok()) >= Some(1),
+        microphone: shared.options.microphone,
     };
 
     playing.end_stream(false);

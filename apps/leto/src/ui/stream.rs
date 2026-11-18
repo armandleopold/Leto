@@ -13,7 +13,7 @@ use super::{icons, widgets};
 use crate::{
     backend::Picture,
     input::{Controls, Shortcut},
-    state::{State, StreamView},
+    state::{Mic, State, StreamView},
     theme, window,
 };
 
@@ -31,6 +31,14 @@ const BAR_MARGIN: f32 = 10.0;
 /// A browser fills the screen with F11 on its own, without telling the
 /// page: there, F11 is not Leto's to act on.
 const F11_FILLS: bool = cfg!(not(target_arch = "wasm32"));
+
+/// A browser's microphone does not reach the PC yet: the web build shows no
+/// switch for it.
+const HAS_MICROPHONE: bool = cfg!(not(target_arch = "wasm32"));
+
+/// The quietest sound the microphone's meter shows, in decibels below the
+/// loudest a microphone captures.
+const METER_FLOOR: f32 = -50.0;
 
 /// A key that went down or came up while a stream had the keyboard.
 struct KeyStroke {
@@ -81,6 +89,10 @@ pub struct Player {
     bar_until: Option<f64>,
     /// Where the bar was in the last frame, when it was there.
     bar: Option<Rect>,
+    /// The microphone as it was in the last frame of this stream.
+    microphone_was: Option<Mic>,
+    /// The last thing worth a line in the bar was about the microphone.
+    talks_of_microphone: bool,
 }
 
 impl Player {
@@ -141,6 +153,15 @@ impl Player {
     }
 }
 
+/// What the backend says of the sound of a stream, both ways.
+#[derive(Clone, Copy)]
+pub struct Sound<'a> {
+    /// Why the stream has no sound, when it has none.
+    pub problem: Option<&'a str>,
+    /// How loud the microphone is, from 0 to 1, while it captures.
+    pub voice: Option<f32>,
+}
+
 /// Draws the stream and returns what the person did since the last frame,
 /// to send to the PC in this order.
 pub fn show(
@@ -148,7 +169,7 @@ pub fn show(
     state: &mut State,
     view: &StreamView,
     player: &mut Player,
-    sound_problem: Option<&str>,
+    sound: Sound<'_>,
 ) -> Vec<Input> {
     let window = ui.max_rect();
     let (now, focused) = ui.input(|input| (input.time, input.focused));
@@ -192,6 +213,7 @@ pub fn show(
                 Some(Shortcut::Leave) => asked.leave = true,
                 Some(Shortcut::FullScreen) => asked.fill = true,
                 Some(Shortcut::GameMouse) => asked.game_mouse = true,
+                Some(Shortcut::Microphone) => asked.microphone = HAS_MICROPHONE,
                 None => {}
             }
         }
@@ -206,6 +228,21 @@ pub fn show(
         if refused {
             player.bar_until = Some(bar_until.max(now + BAR_RETURNS));
         }
+        if player.microphone_was.as_ref() != Some(&view.microphone) {
+            // The bar says what the microphone just did. That a PC takes
+            // one is not news: its switch is there to see.
+            let was_on = player.microphone_was == Some(Mic::On);
+            if was_on || matches!(view.microphone, Mic::On | Mic::Failed(_)) {
+                player.talks_of_microphone = true;
+                player.bar_until = Some(bar_until.max(now + BAR_RETURNS));
+            }
+            player.microphone_was = Some(view.microphone.clone());
+        }
+        if view.microphone == Mic::On {
+            // The meter moves, and a microphone that stops is noticed, even
+            // while the picture stands still.
+            ui.ctx().request_repaint_after_secs(0.05);
+        }
     } else {
         // Nothing to play with yet: the keys are still Leto's.
         player.strokes.clear();
@@ -218,12 +255,16 @@ pub fn show(
         }
     }
 
-    overlay(ui, window, view, player, sound_problem, now, &mut asked);
+    overlay(ui, window, view, player, sound, now, &mut asked);
 
+    if asked.microphone {
+        state.switch_microphone();
+    }
     if asked.game_mouse {
         player.game_mouse = !player.game_mouse;
         // The bar says what just changed, and how to change it back.
         player.bar_until = Some(now + BAR_RETURNS);
+        player.talks_of_microphone = false;
     }
     if player.pointer_kept && window::pointer_lost() {
         // A browser gives the pointer back when Escape is pressed, whoever
@@ -231,6 +272,7 @@ pub fn show(
         player.pointer_kept = false;
         player.game_mouse = false;
         player.bar_until = Some(now + BAR_RETURNS);
+        player.talks_of_microphone = false;
     }
     let keep = player.game_mouse && view.connected && focused && !asked.leave;
     if keep != player.pointer_kept {
@@ -256,6 +298,8 @@ struct Asked {
     fill: bool,
     /// Switch between the pointer and the game mouse.
     game_mouse: bool,
+    /// Turn the microphone on, or off again.
+    microphone: bool,
 }
 
 /// Passes what the mouse did on to the controls. Returns whether a button
@@ -317,7 +361,7 @@ fn overlay(
     window: Rect,
     view: &StreamView,
     player: &mut Player,
-    sound_problem: Option<&str>,
+    sound: Sound<'_>,
     now: f64,
     asked: &mut Asked,
 ) {
@@ -334,6 +378,10 @@ fn overlay(
             || player.bar.is_some_and(|bar| bar.expand(BAR_MARGIN).contains(pointer))
     });
     let timed = player.bar_until.is_some_and(|until| now < until);
+    if !timed {
+        // What the bar said about the microphone has been said.
+        player.talks_of_microphone = false;
+    }
     let wanted = !has_picture || timed || on_bar;
     let opacity = ui.ctx().animate_bool_with_time(Id::unique("stream-bar"), wanted, 0.2);
 
@@ -341,12 +389,10 @@ fn overlay(
         let content = Bar {
             view,
             picture: player.surface.as_ref().map(Surface::size),
-            sound_problem,
+            sound_problem: sound.problem,
             game_mouse: player.game_mouse,
-            // A note under the buttons when there is something to say, not
-            // every time the pointer passes.
-            note: (timed || view.connected && !(view.input.keyboard && view.input.mouse))
-                .then(|| note(view, player.game_mouse)),
+            voice: sound.voice.map(meter),
+            note: bar_note(view, player.game_mouse, timed, player.talks_of_microphone),
             opacity,
         };
         player.bar = Some(bar(ui.ctx(), window, &content, asked));
@@ -358,6 +404,11 @@ fn overlay(
         player.bar = None;
     }
 
+    if view.microphone == Mic::On && opacity < 1.0 {
+        // The PC hears this device: that shows for as long as it does,
+        // whether the bar is there to say so or not.
+        live(ui, window, sound.voice.map_or(0.0, meter), 1.0 - opacity);
+    }
     if !view.connected || !has_picture {
         return;
     }
@@ -378,6 +429,28 @@ fn grip(ui: &Ui, window: Rect) {
     let painter = ui.painter();
     painter.rect_filled(rect.expand(1.0), 4, Color32::from_black_alpha(120));
     painter.rect_filled(rect, 3, theme::MOON.gamma_multiply(0.55));
+}
+
+/// A small microphone in a corner of the picture, filled with what it
+/// hears: the sign that the PC is listening.
+fn live(ui: &Ui, window: Rect, level: f32, opacity: f32) {
+    let rect = Rect::from_center_size(window.right_top() + vec2(-28.0, 28.0), Vec2::splat(32.0));
+    let painter =
+        ui.ctx().layer_painter(egui::LayerId::new(Order::Foreground, Id::unique("stream-live")));
+    let ground = Color32::from_black_alpha(170).gamma_multiply(opacity);
+    painter.circle_filled(rect.center(), rect.width() / 2.0, ground);
+    icons::microphone(&painter, rect.shrink(8.0), theme::SUN.gamma_multiply(opacity), level);
+}
+
+/// How full the microphone's meter is for a level from 0 to 1. Ears hear in
+/// ratios, so the meter does too: each halving of the level takes the same
+/// slice off it.
+fn meter(level: f32) -> f32 {
+    if level <= 0.0 {
+        return 0.0;
+    }
+    let decibels = 20.0 * level.log10();
+    ((decibels - METER_FLOOR) / -METER_FLOOR).clamp(0.0, 1.0)
 }
 
 /// What is shown until the first picture. Returns true when the person
@@ -406,6 +479,8 @@ struct Bar<'a> {
     picture: Option<[usize; 2]>,
     sound_problem: Option<&'a str>,
     game_mouse: bool,
+    /// How full the microphone's meter is, while it captures.
+    voice: Option<f32>,
     note: Option<Note>,
     opacity: f32,
 }
@@ -452,6 +527,10 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 let text = RichText::new("No sound").color(theme::PROBLEM);
                                 ui.label(text.size(theme::SMALL)).on_hover_text(problem);
                             }
+                            if usable && HAS_MICROPHONE && content.view.connected {
+                                asked.microphone |=
+                                    microphone_switch(ui, content.view, content.voice);
+                            }
                             if usable {
                                 let mouse = format!(
                                     "Game mouse: the mouse turns the view instead of moving a \
@@ -487,6 +566,32 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
         .rect
 }
 
+/// The switch of the microphone, which also shows what the microphone
+/// hears. Returns whether the person pressed it.
+fn microphone_switch(ui: &mut Ui, view: &StreamView, voice: Option<f32>) -> bool {
+    let host = &view.host.name;
+    let keys = Shortcut::Microphone.keys();
+    let (name, color, level) = match &view.microphone {
+        Mic::NotTaken => (
+            format!("{host} takes no microphone. Apollo and Sunshine need a build that does."),
+            theme::LINE,
+            0.0,
+        ),
+        Mic::Off => (format!("Microphone: let {host} hear this device ({keys})"), theme::DIM, 0.0),
+        Mic::On => (
+            format!("Microphone on: {host} hears this device ({keys} turns it off)"),
+            theme::SUN,
+            voice.unwrap_or(0.0),
+        ),
+        Mic::Failed(why) => (format!("{why} Press to try again."), theme::PROBLEM, 0.0),
+    };
+    let usable = view.microphone != Mic::NotTaken;
+    let icon = |painter: &egui::Painter, rect: Rect, color: Color32| {
+        icons::microphone(painter, rect, color, level);
+    };
+    widgets::state_button(ui, icon, &name, color, usable).clicked()
+}
+
 /// The app and the PC on one line, cut short if the window is narrow.
 fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
     let font = FontId::proportional(theme::BODY);
@@ -502,6 +607,43 @@ fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
     let galley = ui.painter().layout_job(job);
     let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
     ui.painter().galley(rect.min, galley, theme::MOON);
+}
+
+/// The line under the buttons of the bar, when there is something to say:
+/// not every time the pointer passes. `timed` says the bar is there on its
+/// own, because something changed, and `about_microphone` that the change
+/// was the microphone's.
+fn bar_note(
+    view: &StreamView,
+    game_mouse: bool,
+    timed: bool,
+    about_microphone: bool,
+) -> Option<Note> {
+    let host = &view.host.name;
+    if view.connected && !(view.input.keyboard && view.input.mouse) {
+        // What does not work stays said for as long as the bar shows.
+        return Some(note(view, game_mouse));
+    }
+    match &view.microphone {
+        Mic::Failed(why) => return Some(Note { text: why.clone(), problem: true }),
+        Mic::On if timed && about_microphone => {
+            return Some(Note {
+                text: format!(
+                    "The microphone is on: {host} hears this device. {} turns it off.",
+                    Shortcut::Microphone.keys()
+                ),
+                problem: false,
+            });
+        }
+        Mic::Off if timed && about_microphone => {
+            return Some(Note {
+                text: format!("The microphone is off: {host} no longer hears this device."),
+                problem: false,
+            });
+        }
+        _ => {}
+    }
+    timed.then(|| note(view, game_mouse))
 }
 
 /// What the bar has to say about playing on this PC.
@@ -624,6 +766,7 @@ mod tests {
             attempt: 1,
             connected: true,
             input,
+            microphone: Mic::Off,
         }
     }
 
@@ -641,6 +784,56 @@ mod tests {
             said.text,
             "Game mouse on: the mouse turns the view. Ctrl+Alt+Shift+M gives the pointer back."
         );
+    }
+
+    #[test]
+    fn the_bar_says_what_the_microphone_just_did() {
+        let mut view = view(InputAllowed::ALL);
+        // Nothing to say when the pointer merely passes.
+        assert_eq!(bar_note(&view, false, false, false), None);
+        // A stream that starts says how to get out of it.
+        assert_eq!(bar_note(&view, false, true, false), Some(note(&view, false)));
+
+        view.microphone = Mic::On;
+        let said = bar_note(&view, false, true, true).expect("a line about the microphone");
+        assert_eq!(
+            said.text,
+            "The microphone is on: Salon hears this device. Ctrl+Alt+Shift+T turns it off."
+        );
+        assert!(!said.problem);
+        // Later on, the lit switch says it, and the bar has other things to
+        // say.
+        assert_eq!(bar_note(&view, true, true, false), Some(note(&view, true)));
+        assert_eq!(bar_note(&view, false, false, false), None);
+
+        view.microphone = Mic::Off;
+        let said = bar_note(&view, false, true, true).expect("a line about the microphone");
+        assert_eq!(said.text, "The microphone is off: Salon no longer hears this device.");
+    }
+
+    #[test]
+    fn a_microphone_that_failed_stays_said_and_what_the_pc_ignores_comes_first() {
+        let mut view = view(InputAllowed::ALL);
+        view.microphone = Mic::Failed("This device has no microphone.".into());
+        let said = bar_note(&view, false, false, false).expect("a problem is always said");
+        assert_eq!(said, Note { text: "This device has no microphone.".into(), problem: true });
+
+        view.input = InputAllowed { keyboard: false, ..InputAllowed::ALL };
+        let said = bar_note(&view, false, false, false).expect("a problem is always said");
+        assert!(said.text.contains("\"Keyboard Input\""), "{}", said.text);
+    }
+
+    #[test]
+    fn the_meter_fills_by_ratios_from_a_whisper_to_the_loudest() {
+        assert_eq!(meter(0.0), 0.0);
+        assert_eq!(meter(0.001), 0.0);
+        assert_eq!(meter(1.0), 1.0);
+        assert_eq!(meter(4.0), 1.0);
+        // A voice: around a tenth of the loudest.
+        assert!((meter(0.1) - 0.6).abs() < 0.001);
+        // Half as loud is the same step down wherever it starts.
+        let step = meter(0.5) - meter(0.25);
+        assert!((meter(0.1) - meter(0.05) - step).abs() < 0.001);
     }
 
     #[test]

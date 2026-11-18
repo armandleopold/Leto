@@ -91,6 +91,9 @@ enum Command {
         /// Video bit rate to ask for, in kilobits per second.
         #[arg(long, default_value_t = StreamSettings::default().bitrate_kbps, value_name = "KBPS")]
         bitrate: u32,
+        /// Send the PC this device's microphone meanwhile, if it takes one.
+        #[arg(long)]
+        microphone: bool,
     },
     /// Close the app running on a PC.
     Quit {
@@ -156,14 +159,14 @@ fn run(cli: &Cli) -> Result<String, String> {
         Command::Pair { pc, pin } => pcs::pair(&client(cli)?, pc, *pin, json),
         Command::Apps { pc } => pcs::apps(&client(cli)?, pc, json),
         Command::Forget { pc } => pcs::forget(&client(cli)?, pc, json),
-        Command::Play { pc, app, seconds, width, height, fps, bitrate } => {
+        Command::Play { pc, app, seconds, width, height, fps, bitrate, microphone } => {
             let settings = StreamSettings {
                 width: *width,
                 height: *height,
                 fps: *fps,
                 bitrate_kbps: *bitrate,
             };
-            stream::play(&client(cli)?, pc, app, *seconds, settings, json)
+            stream::play(&client(cli)?, pc, app, *seconds, settings, *microphone, json)
         }
         Command::Quit { pc } => stream::quit(&client(cli)?, pc, json),
         Command::Bridge { port, web, local, forget_browsers } => {

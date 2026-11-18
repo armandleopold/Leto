@@ -69,3 +69,12 @@ strip = "debuginfo"
 # Keep debug builds of dependencies fast enough to use the app.
 [profile.dev.package."*"]
 opt-level = 2
+
+# opus-decoder 0.1.1 keeps one bit per block of a frame in eight bits, and
+# some frames of twenty milliseconds have sixteen blocks (`celt/vq.rs`,
+# `extract_collapse_mask`). The shift that goes past the eighth bit wraps
+# around in a release build, which gives what libopus computes; a debug
+# build would stop there instead. `sudden_sounds_are_heard_too` in
+# `leto-media` decodes such frames.
+[profile.dev.package.opus-decoder]
+overflow-checks = false

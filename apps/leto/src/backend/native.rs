@@ -1,6 +1,6 @@
 //! The backend of the desktop app: the client engine on worker threads.
 
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 use leto_client::{
     Client, Service, Shell,
@@ -8,6 +8,7 @@ use leto_client::{
     input::Input,
     service::{explain, sentence},
 };
+use leto_media::{Microphone, VOICE_FRAME};
 
 use super::{
     Door, Picture, Unavailable, decode_cover, gamepad,
@@ -27,11 +28,28 @@ struct Desk {
     ctx: egui::Context,
     /// Where the stream on screen leaves its pictures.
     outlet: Mutex<Arc<Outlet>>,
+    voice: Mutex<Voice>,
+}
+
+/// The microphone of this device, which only ever captures for a stream
+/// that is connected to a PC that takes one.
+#[derive(Default)]
+struct Voice {
+    /// The stream whose PC takes a microphone, while it is connected.
+    stream: Option<u64>,
+    /// The microphone, while the person has it on.
+    microphone: Option<Microphone>,
 }
 
 impl Desk {
     fn outlet(&self) -> Arc<Outlet> {
         Arc::clone(&self.outlet.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn voice(&self) -> MutexGuard<'_, Voice> {
+        // Whether a microphone captures stays true even if a thread
+        // panicked meanwhile.
+        self.voice.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -40,6 +58,21 @@ impl Shell for Desk {
     type Audio = Sound;
 
     fn tell(&self, event: engine::Event) {
+        match &event {
+            engine::Event::Playing { attempt, microphone: true, .. } => {
+                self.voice().stream = Some(*attempt);
+            }
+            // Nobody listens any more, so nothing is captured any more: at
+            // once, not when the window gets to hear of it.
+            engine::Event::PlayFailed { attempt, .. }
+            | engine::Event::StreamEnded { attempt, .. } => {
+                let mut voice = self.voice();
+                if voice.stream == Some(*attempt) {
+                    *voice = Voice::default();
+                }
+            }
+            _ => {}
+        }
         // Covers are decoded here, on the engine's thread, not while drawing.
         let event = event.with_covers(|file: ImageFile| decode_cover(&file.0));
         // The interface is gone when the app is closing.
@@ -58,7 +91,12 @@ impl Shell for Desk {
 impl Backend {
     pub fn new(ctx: &egui::Context) -> Self {
         let (sender, events) = mpsc::channel();
-        let desk = Desk { events: sender, ctx: ctx.clone(), outlet: Mutex::default() };
+        let desk = Desk {
+            events: sender,
+            ctx: ctx.clone(),
+            outlet: Mutex::default(),
+            voice: Mutex::default(),
+        };
         let service = Client::open_default()
             .map(|client| Arc::new(Service::new(Arc::new(client), desk)))
             .map_err(|error| explain(&error));
@@ -107,6 +145,39 @@ impl Backend {
         outlet.sound_problem()
     }
 
+    /// Captures the microphone for the PC being watched while `on`, and
+    /// stops capturing when it is not. Returns how loud it is while it
+    /// captures, from 0 to 1, or why it cannot, in words for the person.
+    ///
+    /// Asked every frame. The microphone is opened the first time, which is
+    /// when the system may ask the person whether Leto may listen.
+    pub fn microphone(&self, on: bool) -> Result<Option<f32>, String> {
+        let Ok(service) = &self.service else { return Ok(None) };
+        let mut voice = service.shell().voice();
+        if !on || voice.stream.is_none() {
+            voice.microphone = None;
+            return Ok(None);
+        }
+        if voice.microphone.as_ref().is_some_and(Microphone::is_lost) {
+            voice.microphone = None;
+            return Err("The microphone stopped. It may have been unplugged.".to_owned());
+        }
+        if voice.microphone.is_none() {
+            // The engine outlives no microphone: it must not be kept alive
+            // by one.
+            let listener = Arc::downgrade(service);
+            let mut frames = 0u32;
+            let opened = Microphone::open(move |frame| {
+                if let Some(service) = listener.upgrade() {
+                    service.microphone(VOICE_FRAME * frames, frame);
+                }
+                frames = frames.wrapping_add(1);
+            });
+            voice.microphone = Some(opened.map_err(|error| sentence(&error.to_string()))?);
+        }
+        Ok(voice.microphone.as_ref().map(Microphone::level))
+    }
+
     /// Passes what the person did on to the PC being watched, in order.
     pub fn input(&self, inputs: Vec<Input>) {
         if let Ok(service) = &self.service {
@@ -117,11 +188,15 @@ impl Backend {
     /// Starts `request` on a worker thread. The outcome arrives as events.
     pub fn send(&self, request: Request) {
         let Ok(service) = &self.service else { return };
+        let desk = service.shell();
         if matches!(request, Request::Play { .. }) {
             // A new stream leaves its pictures in a place of its own: what
             // an earlier one left is not for this one.
-            let desk = service.shell();
             *desk.outlet.lock().unwrap_or_else(PoisonError::into_inner) = Arc::default();
+        }
+        if matches!(request, Request::Play { .. } | Request::Leave) {
+            // No stream, or a new one: the microphone is off.
+            *desk.voice() = Voice::default();
         }
         service.ask(request);
     }

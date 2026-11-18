@@ -148,6 +148,14 @@ impl<S: Shell> Service<S> {
         }
     }
 
+    /// Passes a frame of this device's microphone on to the PC being
+    /// watched, as [`Session::send_microphone`] takes it. Returns whether it
+    /// left: nothing does without a stream, or to a PC that takes none.
+    pub fn microphone(&self, at: Duration, frame: &[u8]) -> bool {
+        let watching = lock(&self.watching);
+        watching.session.as_ref().is_some_and(|session| session.send_microphone(at, frame))
+    }
+
     /// The attempt whose stream is connected, when one is.
     pub fn streaming(&self) -> Option<u64> {
         let watching = lock(&self.watching);
@@ -266,10 +274,10 @@ fn play<S: Shell>(
         Ok(session) => {
             let mut watching = lock(watching);
             if watching.wanted == Some(attempt) {
-                let input = session.input_allowed();
+                let (input, microphone) = (session.input_allowed(), session.takes_microphone());
                 watching.session = Some(session);
                 drop(watching);
-                shell.tell(Event::Playing { attempt, input });
+                shell.tell(Event::Playing { attempt, input, microphone });
             } else {
                 // The person left while the PC was starting the app.
                 drop(watching);
