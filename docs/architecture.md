@@ -292,8 +292,8 @@ every later camera, until the app is restarted.
   plays, and tells the answer as news of its own (`Event::Camera`) up to
   three seconds later. Until then the app shows no camera switch at all; a
   PC that takes none gets a dimmed one, with the reason. Only a shell that
-  can send a camera has the engine ask (`Shell::sends_camera`): the bridge
-  does not yet, so a browser hears nothing about cameras.
+  can send a camera has the engine ask (`Shell::sends_camera`): the app
+  does, and the bridge for its browsers.
 - **Never in clear.** Every packet is sealed with AES-128-GCM under a key the
   PC made for this camera. There is no way to send one unsealed.
 - **Encoded in software,** as pictures are decoded: `PictureEncoder` in
@@ -301,8 +301,10 @@ every later camera, until the app is restarted.
   1280 by 720 and thirty pictures a second, less for smaller pictures),
   leaves pictures out rather than exceed it, and makes one that decodes on
   its own every two seconds. A camera larger than what the PC takes is
-  halved until it fits. At 1280 by 720 it takes about 3 ms a picture in a
-  release build on the four cores of the machine this was written on.
+  halved until it fits. That rule, with the bit rate, is the engine's
+  (`CameraOffer::fit` in `leto_core::engine`): a browser encodes its camera
+  itself and follows it too. At 1280 by 720 it takes about 3 ms a picture in
+  a release build on the four cores of the machine this was written on.
 - **One feed from the camera to whoever carries it.** `CameraFeed` in
   `leto-media` opens the camera, encodes on a thread of its own and hands
   each picture to a `Carrier`, which is the only thing it knows about where
@@ -312,7 +314,10 @@ every later camera, until the app is restarted.
   whatever the camera delivers.
 - **It belongs to the stream.** The engine lets go of the camera when the
   stream is left, fails or ends, and when another one starts, without waiting
-  for the window. The PC is told that it stopped, and by which key, so a
+  for the window. It asks no PC for one unless a stream plays: not for a
+  stream that ended and was not left yet, and not the PC of the stream
+  before while the next one starts. The PC is told that it stopped, and by
+  which key, so a
   goodbye that arrives late never ends the camera that followed. The cameras
   of an engine are numbered for the same reason: a feed that was let go of
   can neither send through, nor stop, the one that came after it.
@@ -329,6 +334,49 @@ asked (`camera` in its terminal). `leto-cli play --camera` sends the camera
 without the window, and says whether a PC takes one at all. Both the app and
 the command line send a test card instead of a camera when `LETO_CAMERA=card`
 is set, which is how a machine without a camera checks the way there.
+
+### From a browser
+
+A page can neither send UDP packets nor show a PC the certificates of the
+pairing, so its camera goes through its bridge, which is the device the PC
+knows.
+
+- **The browser encodes**, with the H.264 encoder it offers pages
+  (WebCodecs): the constrained baseline profile, with start codes, in the
+  mode meant for calls, where no picture waits for the next. Size, pictures
+  a second and bit rate come from the engine's rule and what the PC said it
+  takes, and the browser scales what the camera gives (`backend/web/film.rs`).
+  It is asked whether it can before the PC is.
+- **A timer takes the pictures**, thirty times a second, from the `<video>`
+  the camera plays in. A picture that would only wait is not taken: when the
+  encoder has more than two before it, or when more than 256 KiB wait to
+  leave for the bridge. Every two seconds a picture decodes on its own, and
+  so does the one after a picture that was lost once encoded (`Shutter` in
+  `backend/flow.rs`).
+- **One more kind of message.** The page says `CameraOn` with what it would
+  send and a number, the bridge answers `Camera` with that number, and
+  pictures follow as binary messages: when each was taken, whether it
+  decodes on its own, and the H.264 of it. One picture is 1 MiB at most,
+  which is why a browser's WebSocket takes messages that long. Text stays
+  held to 64 KiB, and a browser the gate has not let in is hung up on when
+  it sends anything else.
+- **The bridge asks the PC, and passes on.** It does what the app's carrier
+  does (`Service::camera_open`, `camera`, `camera_close`), for the stream
+  that browser is watching, and never looks into a picture
+  (`leto-bridge/src/camera.rs`). Asking a PC waits for its answer, so it
+  happens on a thread that may wait, one question at a time: what the page
+  says meanwhile replaces what it said before, and only its last asking is
+  answered. `CameraOff`, leaving the stream or closing the tab stops the
+  camera, and the PC is told.
+- **Never in clear** here either: the pictures travel inside the TLS of the
+  WebSocket to the bridge, and sealed from there to the PC.
+- **The same switch.** The page hears what camera the PC takes as the app
+  does, and the bar, the shortcut, the lit switch and the refusals are the
+  desktop app's code.
+
+A tab nobody looks at sends a picture a second at most, because browsers
+slow its timers. The bridge cannot ask a browser for a picture that decodes
+on its own: a PC that lost one waits for the next, two seconds at most.
 
 ## The web client and its bridge
 
@@ -359,8 +407,8 @@ browser  <-- HTTPS and a WebSocket -->  bridge  <-- the Moonlight protocol -->  
   bridge served itself.
 - **One language**, in `leto_core::bridge`: the browser sends `Request`s and
   `Input`s, the bridge sends `Event`s, as JSON. Pictures and sound, and the
-  microphone the other way, travel as binary messages and stay encoded all
-  the way: the bridge never decodes.
+  microphone and the camera the other way, travel as binary messages and
+  stay encoded all the way: the bridge never decodes.
 - **The browser decodes**, with WebCodecs. The bridge reads the codec of each
   keyframe from its parameters and says it before the first picture.
   Pictures are drawn on a canvas of their own *behind* the app's canvas, and
@@ -390,8 +438,9 @@ browser  <-- HTTPS and a WebSocket -->  bridge  <-- the Moonlight protocol -->  
   screen Chrome and Edge also hand over Escape and the system's shortcuts.
 
 The rules that need no browser are plain Rust, tested with the rest: when a
-piece of sound plays and which pictures a decoder may be given
-(`backend/flow.rs`), the gate, the relay, the HTTP the bridge speaks. The
+piece of sound plays, which pictures a decoder may be given and which
+pictures of the camera are taken (`backend/flow.rs`), the gate, the relay,
+the HTTP the bridge speaks. The
 bridge is tested end to end against the stand-in host with a WebSocket
 client. The browser's half was checked by hand in Chromium, against the same
 host: nothing runs a browser in the pipeline yet.

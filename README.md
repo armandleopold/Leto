@@ -26,8 +26,8 @@ app, with gamepads too, and in a browser, through a small bridge that runs on
 your network. Both send the microphone of your device to a PC that takes
 one, which Apollo and Sunshine only do in special builds for now. Both show
 what your camera sees and whether your microphone hears you, on a screen of
-their own. The desktop app also sends the camera to a PC that takes one,
-which no Apollo or Sunshine does: that needs Leto on the PC, which is step 4.
+their own. Both also send the camera to a PC that takes one, which no Apollo
+or Sunshine does: that needs Leto on the PC, which is step 4.
 Nothing has been tried against a real PC yet, only against the stand-in host
 of the tests, and no real camera has been tried either.
 

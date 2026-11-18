@@ -50,7 +50,8 @@ It takes a camera too, as Leto's own host will and as no Sunshine or Apollo
 does: what a client sends shows in a corner of its test card. `camera` says
 what arrived and saves the last picture to `leto-camera.png`, `camera off`
 refuses new ones as an owner would, and `camera on` takes them again. With
-`--no-camera` it takes none.
+`--no-camera` it takes none, and with `--camera 640x360` none larger than
+that, which a client answers by halving its own.
 
 To check a stream without the window, `leto-cli play` streams an app for a few
 seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
@@ -75,7 +76,8 @@ To check the browser's microphone without one, start Chromium with
 microphone, and `voice` on the stand-in host saves what arrived. The browser
 treats a steady tone as noise and turns it down, so use a voice, or a tone
 only to check the pitch. The same two first flags give the browser a made-up
-camera.
+camera, which the page sends to the stand-in host like a real one: `camera`
+there says what arrived.
 
 The desktop app has a made-up camera too: with `LETO_CAMERA=card` in its
 environment, the screen "Camera and microphone" shows a test card instead of
@@ -115,8 +117,11 @@ builds and tests it for real.
   `leto-return`, which does no networking. The client, the stand-in host and
   later the host all use it: change it there, not at one end.
 - `leto-bridge` relays a stream to a browser still encoded, and the browser
-  decodes it. What the two say to each other is in `leto_core::bridge`:
-  change both ends together.
+  decodes it. The browser's microphone and camera come back the same way,
+  encoded by the browser. What the two say to each other is in
+  `leto_core::bridge`: change both ends together.
+- How a camera is fitted to what a PC takes (size, pictures a second, bit
+  rate) is one rule for every client, in `leto_core::engine`.
 - Code of the web build that needs no browser goes outside
   `apps/leto/src/backend/web/`, where the desktop tests run it. Nothing runs
   a browser in the pipeline.

@@ -45,7 +45,10 @@ Progress:
   Sunshine or Apollo takes a camera, so for now it reaches the stand-in host
   only. See [architecture.md](architecture.md#on-its-way-to-a-pc) and
   [return-channel.md](return-channel.md#camera-new-leto-extension).
-- Next: the camera from the browser, through the bridge.
+- Done: the same from the browser. The page encodes its camera with the
+  browser's own encoder and hands the pictures to the bridge, which asks the
+  PC and passes them on. See
+  [architecture.md](architecture.md#from-a-browser).
 - Later in this step: decoding on the graphics card, H.265, HDR, surround
   sound, and the settings of Advanced mode (size, pictures per second, bit
   rate).
@@ -95,9 +98,15 @@ What the camera does not do yet:
 - How a real Apollo or Sunshine reacts to the question on port + 13 was not
   tried. A PC whose firewall drops it without a word delays the answer by
   three seconds, after the stream plays.
-- From a browser it is captured and shown, not sent.
-- It is encoded in software. A hardware encoder comes with the hardware
-  decoder.
+- From a browser it was checked in Chromium only, with the camera Chromium
+  makes up for tests. It needs the browser's own H.264 encoder, which
+  Firefox and Safari got later than Chrome and Edge, and which may be
+  missing where the system has none. A browser without it says so when the
+  switch is turned on.
+- A tab nobody looks at sends a picture a second at most: browsers slow its
+  timers.
+- The desktop app encodes in software. A hardware encoder comes with the
+  hardware decoder. A browser uses what it has.
 - No choice of camera, of size or of bit rate, and nothing remembers that it
   was on: it is off at the start of every stream.
 - Nothing is repaired on a poor network: a picture that lost a packet is
