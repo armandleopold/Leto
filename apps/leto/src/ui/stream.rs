@@ -455,7 +455,7 @@ fn live(ui: &Ui, window: Rect, level: f32, opacity: f32) {
 /// How full the microphone's meter is for a level from 0 to 1. Ears hear in
 /// ratios, so the meter does too: each halving of the level takes the same
 /// slice off it.
-fn meter(level: f32) -> f32 {
+pub(super) fn meter(level: f32) -> f32 {
     if level <= 0.0 {
         return 0.0;
     }

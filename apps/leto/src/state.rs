@@ -28,6 +28,9 @@ pub enum Loadable<T, E> {
 pub enum Screen {
     /// The list of PCs.
     Pcs,
+    /// What the camera of this device sees and what its microphone hears,
+    /// with no PC involved.
+    Devices(Devices),
     Pairing(Pairing),
     Apps(AppsView),
     /// An app of a PC, streamed. Fills the window.
@@ -106,6 +109,33 @@ pub enum Mic {
     Off,
     /// It is on: the PC hears this device as soon as the microphone has
     /// opened.
+    On,
+    /// It was turned on and cannot be used: why.
+    Failed(String),
+}
+
+/// The camera and the microphone of this device, tried out on their own:
+/// nothing of them leaves the device.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Devices {
+    pub camera: Trial,
+    pub microphone: Trial,
+}
+
+/// A camera or a microphone that can be tried out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Camera,
+    Microphone,
+}
+
+/// A camera or a microphone being tried out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Trial {
+    /// Nobody turned it on: nothing is captured.
+    #[default]
+    Off,
+    /// It is on: it captures as soon as it has opened.
     On,
     /// It was turned on and cannot be used: why.
     Failed(String),
@@ -268,6 +298,43 @@ impl State {
         }
     }
 
+    /// The person wants to see what this device's camera and microphone
+    /// give. Both are off until turned on there.
+    pub fn check_devices(&mut self) {
+        if self.screen == Screen::Pcs {
+            self.notice = None;
+            self.screen = Screen::Devices(Devices::default());
+        }
+    }
+
+    /// The person turns the camera or the microphone on, or off again, on
+    /// the screen that tries them out. One that failed is tried again.
+    pub fn switch_device(&mut self, device: Device) {
+        if let Screen::Devices(devices) = &mut self.screen {
+            let trial = match device {
+                Device::Camera => &mut devices.camera,
+                Device::Microphone => &mut devices.microphone,
+            };
+            *trial = match trial {
+                Trial::On => Trial::Off,
+                Trial::Off | Trial::Failed(_) => Trial::On,
+            };
+        }
+    }
+
+    /// The device that was turned on cannot be used, for this reason.
+    pub fn device_failed(&mut self, device: Device, why: String) {
+        if let Screen::Devices(devices) = &mut self.screen {
+            let trial = match device {
+                Device::Camera => &mut devices.camera,
+                Device::Microphone => &mut devices.microphone,
+            };
+            if *trial == Trial::On {
+                *trial = Trial::Failed(why);
+            }
+        }
+    }
+
     /// The person stops watching. The app keeps running on the PC.
     pub fn leave_stream(&mut self) {
         if let Screen::Stream(view) = &self.screen {
@@ -332,7 +399,7 @@ impl State {
         self.hosts.retain(|host| host.id != *id);
         self.requests.push(Request::Forget(id.clone()));
         let shown = match &self.screen {
-            Screen::Pcs => None,
+            Screen::Pcs | Screen::Devices(_) => None,
             Screen::Pairing(pairing) => Some(&pairing.host.id),
             Screen::Apps(view) => Some(&view.host.id),
             Screen::Stream(view) => Some(&view.host.id),
@@ -351,7 +418,7 @@ impl State {
             Event::Hosts(hosts) => {
                 // The screens about one PC follow what is known about it.
                 let shown = match &mut self.screen {
-                    Screen::Pcs => None,
+                    Screen::Pcs | Screen::Devices(_) => None,
                     Screen::Pairing(pairing) => Some(&mut pairing.host),
                     Screen::Apps(view) => Some(&mut view.host),
                     Screen::Stream(view) => Some(&mut view.host),
@@ -881,5 +948,70 @@ mod tests {
         state.back(8.0);
         assert_eq!(state.screen, Screen::Pcs);
         assert_eq!(state.take_requests(), [Request::Leave, Request::Search]);
+    }
+
+    fn devices(state: &State) -> &Devices {
+        let Screen::Devices(devices) = &state.screen else { panic!("{:?}", state.screen) };
+        devices
+    }
+
+    #[test]
+    fn the_camera_and_the_microphone_are_tried_out_one_by_one_and_off_at_every_visit() {
+        let mut state = state_with(vec![host("Salon", true, Reachability::Online)]);
+        // Nothing to switch anywhere else.
+        state.switch_device(Device::Camera);
+        assert_eq!(state.screen, Screen::Pcs);
+
+        state.check_devices();
+        assert_eq!(devices(&state), &Devices { camera: Trial::Off, microphone: Trial::Off });
+        state.switch_device(Device::Camera);
+        assert_eq!(devices(&state), &Devices { camera: Trial::On, microphone: Trial::Off });
+        state.switch_device(Device::Microphone);
+        state.switch_device(Device::Camera);
+        assert_eq!(devices(&state), &Devices { camera: Trial::Off, microphone: Trial::On });
+        // Trying a device asks nothing of any PC.
+        assert_eq!(state.take_requests(), []);
+
+        state.back(9.0);
+        assert_eq!(state.screen, Screen::Pcs);
+        assert_eq!(state.take_requests(), [Request::Search]);
+        state.check_devices();
+        assert_eq!(devices(&state), &Devices::default());
+    }
+
+    #[test]
+    fn a_device_that_cannot_be_tried_says_why_and_can_be_tried_again() {
+        let mut state = state_with(Vec::new());
+        state.check_devices();
+
+        // One that is off has nothing to fail.
+        state.device_failed(Device::Camera, "Late news.".into());
+        assert_eq!(devices(&state).camera, Trial::Off);
+
+        state.switch_device(Device::Camera);
+        state.switch_device(Device::Microphone);
+        state.device_failed(Device::Camera, "This device has no camera.".into());
+        assert_eq!(devices(&state).camera, Trial::Failed("This device has no camera.".into()));
+        // The other one is none the worse for it.
+        assert_eq!(devices(&state).microphone, Trial::On);
+
+        state.switch_device(Device::Camera);
+        assert_eq!(devices(&state).camera, Trial::On);
+    }
+
+    #[test]
+    fn the_list_of_pcs_stays_fresh_behind_the_screen_that_tries_devices() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with(Vec::new());
+        state.check_devices();
+        state.switch_device(Device::Camera);
+
+        // No search while the list is not on screen, and news of PCs
+        // changes nothing here.
+        state.tick(100.0);
+        assert_eq!(state.take_requests(), []);
+        state.apply(Event::Hosts(vec![salon.clone()]), 100.0);
+        assert_eq!(devices(&state).camera, Trial::On);
+        assert_eq!(state.hosts, [salon]);
     }
 }

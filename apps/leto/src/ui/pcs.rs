@@ -69,6 +69,9 @@ fn header(ui: &mut Ui, state: &mut State, now: f64) {
             if again.inner.clicked() {
                 state.search(now);
             }
+            if widgets::icon_button(ui, icons::camera, "Camera and microphone").clicked() {
+                state.check_devices();
+            }
         });
     });
 }

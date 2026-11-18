@@ -100,6 +100,15 @@ pub fn mouse(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([at(rect, 0.5, 0.2), at(rect, 0.5, 0.42)], stroke);
 }
 
+/// A camera: its body, and the lens that sticks out to the right.
+pub fn camera(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let body = Rect::from_min_max(at(rect, 0.02, 0.22), at(rect, 0.68, 0.78));
+    painter.rect_stroke(body, rect.width() * 0.12, stroke, StrokeKind::Inside);
+    let lens = vec![at(rect, 0.68, 0.5), at(rect, 0.98, 0.28), at(rect, 0.98, 0.72)];
+    painter.add(egui::Shape::closed_line(lens, stroke));
+}
+
 /// A microphone on its stand. `level`, from 0 to 1, fills it from the bottom
 /// with what it hears.
 pub fn microphone(painter: &Painter, rect: Rect, color: Color32, level: f32) {

@@ -68,6 +68,14 @@ pub enum Picture {
     Behind([usize; 2]),
 }
 
+/// What the camera of this device shows, as the backend hands it to the
+/// interface that tries the camera out.
+pub struct Seen {
+    pub picture: egui::ColorImage,
+    /// The size the camera captures at. The picture may be smaller.
+    pub size: [usize; 2],
+}
+
 /// Turns the bytes of an image file into pixels, scaled down for the grid.
 fn decode_cover(bytes: &[u8]) -> Option<egui::ColorImage> {
     let image = image::load_from_memory(bytes).ok()?.into_rgba8();
