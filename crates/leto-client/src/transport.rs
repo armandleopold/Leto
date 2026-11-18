@@ -12,7 +12,7 @@
 
 use std::{
     io::{self, Read, Write},
-    net::{IpAddr, TcpStream, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -113,7 +113,55 @@ impl RequestClient for Transport {
     }
 }
 
+/// What a PC answered, and the address it answered from.
+pub(crate) struct Reply {
+    pub body: Vec<u8>,
+    pub peer: SocketAddr,
+}
+
 impl Transport {
+    /// For requests outside the GameStream API to a PC this device is paired
+    /// with, each given up on after `timeout`.
+    pub(crate) fn paired(
+        client_private_key: &Pem,
+        client_certificate: &Pem,
+        server_certificate: &Pem,
+        timeout: Duration,
+    ) -> Result<Self, Error> {
+        let config = tls_config(client_private_key, client_certificate, server_certificate)?;
+        Ok(Self { timeout, tls: Some(Arc::new(config)) })
+    }
+
+    /// Sends one request with an optional JSON body to `hostport`, over
+    /// HTTPS with the certificates of the pairing and nothing less. An
+    /// answer that is not a success is an [`Error::StatusCode`].
+    pub(crate) fn request(
+        &self,
+        method: &str,
+        hostport: &str,
+        path: &str,
+        body: Option<&[u8]>,
+    ) -> Result<Reply, Error> {
+        let config = self.tls.clone().ok_or(Error::Unauthenticated)?;
+        let tcp = connect(hostport, self.timeout)?;
+        let peer = tcp.peer_addr()?;
+        let mut request =
+            format!("{method} {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n");
+        if let Some(body) = body {
+            request.push_str("Content-Type: application/json\r\n");
+            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+        request.push_str("\r\n");
+        let mut request = request.into_bytes();
+        request.extend_from_slice(body.unwrap_or_default());
+
+        let connection =
+            ClientConnection::new(config, server_name(hostport, &tcp)).map_err(other)?;
+        let mut stream = StreamOwned::new(connection, tcp);
+        let body = exchange(&mut stream, &request)?;
+        Ok(Reply { body, peer })
+    }
+
     /// Sends `GET target` to `hostport` and returns the response body.
     fn get(&self, secure: bool, hostport: &str, target: &str) -> Result<Vec<u8>, Error> {
         let tcp = connect(hostport, self.timeout)?;

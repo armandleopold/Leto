@@ -9,7 +9,10 @@
 //! - `POST /leto/v1/return-channel` carries an [`Ask`], and is answered with
 //!   an [`Answer`]: where to send, and the key to seal the packets with.
 //!   One device sends at a time: asking again replaces what was agreed.
-//! - `DELETE /leto/v1/return-channel` says that the device stopped sending.
+//! - `DELETE /leto/v1/return-channel?keyId=7` says that the device stopped
+//!   sending what the key of that number sealed. A host leaves alone what
+//!   was agreed since: a goodbye may arrive after the ask that follows it.
+//!   Without a number, it ends whatever the device sends.
 //!
 //! A host that will not answers with a status and nothing else: 403 when
 //! its owner does not let this device send, 409 while another device is
@@ -27,6 +30,25 @@ pub const VERSION: u32 = 1;
 
 pub const INFO_PATH: &str = "/leto/v1/info";
 pub const RETURN_CHANNEL_PATH: &str = "/leto/v1/return-channel";
+
+/// The name, in the query of a goodbye, of the number of the key that
+/// sealed what stops.
+const KEY_ID: &str = "keyId";
+
+/// The path and query that say that what the key of this number sealed
+/// stopped.
+pub fn goodbye(key_id: u32) -> String {
+    format!("{RETURN_CHANNEL_PATH}?{KEY_ID}={key_id}")
+}
+
+/// The number of the key in the `query` of a goodbye, when it names one.
+pub fn goodbye_key(query: &str) -> Option<u32> {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| *name == KEY_ID)
+        .and_then(|(_, number)| number.parse().ok())
+}
 
 /// The one way pictures are encoded so far.
 pub const H264: &str = "h264";
@@ -210,6 +232,17 @@ mod tests {
         assert_eq!(grant("+001020304050607f8f9fafbfcfdfeff").key(), None);
         assert_eq!(grant("ééééééééééééééééé").key(), None);
         assert!(grant("0001020304050607F8F9FAFBFCFDFEFF").key().is_some());
+    }
+
+    #[test]
+    fn a_goodbye_names_the_key_of_what_stops() {
+        assert_eq!(goodbye(7), "/leto/v1/return-channel?keyId=7");
+        assert_eq!(goodbye_key("keyId=7"), Some(7));
+        assert_eq!(goodbye_key("later=1&keyId=4294967295"), Some(u32::MAX));
+        // No number, or none that is one: whatever the device sends.
+        assert_eq!(goodbye_key(""), None);
+        assert_eq!(goodbye_key("keyId=-1"), None);
+        assert_eq!(goodbye_key("keyid=7"), None);
     }
 
     #[test]

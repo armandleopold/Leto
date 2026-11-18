@@ -17,6 +17,8 @@ directories = "6"
 gethostname = "1"
 httparse = "1"
 leto-core = { workspace = true }
+leto-protocol = { workspace = true }
+leto-return = { workspace = true }
 log = { workspace = true }
 mdns-sd = "0.13"
 moonlight-common = { workspace = true }
@@ -27,6 +29,8 @@ serde_json = { workspace = true }
 thiserror = "2"
 
 [dev-dependencies]
+# Encodes the pictures the tests send to the stand-in host.
+leto-media = { workspace = true }
 leto-testhost = { workspace = true }
 # Encodes the voice the tests send to the stand-in host.
 opus-rs = "0.1"

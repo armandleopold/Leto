@@ -20,7 +20,8 @@ use leto_core::{
 };
 
 use crate::{
-    AudioSink, Client, Ended, Error, HostId, InputError, Session, StreamSettings, VideoSink,
+    AudioSink, CameraLink, CameraRefusal, CameraSettings, Client, Ended, Error, HostId, InputError,
+    Session, StreamSettings, VideoSink,
 };
 
 /// How long a search listens for PCs announcing themselves.
@@ -38,6 +39,13 @@ pub trait Shell: Send + Sync + 'static {
     /// Where the pictures and the sound of a stream about to start go, or
     /// why this shell cannot show a stream, in words for the person.
     fn sinks(&self) -> Result<(Self::Video, Self::Audio), String>;
+
+    /// Whether this shell can send a camera to a PC. The engine only finds
+    /// out whether a PC takes one, and tells with [`Event::Camera`], for a
+    /// shell that can.
+    fn sends_camera(&self) -> bool {
+        false
+    }
 }
 
 /// The stream the person is watching, or waiting for.
@@ -46,7 +54,11 @@ struct Watching {
     /// The attempt on screen. A stream that connects for another one is
     /// stopped at once: the person has left in the meantime.
     wanted: Option<u64>,
+    /// The PC the stream comes from.
+    host: Option<HostId>,
     session: Option<Session>,
+    /// The way of this device's camera to that PC, while it sends one.
+    camera: Option<CameraLink>,
 }
 
 /// The engine, working for one interface.
@@ -89,10 +101,16 @@ impl<S: Shell> Service<S> {
             }
             // Which stream is wanted changes at once, not when a worker gets
             // to it: the next request may already be about another one.
-            Request::Play { attempt, .. } => lock(&watching).wanted = Some(*attempt),
+            Request::Play { attempt, .. } => {
+                let mut watching = lock(&watching);
+                watching.wanted = Some(*attempt);
+                // A camera goes with one stream, and that one is over.
+                watching.camera = None;
+            }
             Request::Leave => {
                 let mut watching = lock(&watching);
                 watching.wanted = None;
+                watching.camera = None;
                 left = watching.session.take();
             }
             _ => {}
@@ -156,6 +174,47 @@ impl<S: Shell> Service<S> {
         watching.session.as_ref().is_some_and(|session| session.send_microphone(at, frame))
     }
 
+    /// Asks the PC being watched to take this device's camera, which will
+    /// send pictures like `sending`: within what [`Event::Camera`] said the
+    /// PC takes. Blocks until the PC has answered, so not for a thread that
+    /// draws. When the PC does not agree, says why in words for the person.
+    ///
+    /// The camera stops with the stream, or with [`Service::camera_close`].
+    pub fn camera_open(&self, sending: CameraSettings) -> Result<(), String> {
+        const NO_STREAM: &str = "The camera goes along with a stream, and none is playing.";
+        let (attempt, host) = {
+            let watching = lock(&self.watching);
+            match (watching.session.as_ref().and(watching.wanted), &watching.host) {
+                (Some(attempt), Some(host)) => (attempt, host.clone()),
+                _ => return Err(NO_STREAM.to_owned()),
+            }
+        };
+        let link = self.client.send_camera(&host, sending).map_err(|error| explain(&error))?;
+        let mut watching = lock(&self.watching);
+        if watching.session.is_some() && watching.wanted == Some(attempt) {
+            watching.camera = Some(link);
+            Ok(())
+        } else {
+            // The person left while the PC was answering. Dropping the way
+            // there tells the PC.
+            Err(NO_STREAM.to_owned())
+        }
+    }
+
+    /// Passes a picture of this device's camera on to the PC that agreed to
+    /// take it, as [`CameraLink::send`] takes it. Says whether all of it
+    /// left, or `None` when no camera is being sent: the PC was not asked,
+    /// or the stream is over.
+    pub fn camera(&self, at: Duration, key_frame: bool, picture: &[u8]) -> Option<bool> {
+        let mut watching = lock(&self.watching);
+        watching.camera.as_mut().map(|link| link.send(at, key_frame, picture))
+    }
+
+    /// Stops sending this device's camera, and tells the PC. Does not wait.
+    pub fn camera_close(&self) {
+        lock(&self.watching).camera = None;
+    }
+
     /// The attempt whose stream is connected, when one is.
     pub fn streaming(&self) -> Option<u64> {
         let watching = lock(&self.watching);
@@ -169,6 +228,7 @@ impl<S: Shell> Drop for Service<S> {
     fn drop(&mut self) {
         let mut watching = lock(&self.watching);
         watching.wanted = None;
+        watching.camera = None;
         if let Some(session) = watching.session.take() {
             drop(watching);
             let stopping =
@@ -245,7 +305,7 @@ fn apps(client: &Client, shell: &impl Shell, host: &HostId, apps_asked: &AtomicU
 fn play<S: Shell>(
     client: &Arc<Client>,
     shell: &Arc<S>,
-    watching: &Mutex<Watching>,
+    watching: &Arc<Mutex<Watching>>,
     host: &HostId,
     app: u32,
     attempt: u64,
@@ -253,7 +313,15 @@ fn play<S: Shell>(
     let started = shell.sinks().and_then(|(video, audio)| {
         let ended = {
             let (client, shell) = (Arc::clone(client), Arc::clone(shell));
+            let watching = Arc::clone(watching);
             move |reason| {
+                {
+                    // The camera went along with this stream.
+                    let mut watching = lock(&watching);
+                    if watching.wanted == Some(attempt) {
+                        watching.camera = None;
+                    }
+                }
                 let why = match reason {
                     Ended::ByHost => StreamEnd::AppClosed,
                     Ended::ConnectionLost => StreamEnd::ConnectionLost,
@@ -275,9 +343,22 @@ fn play<S: Shell>(
             let mut watching = lock(watching);
             if watching.wanted == Some(attempt) {
                 let (input, microphone) = (session.input_allowed(), session.takes_microphone());
-                watching.session = Some(session);
+                let before = watching.session.replace(session);
+                watching.host = Some(host.clone());
                 drop(watching);
+                // Winding down a stream waits for its threads, and one of
+                // them may be waiting to say that it ended.
+                drop(before);
                 shell.tell(Event::Playing { attempt, input, microphone });
+                if shell.sends_camera() {
+                    // After the news that the stream plays: a PC without
+                    // Leto's API can take seconds not to answer.
+                    let offer = client.camera_offer(host).unwrap_or_else(|error| {
+                        log::debug!("no camera for this stream: {error}");
+                        None
+                    });
+                    shell.tell(Event::Camera { attempt, offer });
+                }
             } else {
                 // The person left while the PC was starting the app.
                 drop(watching);
@@ -321,6 +402,19 @@ pub fn explain(error: &Error) -> String {
             permission.apollo_name()
         ),
         Error::Unsupported(reason) => format!("This PC cannot stream to Leto yet: {reason}."),
+        Error::Camera(CameraRefusal::NotTaken) => {
+            "This PC takes no camera. It needs Leto on the PC, which is not there yet.".to_owned()
+        }
+        Error::Camera(CameraRefusal::NotAllowed) => {
+            "This PC does not let this device send its camera. Its owner can allow it on the PC."
+                .to_owned()
+        }
+        Error::Camera(CameraRefusal::Busy) => {
+            "Another device is sending its camera to this PC. Turn that one off first.".to_owned()
+        }
+        Error::Camera(CameraRefusal::Unsuitable) => {
+            "This PC cannot take the pictures of this camera.".to_owned()
+        }
         Error::Storage(error) => format!("Leto could not read or write its settings: {error}"),
         Error::Discovery(_) | Error::Protocol(_) => sentence(&error.to_string()),
     }
@@ -358,6 +452,10 @@ mod tests {
             Error::OtherAppRunning,
             Error::NotAllowed(Permission::LaunchApps),
             Error::Unsupported("the host is too old".into()),
+            Error::Camera(CameraRefusal::NotTaken),
+            Error::Camera(CameraRefusal::NotAllowed),
+            Error::Camera(CameraRefusal::Busy),
+            Error::Camera(CameraRefusal::Unsuitable),
             Error::Discovery("no network interface".into()),
             Error::Protocol("unexpected answer".into()),
         ];

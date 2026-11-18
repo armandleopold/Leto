@@ -82,6 +82,13 @@ pub enum Event<Image = ImageFile> {
         input: InputAllowed,
         microphone: bool,
     },
+    /// Whether the PC takes this device's camera, and what it takes. Told
+    /// a moment after [`Event::Playing`], to a shell that has a camera to
+    /// send: finding out must not keep the pictures waiting.
+    Camera {
+        attempt: u64,
+        offer: Option<CameraOffer>,
+    },
     /// The stream did not start.
     PlayFailed {
         attempt: u64,
@@ -118,12 +125,23 @@ impl<Image> Event<Image> {
             Self::Playing { attempt, input, microphone } => {
                 Event::Playing { attempt, input, microphone }
             }
+            Self::Camera { attempt, offer } => Event::Camera { attempt, offer },
             Self::PlayFailed { attempt, message } => Event::PlayFailed { attempt, message },
             Self::StreamEnded { attempt, why } => Event::StreamEnded { attempt, why },
             Self::QuitEnded { host, result } => Event::QuitEnded { host, result },
             Self::Notice(message) => Event::Notice(message),
         }
     }
+}
+
+/// The camera a PC takes from the device that watches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CameraOffer {
+    /// The largest picture, in pixels.
+    pub max_width: u32,
+    pub max_height: u32,
+    /// The most pictures a second.
+    pub max_fps: u32,
 }
 
 /// Why a stream ended on its own.
@@ -195,9 +213,12 @@ mod tests {
 
     #[test]
     fn news_survives_being_written_down_failures_included() {
-        let events: [Event; 6] = [
+        let offer = CameraOffer { max_width: 1920, max_height: 1080, max_fps: 30 };
+        let events: [Event; 8] = [
             Event::Added(Err("The PC did not answer.".into())),
             Event::Playing { attempt: 2, input: InputAllowed::ALL, microphone: true },
+            Event::Camera { attempt: 2, offer: Some(offer) },
+            Event::Camera { attempt: 2, offer: None },
             Event::PinChosen { attempt: 1, pin: Pin::from_bytes([0, 9, 0, 5]) },
             Event::Apps {
                 host: HostId("salon".into()),

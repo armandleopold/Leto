@@ -97,6 +97,8 @@ struct State {
 struct Receiving {
     /// The certificate of the device that sends it.
     device: Vec<u8>,
+    /// The number of the key that seals it.
+    key_id: u32,
     assembler: Assembler,
     decoder: Decoder,
     /// When it was last heard of.
@@ -190,6 +192,7 @@ impl Cameras {
             Decoder::with_api_config(OpenH264API::from_source(), config).map_err(|_| 500u16)?;
         state.receiving = Some(Receiving {
             device: device.to_vec(),
+            key_id: key.id,
             assembler: Assembler::new(&key),
             decoder,
             heard: Instant::now(),
@@ -204,10 +207,14 @@ impl Cameras {
         Ok(Answer { camera: Some(CameraGrant::new(self.port, &key)) })
     }
 
-    /// `device` says that it stopped sending.
-    fn close(&self, device: &[u8]) {
+    /// `device` says that it stopped sending what the key of this number
+    /// sealed, or whatever it sends. What was agreed since stays.
+    fn close(&self, device: &[u8], key_id: Option<u32>) {
         let mut state = self.state();
-        if state.receiving.as_ref().is_some_and(|receiving| receiving.device == device) {
+        let meant = state.receiving.as_ref().is_some_and(|receiving| {
+            receiving.device == device && key_id.is_none_or(|id| id == receiving.key_id)
+        });
+        if meant {
             state.receiving = None;
             state.seen = None;
             state.report.open = false;
@@ -258,6 +265,8 @@ impl Cameras {
 struct Request {
     method: String,
     path: String,
+    /// What follows the question mark of the path, when one does.
+    query: String,
     body: Vec<u8>,
 }
 
@@ -294,7 +303,7 @@ fn answer(cameras: &Cameras, device: &[u8], request: &Request) -> (u16, Vec<u8>)
             }
         }
         ("DELETE", api::RETURN_CHANNEL_PATH) => {
-            cameras.close(device);
+            cameras.close(device, api::goodbye_key(&request.query));
             (204, Vec::new())
         }
         (_, api::INFO_PATH | api::RETURN_CHANNEL_PATH) => (405, Vec::new()),
@@ -337,7 +346,13 @@ fn read_request(stream: &mut impl Read) -> Option<Request> {
         read_more(&mut body)?;
     }
     body.truncate(length);
-    Some(Request { method: method.to_owned(), path: target.split('?').next()?.to_owned(), body })
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    Some(Request {
+        method: method.to_owned(),
+        path: path.to_owned(),
+        query: query.to_owned(),
+        body,
+    })
 }
 
 fn write_response(stream: &mut impl Write, status: u16, body: &[u8]) {
@@ -398,8 +413,8 @@ mod tests {
                      content-length: 4\r\n\r\n{\"a\"extra";
         let request = read_request(&mut &text[..]).expect("a whole request");
         assert_eq!(
-            (request.method.as_str(), request.path.as_str()),
-            ("POST", api::RETURN_CHANNEL_PATH)
+            (request.method.as_str(), request.path.as_str(), request.query.as_str()),
+            ("POST", api::RETURN_CHANNEL_PATH, "x=1")
         );
         assert_eq!(request.body, b"{\"a\"");
 
@@ -446,12 +461,16 @@ mod tests {
         // One device at a time, and each ask draws a new key.
         assert_eq!(cameras.ask(other, &ask(640, 480, 30, api::H264)).err(), Some(409));
         let again = cameras.ask(one, &ask(640, 480, 30, api::H264)).expect("the same device");
-        assert_ne!(again.camera.and_then(|grant| grant.key()), grant.key());
+        let again = again.camera.expect("a camera was asked for");
+        assert_ne!(again.key(), grant.key());
 
-        // Only the device that sends can say that it stopped.
-        cameras.close(other);
+        // Only the device that sends can say that it stopped, and a goodbye
+        // that comes late does not end what was agreed after it.
+        cameras.close(other, None);
         assert!(cameras.report().open);
-        cameras.close(one);
+        cameras.close(one, Some(grant.key_id));
+        assert!(cameras.report().open);
+        cameras.close(one, Some(again.key_id));
         assert!(!cameras.report().open);
         assert!(cameras.ask(other, &ask(640, 480, 30, api::H264)).is_ok());
     }
