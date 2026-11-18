@@ -25,18 +25,25 @@ pub enum Shortcut {
     Microphone,
     /// C: turn the camera on, or off again.
     Camera,
+    /// S: show how the stream is doing, or stop showing it.
+    Statistics,
+    /// Z: give the keyboard and the mouse back to this device, or take them
+    /// again for the PC.
+    Release,
 }
 
 impl Shortcut {
-    /// The shortcut `key` stands for, where `key` is the letter the layout
+    /// The shortcut `letter` stands for, where `letter` is what the layout
     /// prints: people look for the Q they see.
-    fn of(key: egui::Key) -> Option<Self> {
-        match key {
-            egui::Key::Q => Some(Self::Leave),
-            egui::Key::X => Some(Self::FullScreen),
-            egui::Key::M => Some(Self::GameMouse),
-            egui::Key::T => Some(Self::Microphone),
-            egui::Key::C => Some(Self::Camera),
+    fn of(letter: char) -> Option<Self> {
+        match letter.to_ascii_uppercase() {
+            'Q' => Some(Self::Leave),
+            'X' => Some(Self::FullScreen),
+            'M' => Some(Self::GameMouse),
+            'T' => Some(Self::Microphone),
+            'C' => Some(Self::Camera),
+            'S' => Some(Self::Statistics),
+            'Z' => Some(Self::Release),
             _ => None,
         }
     }
@@ -49,7 +56,18 @@ impl Shortcut {
             Self::GameMouse => "Ctrl+Alt+Shift+M",
             Self::Microphone => "Ctrl+Alt+Shift+T",
             Self::Camera => "Ctrl+Alt+Shift+C",
+            Self::Statistics => "Ctrl+Alt+Shift+S",
+            Self::Release => "Ctrl+Alt+Shift+Z",
         }
+    }
+}
+
+/// The letter the layout prints on `key`, when it is one.
+fn letter(key: egui::Key) -> Option<char> {
+    let mut name = key.name().chars();
+    match (name.next(), name.next()) {
+        (Some(letter), None) if letter.is_ascii_alphabetic() => Some(letter),
+        _ => None,
     }
 }
 
@@ -167,25 +185,51 @@ const fn button(button: PointerButton) -> MouseButton {
 /// Follows what is held down, and queues what the PC should hear.
 #[derive(Debug, Default)]
 pub struct Controls {
-    /// Keys and buttons the PC believes are down, oldest first.
+    /// Keys and buttons held down, oldest first. The PC believes so too,
+    /// unless the controls are muted.
     keys: Vec<Key>,
     buttons: Vec<MouseButton>,
     /// Scrolling and movement too small to send yet.
     wheel: Vec2,
     motion: Vec2,
     queue: Vec<Input>,
+    /// The PC hears nothing: the keyboard and the mouse are this device's.
+    /// What is held is still followed, for the shortcuts.
+    muted: bool,
 }
 
 impl Controls {
-    /// A key of this keyboard went down or came up. `printed` is the key by
-    /// what the layout prints on it, `place` the key by where it sits.
-    ///
-    /// Returns the shortcut the press completes, which the PC does not hear
-    /// about. A key that is held repeats nothing: the PC repeats on its own.
+    /// A key of this keyboard went down or came up, as the window says.
+    /// `printed` is the key by what the layout prints on it, `place` the key
+    /// by where it sits. See [`Controls::stroke`].
     pub fn key(
         &mut self,
         printed: egui::Key,
         place: Option<egui::Key>,
+        down: bool,
+    ) -> Option<Shortcut> {
+        // egui says what a key types, which Ctrl and Alt held together
+        // change on a layout with AltGr: it then names the key by its place,
+        // and the system tells what the key prints.
+        let letter = match place {
+            Some(place) if place == printed => {
+                key(place).and_then(crate::window::printed_letter).or_else(|| letter(printed))
+            }
+            _ => letter(printed),
+        };
+        self.stroke(key(place.unwrap_or(printed)), letter, down)
+    }
+
+    /// A key went down or came up: `key` by where it sits, when the PC has
+    /// a name for it, and the letter the layout prints on it, when it is
+    /// one.
+    ///
+    /// Returns the shortcut the press completes, which the PC does not hear
+    /// about. A key that is held repeats nothing: the PC repeats on its own.
+    pub fn stroke(
+        &mut self,
+        key: Option<Key>,
+        letter: Option<char>,
         down: bool,
     ) -> Option<Shortcut> {
         let held = self.modifiers();
@@ -193,11 +237,11 @@ impl Controls {
             && held.ctrl
             && held.alt
             && held.shift
-            && let Some(shortcut) = Shortcut::of(printed)
+            && let Some(shortcut) = letter.and_then(Shortcut::of)
         {
             return Some(shortcut);
         }
-        let key = key(place.unwrap_or(printed))?;
+        let key = key?;
         // Nothing new: a repeat, or the release of a key the PC never saw
         // go down, such as the letter of a shortcut.
         if down == self.keys.contains(&key) {
@@ -208,7 +252,7 @@ impl Controls {
         } else {
             self.keys.retain(|held| *held != key);
         }
-        self.queue.push(Input::Key { key, down, modifiers: self.modifiers() });
+        self.send(Input::Key { key, down, modifiers: self.modifiers() });
         None
     }
 
@@ -223,7 +267,18 @@ impl Controls {
         } else {
             self.buttons.retain(|held| *held != button);
         }
-        self.queue.push(Input::MouseButton { button, down });
+        self.send(Input::MouseButton { button, down });
+    }
+
+    /// Stops telling the PC anything, after letting go of what it holds, or
+    /// starts again. A key let go of later is told even if the PC never
+    /// heard of it going down: it lets go of what it does not hold without
+    /// a word.
+    pub fn mute(&mut self, mute: bool) {
+        if mute && !self.muted {
+            self.release_all();
+        }
+        self.muted = mute;
     }
 
     /// The pointer is at `pointer`, over a picture of `size` pixels drawn at
@@ -277,10 +332,10 @@ impl Controls {
     /// on the PC.
     pub fn release_all(&mut self) {
         while let Some(button) = self.buttons.pop() {
-            self.queue.push(Input::MouseButton { button, down: false });
+            self.send(Input::MouseButton { button, down: false });
         }
         while let Some(key) = self.keys.pop() {
-            self.queue.push(Input::Key { key, down: false, modifiers: self.modifiers() });
+            self.send(Input::Key { key, down: false, modifiers: self.modifiers() });
         }
         self.wheel = Vec2::ZERO;
         self.motion = Vec2::ZERO;
@@ -306,10 +361,20 @@ impl Controls {
         }
     }
 
+    /// Queues `input` for the PC, unless it hears nothing.
+    fn send(&mut self, input: Input) {
+        if !self.muted {
+            self.queue.push(input);
+        }
+    }
+
     /// Queues `input`. Movement that follows movement is merged into it: the
     /// window reports far more of it than a PC needs. Anything else keeps
     /// its place, so a click still lands where the pointer was.
     fn push(&mut self, input: Input) {
+        if self.muted {
+            return;
+        }
         match (self.queue.last_mut(), input) {
             (Some(last @ Input::MousePosition { .. }), Input::MousePosition { .. }) => {
                 *last = input;
@@ -446,18 +511,80 @@ mod tests {
         assert_eq!(controls.key(egui::Key::M, None, true), Some(Shortcut::GameMouse));
         assert_eq!(controls.key(egui::Key::T, None, true), Some(Shortcut::Microphone));
         assert_eq!(controls.key(egui::Key::C, None, true), Some(Shortcut::Camera));
+        assert_eq!(controls.key(egui::Key::S, None, true), Some(Shortcut::Statistics));
+        assert_eq!(controls.key(egui::Key::Z, Some(egui::Key::W), true), Some(Shortcut::Release));
         assert_eq!(controls.take(), [], "the PC hears nothing of a shortcut's letter");
 
         // Any other letter goes to the PC, with the three modifiers.
-        assert_eq!(controls.key(egui::Key::S, None, true), None);
+        assert_eq!(controls.key(egui::Key::D, None, true), None);
         let all = Modifiers { shift: true, ctrl: true, alt: true, meta: false };
-        assert_eq!(controls.take(), [Input::Key { key: letter('S'), down: true, modifiers: all }]);
+        assert_eq!(controls.take(), [Input::Key { key: letter('D'), down: true, modifiers: all }]);
 
         // Without all three, Q is a letter like any other.
         let mut controls = Controls::default();
         controls.key(egui::Key::ControlLeft, None, true);
         assert_eq!(controls.key(egui::Key::Q, None, true), None);
         assert_eq!(controls.take().len(), 2);
+    }
+
+    #[test]
+    fn keys_taken_from_the_system_find_the_shortcuts_by_their_letter() {
+        // Windows names the key by where it sits, and its layout says the
+        // letter: on a French keyboard Q sits where A does elsewhere.
+        let mut controls = Controls::default();
+        for modifier in [Key::LEFT_CTRL, Key::LEFT_ALT, Key::LEFT_SHIFT] {
+            assert_eq!(controls.stroke(Some(modifier), None, true), None);
+        }
+        assert_eq!(controls.stroke(Some(letter('A')), Some('Q'), true), Some(Shortcut::Leave));
+        assert_eq!(controls.stroke(Some(Key::LEFT_SUPER), None, true), None);
+        let all = Modifiers { shift: true, ctrl: true, alt: true, meta: false };
+        let held = controls.take();
+        assert_eq!(held.len(), 4, "{held:?}");
+        assert_eq!(
+            held[3],
+            Input::Key {
+                key: Key::LEFT_SUPER,
+                down: true,
+                modifiers: Modifiers { meta: true, ..all }
+            }
+        );
+        // A key the PC has no name for is nobody's.
+        assert_eq!(controls.stroke(None, None, true), None);
+        assert_eq!(controls.take(), []);
+    }
+
+    #[test]
+    fn muted_controls_tell_the_pc_nothing_but_still_find_the_shortcuts() {
+        let mut controls = Controls::default();
+        controls.stroke(Some(Key::LEFT_CTRL), None, true);
+        controls.button(PointerButton::Primary, true);
+        controls.take();
+
+        // The PC lets go of what it held, and hears nothing more.
+        controls.mute(true);
+        assert_eq!(
+            controls.take(),
+            [
+                Input::MouseButton { button: MouseButton::Left, down: false },
+                Input::Key { key: Key::LEFT_CTRL, down: false, modifiers: NO_MODIFIERS },
+            ]
+        );
+        controls.stroke(Some(Key::LEFT_CTRL), None, true);
+        controls.stroke(Some(Key::LEFT_ALT), None, true);
+        controls.stroke(Some(Key::LEFT_SHIFT), None, true);
+        controls.pointer_at(
+            pos2(10.0, 10.0),
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0)),
+            [100, 100],
+        );
+        controls.wheel(MouseWheelUnit::Line, vec2(0.0, 1.0));
+        assert_eq!(controls.stroke(Some(letter('W')), Some('Z'), true), Some(Shortcut::Release));
+        assert_eq!(controls.take(), []);
+
+        // Back to the PC: the keys of the shortcut come up there.
+        controls.mute(false);
+        controls.stroke(Some(Key::LEFT_SHIFT), None, false);
+        assert_eq!(controls.take().len(), 1);
     }
 
     #[test]

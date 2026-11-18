@@ -211,7 +211,7 @@ mod tests {
     const SETUP: VideoSetup = VideoSetup { width: 1920, height: 1080, fps: 60 };
 
     fn frame(number: u32, data: &[u8]) -> VideoFrame<'_> {
-        VideoFrame { number, keyframe: avc_codec(data).is_some(), data }
+        VideoFrame { number, keyframe: avc_codec(data).is_some(), data, host_latency: None }
     }
 
     fn texts(queue: &mut mpsc::UnboundedReceiver<Parcel>) -> Vec<Down> {

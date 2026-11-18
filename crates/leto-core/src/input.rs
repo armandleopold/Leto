@@ -43,8 +43,13 @@ impl Key {
     /// The key that opens the context menu.
     pub const MENU: Self = Self(0x5D);
     pub const SLEEP: Self = Self(0x5F);
-    /// The plus of the numeric keypad.
+    /// The signs of the numeric keypad. Its digits are [`Key::keypad`].
+    pub const KEYPAD_STAR: Self = Self(0x6A);
     pub const KEYPAD_PLUS: Self = Self(0x6B);
+    pub const KEYPAD_MINUS: Self = Self(0x6D);
+    /// The point of the keypad, which types a comma on some layouts.
+    pub const KEYPAD_PERIOD: Self = Self(0x6E);
+    pub const KEYPAD_SLASH: Self = Self(0x6F);
     pub const NUM_LOCK: Self = Self(0x90);
     pub const SCROLL_LOCK: Self = Self(0x91);
     pub const LEFT_SHIFT: Self = Self(0xA0);
@@ -99,6 +104,11 @@ impl Key {
     /// The key of a digit in the row above the letters.
     pub const fn digit(digit: u8) -> Option<Self> {
         if digit <= 9 { Some(Self(0x30 + digit as u16)) } else { None }
+    }
+
+    /// The key of a digit on the numeric keypad.
+    pub const fn keypad(digit: u8) -> Option<Self> {
+        if digit <= 9 { Some(Self(0x60 + digit as u16)) } else { None }
     }
 
     /// F1 to F24.
@@ -306,6 +316,9 @@ mod tests {
         assert_eq!(Key::digit(0), Some(Key(0x30)));
         assert_eq!(Key::digit(9), Some(Key(0x39)));
         assert_eq!(Key::digit(10), None);
+        assert_eq!(Key::keypad(0), Some(Key(0x60)));
+        assert_eq!(Key::keypad(9), Some(Key(0x69)));
+        assert_eq!(Key::keypad(10), None);
         assert_eq!(Key::function(1), Some(Key(0x70)));
         assert_eq!(Key::function(12), Some(Key(0x7B)));
         assert_eq!(Key::function(24), Some(Key(0x87)));

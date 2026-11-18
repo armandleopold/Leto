@@ -12,6 +12,7 @@ mod backend;
 mod clipboard;
 mod input;
 mod state;
+mod stats;
 mod theme;
 mod ui;
 mod window;

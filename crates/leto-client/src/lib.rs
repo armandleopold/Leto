@@ -50,12 +50,12 @@ use moonlight_common::{
         pair::{PairPin, PairingCryptoBackend},
         server_info::ApolloPermissions,
     },
-    stream::{AesIv, AesKey, std::MoonlightStream},
+    stream::{AesIv, AesKey},
 };
 pub use service::{Service, Shell};
 pub use session::{
     AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings, Tally,
-    VideoFrame, VideoSetup, VideoSink,
+    VideoFrame, VideoSetup, VideoSink, VirtualDisplay,
 };
 use store::{Identity, Saved, SavedHost, Store};
 use transport::Transport;
@@ -438,12 +438,22 @@ impl Client {
         // HTTPS connection, and both sides encrypt the stream with it.
         let key = AesKey::new_random(&RustCryptoBackend)?;
         let key_id = AesIv::new_random(&RustCryptoBackend)?;
+        if settings.virtual_display.is_some() {
+            log::info!(
+                "asking {} for a screen of its own, {}×{} at {} pictures per second, {} kbit/s",
+                self.for_log(id),
+                settings.width,
+                settings.height,
+                settings.fps,
+                settings.bitrate_kbps
+            );
+        }
         let mut config = handle.start_stream(
             AppId(app),
             &protocol,
             key,
             key_id,
-            MoonlightStream::launch_query_parameters(),
+            &settings.launch_parameters(),
         )?;
         // The protocol library asks for the microphone stream of the one
         // kind of host it knows to take one. Leto asks the host instead.

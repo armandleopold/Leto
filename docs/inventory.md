@@ -103,6 +103,14 @@ The same failure was reproduced against an OpenSSL server set up the same way,
 and went away once Leto stopped resuming sessions. Sunshine, whose code this
 is, most likely does the same.
 
+Apollo makes a screen of its own for a stream when the client asks: its
+`/launch` reads `virtualDisplay=1`, the `mode` every client sends (width,
+height and pace) and `scaleFactor`, the size of text in percent, 100 unless
+said. A screen mode or "always use a virtual display" that its owner set for
+the device in Apollo's pages wins over what the client asks. Read in
+Apollo's source; Leto asks for it, and the stand-in host records what it was
+asked (`FakeHost::screen_asked`).
+
 ### Client microphone: not in stock Apollo
 
 Stock Apollo cannot receive the client's microphone. The feature lives in the

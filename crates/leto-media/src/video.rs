@@ -51,6 +51,16 @@ impl VideoDecoder {
         decoded.write_rgba8(&mut picture.rgba);
         Ok(true)
     }
+
+    /// Decodes one picture without turning it into pixels: for a picture
+    /// nobody will see, which the next ones build on. Turning a picture into
+    /// pixels costs about as much as decoding it.
+    ///
+    /// Returns `false` when the data held no picture.
+    pub fn decode_unseen(&mut self, data: &[u8]) -> Result<bool, Error> {
+        let decoded = self.decoder.decode(data).map_err(|error| Error::Video(error.to_string()))?;
+        Ok(decoded.is_some())
+    }
 }
 
 #[cfg(test)]
@@ -113,6 +123,20 @@ mod tests {
         assert!(decoder.decode(&second, &mut picture).expect("a later picture decodes"));
         assert!(close(pixel(&picture, 10, 10), blue), "{:?}", pixel(&picture, 10, 10));
         assert!(close(pixel(&picture, 110, 60), cream), "{:?}", pixel(&picture, 110, 60));
+    }
+
+    #[test]
+    fn a_picture_decoded_unseen_is_built_on_all_the_same() {
+        let (orange, cream, blue) = ([255, 107, 53], [242, 237, 228], [20, 40, 200]);
+        let mut encoder = encoder();
+        let mut decoder = VideoDecoder::new().expect("the decoder starts");
+        let first = encoder.encode(&halves(orange, cream)).expect("a picture encodes").to_vec();
+        assert!(decoder.decode_unseen(&first).expect("a keyframe decodes"));
+
+        let mut picture = Picture::default();
+        let second = encoder.encode(&halves(blue, cream)).expect("a picture encodes").to_vec();
+        assert!(decoder.decode(&second, &mut picture).expect("a later picture decodes"));
+        assert!(close(pixel(&picture, 10, 10), blue), "{:?}", pixel(&picture, 10, 10));
     }
 
     #[test]

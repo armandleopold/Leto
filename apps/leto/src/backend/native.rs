@@ -17,10 +17,13 @@ use leto_media::{
 };
 
 use super::{
-    Door, Filming, Picture, Seen, Unavailable, decode_cover, gamepad,
+    Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, gamepad,
     stream::{Outlet, Screen, Sound},
 };
-use crate::state::{Event, Request};
+use crate::{
+    state::{Event, Request},
+    stats::Counts,
+};
 
 pub struct Backend {
     /// The engine at work for this window, or why it could not start.
@@ -193,6 +196,7 @@ impl Shell for Desk {
 
 impl Backend {
     pub fn new(ctx: &egui::Context) -> Self {
+        crate::window::watch(ctx);
         let (sender, events) = mpsc::channel();
         let desk = Desk {
             events: sender,
@@ -247,6 +251,24 @@ impl Backend {
     pub fn sound_problem(&self) -> Option<String> {
         let outlet = self.service.as_ref().ok()?.shell().outlet();
         outlet.sound_problem()
+    }
+
+    /// Makes as many pictures of the stream into pixels as the person sees.
+    pub fn pace(&self, pace: Pace) {
+        if let Ok(service) = &self.service {
+            service.shell().outlet().set_pace(pace);
+        }
+    }
+
+    /// What happened to the pictures of the stream so far.
+    pub fn counts(&self) -> Option<Counts> {
+        Some(self.service.as_ref().ok()?.shell().outlet().counts())
+    }
+
+    /// How long a message takes to reach the PC and come back, once the
+    /// stream has measured it.
+    pub fn round_trip(&self) -> Option<Duration> {
+        self.service.as_ref().ok()?.round_trip()
     }
 
     /// Captures the microphone for the PC being watched while `on`, and

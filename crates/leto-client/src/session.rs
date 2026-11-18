@@ -13,7 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use leto_core::input::{GamepadButtons, GamepadKind, Input, InputAllowed, MouseButton};
+use leto_core::{
+    engine::ScreenMode,
+    input::{GamepadButtons, GamepadKind, Input, InputAllowed, MouseButton},
+};
 use moonlight_common::{
     error::Error as ProtocolError,
     http::server_info::ApolloPermissions,
@@ -41,6 +44,18 @@ use moonlight_common::{
 /// How long to wait for a keyframe before asking the host again.
 const KEYFRAME_PATIENCE: Duration = Duration::from_secs(1);
 
+/// The largest picture H.264 carries at a pace worth watching (its level
+/// 5.2), and the one asked for when a screen is larger: as much of the
+/// screen as fits, in the same shape.
+const LARGEST: (u32, u32) = (4096, 2304);
+/// The pace of a stream stays within these, whatever a screen says.
+const SLOWEST: u32 = 10;
+const FASTEST: u32 = 240;
+/// The bit rate of a stream stays within these, in kilobits per second.
+/// Moonlight goes up to 150 Mbit/s too.
+const LEAST_BITRATE: u32 = 2_000;
+const MOST_BITRATE: u32 = 150_000;
+
 /// What to ask the host for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamSettings {
@@ -50,17 +65,65 @@ pub struct StreamSettings {
     pub fps: u32,
     /// Video bit rate, in kilobits per second.
     pub bitrate_kbps: u32,
+    /// Asks the host for a screen of its own, made in the stream's size and
+    /// pace, instead of showing one of its own screens. Apollo makes one;
+    /// the others ignore the question.
+    pub virtual_display: Option<VirtualDisplay>,
+}
+
+/// The screen a host makes for a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualDisplay {
+    /// How large the host draws text and windows on it, in percent.
+    pub scale_percent: u32,
 }
 
 impl Default for StreamSettings {
     /// Full HD at 60 pictures per second and 20 Mbit/s: what Moonlight asks
     /// for by default, and what a home network carries without trouble.
     fn default() -> Self {
-        Self { width: 1920, height: 1080, fps: 60, bitrate_kbps: 20_000 }
+        Self { width: 1920, height: 1080, fps: 60, bitrate_kbps: 20_000, virtual_display: None }
     }
 }
 
 impl StreamSettings {
+    /// A stream that fills `screen` as it is: its size and its pace, on a
+    /// screen the host makes just like it, with text drawn as large.
+    ///
+    /// The bit rate grows with the pixels, from the 20 Mbit/s of Full HD at
+    /// 60 pictures per second. Beyond 60 it grows more slowly than the
+    /// pace: each picture differs less from the one before.
+    pub fn for_screen(screen: ScreenMode) -> Self {
+        let (width, height) = fit(screen.width, screen.height);
+        let fps = screen.refresh_hz.clamp(SLOWEST, FASTEST);
+        let pixels = f64::from(width) * f64::from(height) / (1920.0 * 1080.0);
+        let pace = f64::from(fps) / 60.0;
+        let pace = if pace > 1.0 { pace.sqrt() } else { pace };
+        let bitrate = (20_000.0 * pixels * pace).round() as u32;
+        Self {
+            width,
+            height,
+            fps,
+            bitrate_kbps: bitrate.clamp(LEAST_BITRATE, MOST_BITRATE),
+            virtual_display: Some(VirtualDisplay {
+                scale_percent: screen.scale_percent.clamp(100, 400),
+            }),
+        }
+    }
+
+    /// What the host's launch is told besides what the protocol says,
+    /// starting with `&`.
+    pub(crate) fn launch_parameters(self) -> String {
+        let mut parameters = MoonlightStream::launch_query_parameters().to_owned();
+        if let Some(display) = self.virtual_display {
+            // Apollo reads these. A screen its owner set for this device
+            // overrides them.
+            parameters
+                .push_str(&format!("&virtualDisplay=1&scaleFactor={}", display.scale_percent));
+        }
+        parameters
+    }
+
     pub(crate) fn to_protocol(self) -> MoonlightStreamSettings {
         MoonlightStreamSettings {
             width: self.width,
@@ -90,6 +153,17 @@ impl StreamSettings {
     }
 }
 
+/// `width` by `height`, or as much of it as H.264 carries in the same
+/// shape, in even numbers as a video encoder wants them. Never nothing.
+fn fit(width: u32, height: u32) -> (u32, u32) {
+    let (width, height) = (width.max(2), height.max(2));
+    let scale = (f64::from(LARGEST.0) / f64::from(width))
+        .min(f64::from(LARGEST.1) / f64::from(height))
+        .min(1.0);
+    let even = |side: u32| ((f64::from(side) * scale) as u32 & !1).max(2);
+    (even(width), even(height))
+}
+
 /// The video the host is about to send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoSetup {
@@ -108,6 +182,8 @@ pub struct VideoFrame<'a> {
     pub keyframe: bool,
     /// An H.264 access unit with start codes.
     pub data: &'a [u8],
+    /// How long the host took to capture and encode it, when it says.
+    pub host_latency: Option<Duration>,
 }
 
 /// What a [`VideoSink`] made of a picture.
@@ -249,6 +325,12 @@ impl Session {
     /// gamepads, as it was when the stream started.
     pub fn input_allowed(&self) -> InputAllowed {
         self.input_allowed
+    }
+
+    /// How long a message takes to reach the host and come back, as the
+    /// connection measures it. `None` until it has.
+    pub fn round_trip(&self) -> Option<Duration> {
+        self.stream.estimated_rtt().ok().map(|estimate| estimate.rtt)
     }
 
     /// Whether the PC takes the microphone of this device. Few do: it needs
@@ -497,7 +579,12 @@ impl<S: VideoSink> VideoDecoder for VideoAdapter<S> {
         for buffer in &unit.buffers {
             self.scratch.extend_from_slice(buffer.data);
         }
-        let frame = VideoFrame { number: unit.frame_number.0, keyframe, data: &self.scratch };
+        let frame = VideoFrame {
+            number: unit.frame_number.0,
+            keyframe,
+            data: &self.scratch,
+            host_latency: unit.frame_processing_latency,
+        };
         match self.sink.frame(frame) {
             Decoded::Ok => DecodeResult::Ok,
             Decoded::NeedsKeyframe => {
@@ -646,5 +733,73 @@ impl AudioSink for CountingSink {
             tally.audio_packets += 1;
             tally.audio_bytes += opus.len() as u64;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screen(width: u32, height: u32, refresh_hz: u32, scale_percent: u32) -> ScreenMode {
+        ScreenMode { width, height, refresh_hz, scale_percent }
+    }
+
+    #[test]
+    fn a_stream_for_a_screen_is_made_in_its_size_and_pace() {
+        let settings = StreamSettings::for_screen(screen(2560, 1440, 144, 125));
+        assert_eq!((settings.width, settings.height, settings.fps), (2560, 1440, 144));
+        assert_eq!(settings.virtual_display, Some(VirtualDisplay { scale_percent: 125 }));
+        // Full HD at 60 is what Moonlight asks for by default, at 20 Mbit/s.
+        let full_hd = StreamSettings::for_screen(screen(1920, 1080, 60, 100));
+        assert_eq!(full_hd.bitrate_kbps, 20_000);
+        assert_eq!(StreamSettings { virtual_display: None, ..full_hd }, StreamSettings::default());
+    }
+
+    #[test]
+    fn the_bit_rate_grows_with_the_pixels_and_less_than_the_pace() {
+        let bitrate = |width, height, fps| {
+            StreamSettings::for_screen(screen(width, height, fps, 100)).bitrate_kbps
+        };
+        assert_eq!(bitrate(3840, 2160, 60), 80_000);
+        assert_eq!(bitrate(1920, 1080, 30), 10_000);
+        assert_eq!(bitrate(1280, 720, 60), 8_889);
+        // Twice the pace is not twice the bits.
+        assert_eq!(bitrate(1920, 1080, 120), 28_284);
+        // Within what Moonlight asks for at most, and enough to be seen.
+        assert_eq!(bitrate(3840, 2160, 240), 150_000);
+        assert_eq!(bitrate(640, 360, 30), 2_000);
+    }
+
+    #[test]
+    fn a_screen_larger_than_h264_carries_is_asked_for_in_its_shape() {
+        let fitted = |width, height| {
+            let settings = StreamSettings::for_screen(screen(width, height, 60, 100));
+            (settings.width, settings.height)
+        };
+        assert_eq!(fitted(3840, 2160), (3840, 2160));
+        assert_eq!(fitted(5120, 2880), (4096, 2304));
+        // An ultrawide screen keeps its shape.
+        assert_eq!(fitted(5120, 1440), (4096, 1152));
+        // Odd sides become even, and nothing becomes nothing.
+        assert_eq!(fitted(1367, 769), (1366, 768));
+        assert_eq!(fitted(0, 0), (2, 2));
+    }
+
+    #[test]
+    fn a_screens_pace_and_scale_stay_within_what_makes_sense() {
+        let settings = StreamSettings::for_screen(screen(1920, 1080, 0, 0));
+        assert_eq!(settings.fps, SLOWEST);
+        assert_eq!(settings.virtual_display, Some(VirtualDisplay { scale_percent: 100 }));
+        let settings = StreamSettings::for_screen(screen(1920, 1080, 500, 1000));
+        assert_eq!(settings.fps, FASTEST);
+        assert_eq!(settings.virtual_display, Some(VirtualDisplay { scale_percent: 400 }));
+    }
+
+    #[test]
+    fn the_host_is_asked_for_a_screen_of_its_own_only_for_a_screen() {
+        let plain = StreamSettings::default().launch_parameters();
+        assert_eq!(plain, MoonlightStream::launch_query_parameters());
+        let native = StreamSettings::for_screen(screen(2560, 1440, 144, 150)).launch_parameters();
+        assert_eq!(native, format!("{plain}&virtualDisplay=1&scaleFactor=150"));
     }
 }

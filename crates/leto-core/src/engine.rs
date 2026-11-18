@@ -33,6 +33,11 @@ pub enum Request {
         host: HostId,
         app: u32,
         attempt: u64,
+        /// The screen the stream is shown on, when the shell knows it: the
+        /// PC is asked for a screen of its own just like it. Without it, a
+        /// stream is Full HD at 60 pictures per second.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen: Option<ScreenMode>,
     },
     /// Stop watching. The app keeps running on the PC.
     Leave,
@@ -132,6 +137,19 @@ impl<Image> Event<Image> {
             Self::Notice(message) => Event::Notice(message),
         }
     }
+}
+
+/// A screen of this device, as a stream should fill it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenMode {
+    /// Pixels across and down.
+    pub width: u32,
+    pub height: u32,
+    /// Pictures per second the screen shows.
+    pub refresh_hz: u32,
+    /// How large the system draws text and windows on it, in percent: 100
+    /// as designed, 150 half as large again.
+    pub scale_percent: u32,
 }
 
 /// The camera a PC takes from the device that watches it.
@@ -262,12 +280,39 @@ mod tests {
             Request::Search,
             Request::Add("192.168.1.20:47989".into()),
             Request::Pair { host: HostId("salon".into()), attempt: 3 },
-            Request::Play { host: HostId("salon".into()), app: 881_448_767, attempt: 4 },
+            Request::Play {
+                host: HostId("salon".into()),
+                app: 881_448_767,
+                attempt: 4,
+                screen: None,
+            },
+            Request::Play {
+                host: HostId("salon".into()),
+                app: 1,
+                attempt: 5,
+                screen: Some(ScreenMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_hz: 144,
+                    scale_percent: 125,
+                }),
+            },
             Request::Leave,
         ];
         for request in requests {
             assert_eq!(there_and_back(&request), request);
         }
+    }
+
+    #[test]
+    fn a_play_request_from_a_shell_that_knows_no_screen_still_reads() {
+        // What a page of an older bridge says.
+        let text = r#"{"Play":{"host":"salon","app":1,"attempt":2}}"#;
+        let request: Request = serde_json::from_str(text).expect("an older request reads");
+        assert_eq!(
+            request,
+            Request::Play { host: HostId("salon".into()), app: 1, attempt: 2, screen: None }
+        );
     }
 
     #[test]

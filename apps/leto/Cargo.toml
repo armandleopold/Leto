@@ -19,6 +19,8 @@ egui_extras = { workspace = true }
 image = { workspace = true }
 leto-core = { workspace = true }
 leto-protocol = { workspace = true }
+# Every key for a stream, and what the screen is like. Nothing in a browser.
+leto-system = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -78,6 +80,7 @@ web-sys = { version = "0.3", features = [
     "Navigator",
     "Node",
     "Performance",
+    "Screen",
     "Storage",
     "WebSocket",
     "Window",

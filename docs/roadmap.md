@@ -28,6 +28,13 @@ Progress:
   close it. H.264 in software and stereo sound for now.
 - Done: play with the keyboard, the mouse and gamepads. Ctrl+Alt+Shift+Q
   leaves a stream, as in Moonlight, because every other key is the PC's.
+- Done: a stream feels like Moonlight's. It fills the screen as it
+  connects; on Windows every key goes to the PC, the Windows key, Alt+Tab
+  and Alt+F4 too; Ctrl+Alt+Shift+Z gives the keyboard and the mouse back and
+  Ctrl+Alt+Shift+S shows the statistics. The PC is asked for a screen of its
+  own just like this device's, in size, pace and text size, which Apollo
+  makes. A window another one hides or covers shows one picture a second, or
+  none. See [architecture.md](architecture.md#a-stream).
 - Done: the same in the browser. `leto-cli bridge` serves the web client and
   relays the stream, which the browser decodes itself. See
   [architecture.md](architecture.md#the-web-client-and-its-bridge).
@@ -115,12 +122,14 @@ What the camera does not do yet:
 
 What input does not do yet:
 
-- The numeric keypad is sent as the row of digits above the letters, because
-  egui reports both as the same keys. On a PC with a French layout its digits
-  therefore come out as the signs of that row. Fixing it means reading the
-  window's key events below egui.
-- Keys the system keeps for itself stay on this device: the Windows key,
-  Alt+Tab, Alt+F4, Ctrl+Alt+Del.
+- On Linux, on macOS and in a browser, the numeric keypad is sent as the
+  row of digits above the letters, because egui reports both as the same
+  keys. On a PC with a French layout its digits therefore come out as the
+  signs of that row. On Windows Leto reads the keyboard below egui, and the
+  keypad is the keypad.
+- Outside Windows, keys the system keeps for itself stay on this device: the
+  Windows key, Alt+Tab, Alt+F4. On Windows they go to the PC, except
+  Ctrl+Alt+Del and Windows+L, which no program can take.
 - The keyboard and the mouse are read once per drawn frame, not at the
   mouse's own rate. Fast games may want better.
 - Gamepads do not rumble, and their motion sensors and touchpads are not

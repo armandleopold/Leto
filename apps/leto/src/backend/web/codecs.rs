@@ -104,6 +104,10 @@ extern "C" {
     #[wasm_bindgen(method, getter, js_name = displayHeight)]
     pub fn height(this: &VideoFrame) -> u32;
 
+    /// What the picture was given to the decoder with, in microseconds.
+    #[wasm_bindgen(method, getter)]
+    pub fn timestamp(this: &VideoFrame) -> f64;
+
     #[wasm_bindgen(method)]
     pub fn close(this: &VideoFrame);
 

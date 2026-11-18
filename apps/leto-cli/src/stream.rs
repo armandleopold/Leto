@@ -491,8 +491,13 @@ mod tests {
     use super::*;
     use crate::pcs::pair;
 
-    const SMALL: StreamSettings =
-        StreamSettings { width: 320, height: 180, fps: 30, bitrate_kbps: 2000 };
+    const SMALL: StreamSettings = StreamSettings {
+        width: 320,
+        height: 180,
+        fps: 30,
+        bitrate_kbps: 2000,
+        virtual_display: None,
+    };
 
     #[test]
     fn an_app_is_played_measured_and_closed() {
