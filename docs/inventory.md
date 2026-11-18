@@ -150,7 +150,10 @@ inventory): moonlight-common-rust.
 - Sans-IO: the protocol logic does no networking itself, so it runs on native
   sockets and in the browser (WebAssembly) alike.
 - Supports Sunshine, Apollo and "Foundation Sunshine" hosts, H.264 and H.265,
-  every encryption mode, and the microphone extension, encrypted or not.
+  every encryption mode, and the microphone extension, encrypted or not. At
+  the revision Leto uses, it sets the microphone up for Foundation Sunshine
+  only: for the Apollo microphone fork, which speaks the same extension, Leto
+  finds out itself and presents the host under that name.
 - Modules: `http` (pairing, `serverinfo`, launch), `stream/proto` (RTSP, SDP,
   control over ENet, video, audio, microphone, FEC), `crypto`, `high` (ready
   made clients on `std` and `tokio`), `webrtc`, and `bindings` (uniffi).

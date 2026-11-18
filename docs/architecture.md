@@ -34,7 +34,7 @@ crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
-  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers. No networking
+  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers, the microphone. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
 xtask/            Project automation, run with `cargo xtask`
@@ -46,7 +46,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 
 | Crate | Purpose | Step |
 |---|---|---|
-| `leto-return` | The return channel: capture of microphone and camera, their packets, the Leto API | 2 |
+| `leto-return` | The part of the return channel that is Leto's own: the camera, its packets, the Leto API. The microphone follows an existing protocol and lives in `leto-client` and `leto-media` | 2 |
 | `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 4 |
 | `apps/leto-android` | The Android app, started from Super Artemis | 3 |
 | `leto-host` | The host, ported from Apollo | 4 |
@@ -157,10 +157,11 @@ passes them on.
   games that turn the view with it.
 - **While a stream is connected the keyboard is the PC's.** The app takes
   the keys away from egui before it acts on them (`raw_input_hook`), Tab and
-  Escape included. Three combinations stay on this device, as in Moonlight:
+  Escape included. Four combinations stay on this device, as in Moonlight:
   Ctrl+Alt+Shift with Q leaves, with X fills the screen, with M switches the
-  mouse mode. Everything held down is let go of when the window loses the
-  keyboard and before leaving, so nothing stays stuck on the PC.
+  mouse mode, with T turns the microphone on or off. Everything held down is
+  let go of when the window loses the keyboard and before leaving, so nothing
+  stays stuck on the PC.
 - eframe would turn Ctrl+C, Ctrl+X and Ctrl+V into clipboard events and keep
   those keys from the PC, so that is turned off, and `clipboard.rs` does it
   for Leto's own text fields when no stream has the keyboard.
@@ -179,6 +180,54 @@ passes them on.
 The stand-in host records what it receives (`FakeHost::inputs`) and draws it
 on its test card: a disc where the pointer is, lit while a button is held, a
 square per key held, and a dial for the first gamepad.
+
+## The microphone
+
+A PC can take the microphone of the device that watches it, when its host
+knows how: the microphone build of Apollo and Foundation Sunshine today,
+Leto's own host later. The protocol is theirs and is described in
+[return-channel.md](return-channel.md). The switch is in the bar over the
+picture.
+
+- **The engine asks first.** A host says that it takes a microphone in the
+  session description of the RTSP handshake. moonlight-common-rust has to
+  know before that handshake whether to set the stream up, and only does so
+  for a host it knows as Foundation Sunshine. So the engine asks for the
+  description itself, on a connection of its own
+  (`leto-client/src/describe.rs`), and presents a host that offers a
+  microphone to the library under that name, which changes nothing else in
+  it. An encrypted request is encrypted with its number: this one has a
+  number the handshake that follows never reaches.
+- **Never in clear.** The microphone travels encrypted with the key of the
+  stream. A host that does not offer that is treated as taking none.
+- **What is sent** is what those hosts decode: one channel at 48 kHz, in Opus
+  frames of twenty milliseconds. `leto-media` captures the system's default
+  input (`Microphone`), mixes its channels into one, brings it to 48 kHz and
+  encodes it (`VoiceEncoder`), and `Session::send_microphone` sends each
+  frame. The news that a stream is connected says whether the PC takes a
+  microphone.
+- **Off until the person turns it on,** in every stream. The system is asked
+  for the microphone the first time the switch is turned on. While it is on,
+  the switch is lit and fills with what the microphone hears, and a small
+  microphone stays in a corner of the picture when the bar is away. A PC
+  that takes none has the switch dimmed, with the reason.
+- **Nothing is captured without a listener.** The backend only opens the
+  microphone for a connected stream to a PC that takes one, and lets go of
+  it when the stream is left, fails or ends, on the engine's thread, without
+  waiting for the window.
+- The web client has no switch yet: a browser's microphone does not reach
+  the bridge.
+
+The stand-in host takes a microphone the way the Apollo build does: it
+decodes what arrives, shows how loud it is on the test card, and saves it as
+a sound file when asked (`voice` in its terminal), to be judged by ear.
+`leto-cli play --microphone` sends the microphone without the window, and
+says whether a PC takes one at all.
+
+Opus is encoded by `opus-rs` and decoded by `opus-decoder`, both in plain
+Rust. Three seconds of the encoder's frames, a quiet room with sudden bursts,
+were given to libopus 1.4 as a referee: it decodes them all, to the same
+samples as `opus-decoder`.
 
 ## The web client and its bridge
 

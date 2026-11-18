@@ -31,7 +31,11 @@ Progress:
 - Done: the same in the browser. `leto-cli bridge` serves the web client and
   relays the stream, which the browser decodes itself. See
   [architecture.md](architecture.md#the-web-client-and-its-bridge).
-- Next: capture of the microphone and the camera.
+- Done: the microphone, from the desktop app, to a PC that takes one (the
+  microphone build of Apollo, Foundation Sunshine). One switch in the bar
+  over the picture, off at the start of every stream. See
+  [architecture.md](architecture.md#the-microphone).
+- Next: the microphone from the browser, then capture of the camera.
 - Later in this step: decoding on the graphics card, H.265, HDR, surround
   sound, and the settings of Advanced mode (size, pictures per second, bit
   rate).
@@ -51,6 +55,20 @@ What the web client does not do yet:
 - The web client is one file of 5 MB that the bridge sends as it is, without
   compressing it.
 
+What the microphone does not do yet:
+
+- It was never sent to a real host. The stand-in host follows the Apollo
+  microphone build and Foundation Sunshine as read in their source, and what
+  it hears was checked there. The microphone itself was a made-up one on
+  Linux: no real microphone was captured, on any system.
+- It is the system's default microphone, as the system gives it: no choice of
+  device, no noise suppression, no echo cancellation. With loudspeakers
+  instead of a headset, the PC hears its own sound again.
+- Sent to a stock Apollo or Sunshine it would go nowhere, so the switch is
+  dimmed there. The receiver that changes this is the companion of step 4.
+- Nothing remembers that it was on: it is off at the start of every stream.
+- The web client has no switch for it yet.
+
 What input does not do yet:
 
 - The numeric keypad is sent as the row of digits above the letters, because
@@ -68,7 +86,8 @@ What input does not do yet:
 The receiver for microphone and camera on the PC (the companion in
 [return-channel.md](return-channel.md)) stays at the start of step 4. In this
 step, capture is checked with a preview and a level meter in the app, and the
-microphone can be tested end to end against the microphone build of Apollo.
+microphone can be tested end to end against the microphone build of Apollo,
+or against the stand-in host, which saves what it heard to listen to.
 
 Questions settled in this step:
 

@@ -1,7 +1,9 @@
 # The return channel: microphone and camera, from client to host
 
-Status: **design draft**. Nothing here is implemented yet. The microphone part
-follows an existing protocol; the camera part is new and marked as such.
+Status: **design draft**, except the client side of the microphone, which the
+desktop app has (see [architecture.md](architecture.md#the-microphone)). The
+microphone part follows an existing protocol; the camera part is new and
+marked as such. Nothing of the host side exists yet.
 
 ## Goal
 
@@ -59,6 +61,17 @@ Negotiation, inside the normal RTSP session:
    `encryptionRequested`.
 2. The client sends `SETUP streamid=mic/0/0`, then `PLAY`, and enables the
    microphone bit in `x-ss-general.encryptionEnabled`.
+
+Foundation Sunshine sets the microphone bit in `encryptionSupported` and
+answers `SETUP streamid=mic` with success even while its microphone is turned
+off. The media line is what tells: Leto takes a host to offer a microphone
+when the description has both the line and the bit.
+
+moonlight-common-rust decides before the handshake whether to send that
+`SETUP`, from the kind of host alone, and a refused `SETUP` fails the whole
+stream. Leto therefore reads the description first, with a `DESCRIBE` of its
+own on a separate connection: Sunshine and its descendants answer every RTSP
+request on a new connection, and a description is only read.
 
 Packets, UDP from client to host, at most 1400 bytes:
 
