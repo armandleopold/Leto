@@ -1,12 +1,13 @@
-//! The browser's own decoders, and its encoder for the microphone, as far
-//! as Leto uses them.
+//! The browser's own decoders, and its encoders for the microphone and the
+//! camera, as far as Leto uses them.
 //!
 //! This is WebCodecs. `web-sys` only offers it behind a flag that makes its
 //! API unstable, for the whole build, so the few calls Leto makes are
 //! declared here.
 
-use js_sys::{Float32Array, Object, Reflect, Uint8Array};
+use js_sys::{Float32Array, Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
+use web_sys::HtmlVideoElement;
 
 #[wasm_bindgen]
 extern "C" {
@@ -41,8 +42,61 @@ extern "C" {
     #[wasm_bindgen(constructor, catch)]
     pub fn new(picture: &Object) -> Result<EncodedVideoChunk, JsValue>;
 
-    /// One decoded picture. It holds memory of the decoder's until closed.
+    /// `"key"` for a picture that decodes on its own.
+    #[wasm_bindgen(method, getter, js_name = type)]
+    pub fn kind(this: &EncodedVideoChunk) -> String;
+
+    /// Its size in bytes.
+    #[wasm_bindgen(method, getter, js_name = byteLength)]
+    pub fn length(this: &EncodedVideoChunk) -> u32;
+
+    /// When the picture it was made of was taken, in microseconds.
+    #[wasm_bindgen(method, getter)]
+    pub fn timestamp(this: &EncodedVideoChunk) -> f64;
+
+    /// Copies it out. `bytes` must have room for all of it.
+    #[wasm_bindgen(method, js_name = copyTo, catch)]
+    pub fn copy_to(this: &EncodedVideoChunk, bytes: &Uint8Array) -> Result<(), JsValue>;
+
+    /// Turns pictures into encoded ones.
+    #[derive(Clone)]
+    pub type VideoEncoder;
+
+    /// `callbacks` has `output`, called with each [`EncodedVideoChunk`],
+    /// and `error`.
+    #[wasm_bindgen(constructor, catch)]
+    pub fn new(callbacks: &Object) -> Result<VideoEncoder, JsValue>;
+
+    /// Whether this browser encodes pictures like `format`: a promise of an
+    /// object whose `supported` says so.
+    #[wasm_bindgen(static_method_of = VideoEncoder, js_name = isConfigSupported, catch)]
+    pub fn supports(format: &Object) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(method, catch)]
+    pub fn configure(this: &VideoEncoder, format: &Object) -> Result<(), JsValue>;
+
+    /// `options` may ask for a picture that decodes on its own.
+    #[wasm_bindgen(method, catch)]
+    pub fn encode(
+        this: &VideoEncoder,
+        picture: &VideoFrame,
+        options: &Object,
+    ) -> Result<(), JsValue>;
+
+    #[wasm_bindgen(method, catch)]
+    pub fn close(this: &VideoEncoder) -> Result<(), JsValue>;
+
+    /// The pictures it was given and has not started on.
+    #[wasm_bindgen(method, getter, js_name = encodeQueueSize)]
+    pub fn waiting(this: &VideoEncoder) -> u32;
+
+    /// One picture that is not encoded: what a decoder makes, and what an
+    /// encoder takes. It holds memory of the browser's until closed.
     pub type VideoFrame;
+
+    /// What `video` shows now. `options` says when that is.
+    #[wasm_bindgen(constructor, catch)]
+    pub fn shown_by(video: &HtmlVideoElement, options: &Object) -> Result<VideoFrame, JsValue>;
 
     #[wasm_bindgen(method, getter, js_name = displayWidth)]
     pub fn width(this: &VideoFrame) -> u32;

@@ -2106,6 +2106,7 @@ dependencies = [
  "httparse",
  "leto-client",
  "leto-core",
+ "leto-media",
  "leto-testhost",
  "log",
  "rcgen",
@@ -2174,6 +2175,7 @@ version = "0.0.1"
 dependencies = [
  "cpal",
  "image",
+ "leto-core",
  "log",
  "nokhwa",
  "openh264",

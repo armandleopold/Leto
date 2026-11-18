@@ -6,11 +6,11 @@ client side is there:
 - the microphone, in the desktop app and the web client (see
   [architecture.md](architecture.md#the-microphone)): an existing protocol,
   followed as it is;
-- the camera, in the desktop app and the command line (see
+- the camera, in the desktop app, the command line and the web client (see
   [architecture.md](architecture.md#the-camera)): a protocol of Leto's own,
   described below as the client and the stand-in host of the tests speak it
-  (`leto-return`). The web client captures the camera and does not send it
-  yet.
+  (`leto-return`). The web client encodes its camera and hands the pictures
+  to its bridge, which speaks that protocol for it.
 
 No Sunshine or Apollo takes a camera, so until Leto's host exists the camera
 of a device reaches the stand-in host and nothing else.
@@ -266,12 +266,16 @@ signed camera extension and is out of scope until someone can test it.
 This table is the plan. What exists is in
 [architecture.md](architecture.md#the-camera): the desktop app captures with
 what each system offers and encodes in software, and the web client sends its
-microphone to the bridge over its WebSocket.
+microphone and its camera to the bridge over its WebSocket, encoded by the
+browser.
 
 A browser cannot send UDP packets or present the pairing certificate, so on
-the web the bridge does it: the browser sends its pictures to the bridge, and
-the bridge turns them into the packets above. When the bridge is the Leto host
-itself, the frames go straight to the virtual devices.
+the web the bridge does it. The browser encodes its camera as H.264 and sends
+each picture to the bridge over their WebSocket, inside its TLS. The bridge
+asks the PC on the Leto API, as the paired device it is, and turns the
+pictures into the packets above without looking into them: see
+[architecture.md](architecture.md#from-a-browser). When the bridge is the
+Leto host itself, the frames go straight to the virtual devices.
 
 ## Companion mode: the return channel next to Apollo
 

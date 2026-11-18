@@ -3,13 +3,15 @@
 //!
 //! A page cannot open the sockets the Moonlight protocol needs. It keeps a
 //! WebSocket to its bridge instead, in the language of
-//! [`leto_core::bridge`]: requests, input and the microphone go up, news
-//! and the stream come down. Pictures and sound arrive still encoded, and
-//! the browser's own decoders turn them into something to see and hear.
+//! [`leto_core::bridge`]: requests, input, the microphone and the camera go
+//! up, news and the stream come down. Pictures and sound arrive still
+//! encoded, and the browser's own decoders turn them into something to see
+//! and hear. Its encoders do the opposite for what goes up.
 
 mod camera;
 mod capture;
 mod codecs;
+mod film;
 mod gamepad;
 mod microphone;
 mod screen;
@@ -32,6 +34,7 @@ use web_sys::{AudioContext, BinaryType, MessageEvent, WebSocket};
 
 use self::{
     camera::Camera,
+    film::Film,
     gamepad::Gamepads,
     microphone::Microphone,
     screen::{Canvas, Screen, Shown},
@@ -48,6 +51,11 @@ const TRY_AGAIN_AFTER: i32 = 2_000;
 
 /// The rate PCs send sound at.
 const SOUND_RATE: u32 = 48_000;
+
+/// With this many bytes waiting to leave for the bridge, the line is slower
+/// than the camera: about a second of it. No picture is taken until some
+/// have left.
+const CROWDED: u32 = 256 * 1024;
 
 pub struct Backend {
     page: Rc<Page>,
@@ -115,6 +123,19 @@ struct Stream {
     /// stream that is connected to a PC that takes one. It goes with the
     /// stream.
     voice: Device<Microphone>,
+    /// How much of a camera the PC takes, once it said that it takes one.
+    takes: Option<engine::CameraOffer>,
+    /// The camera of this browser on its way to that PC. It goes with the
+    /// stream too.
+    film: Device<Sent>,
+}
+
+/// The camera of this browser, encoded for a PC, and the number the bridge
+/// knows the asking by. The PC was asked from the moment this exists, and
+/// pictures leave once it agreed: once the film has started.
+struct Sent {
+    number: u32,
+    film: Film,
 }
 
 /// A microphone or a camera of this browser, from the asking on.
@@ -256,10 +277,68 @@ impl Backend {
         }
     }
 
-    /// A browser's camera does not reach a PC yet, and the bridge says of
-    /// no PC that it takes one: nothing is ever on here.
-    pub fn film(&self, _on: bool) -> Result<Option<Filming>, String> {
-        Ok(None)
+    /// Sends the camera of this browser to the PC being watched while `on`,
+    /// and stops capturing when it is not. Returns how that is going while
+    /// it captures, or why it cannot, in words for the person.
+    ///
+    /// Asked every frame. The browser is asked for the camera the first
+    /// time, which is when it may ask the person, and the PC once the
+    /// browser gave it: until the PC agrees nothing leaves.
+    pub fn film(&self, on: bool) -> Result<Option<Filming>, String> {
+        let (answer, over) = {
+            let mut inner = self.page.inner.borrow_mut();
+            let inner = &mut *inner;
+            let Some(stream) = &mut inner.stream else { return Ok(None) };
+            // Whatever it was: letting go of a camera stops it.
+            let film = std::mem::replace(&mut stream.film, Device::Off);
+            // The PC was asked, and has to hear when that is over.
+            let asked_pc = matches!(film, Device::On(_));
+            match (stream.takes.filter(|_| on), film) {
+                (None, _) => (Ok(None), asked_pc),
+                (Some(offer), Device::Off) => {
+                    inner.asked += 1;
+                    let asked = inner.asked;
+                    stream.film = Device::Asked(asked);
+                    let page = self.page.this.clone();
+                    let (line, sender) = (page.clone(), page.clone());
+                    spawn_local(async move {
+                        let room = move || line.upgrade().is_some_and(|page| page.has_room());
+                        let picture = move |at, keyframe, data: &[u8]| {
+                            if let Some(page) = sender.upgrade() {
+                                page.picture(at, keyframe, data);
+                            }
+                        };
+                        let answer = Film::open(offer, room, picture).await;
+                        if let Some(page) = page.upgrade() {
+                            page.film_answered(asked, answer);
+                        }
+                    });
+                    (Ok(Some(Filming::Opening)), false)
+                }
+                (Some(_), Device::Asked(asked)) => {
+                    stream.film = Device::Asked(asked);
+                    (Ok(Some(Filming::Opening)), false)
+                }
+                (Some(_), Device::On(sent)) => match sent.film.stopped() {
+                    Some(why) => (Err(why.to_owned()), true),
+                    None => {
+                        let sending = sent.film.sending();
+                        let how = if sent.film.started() {
+                            Filming::Sending([sending.width, sending.height])
+                        } else {
+                            Filming::Opening
+                        };
+                        stream.film = Device::On(sent);
+                        (Ok(Some(how)), false)
+                    }
+                },
+                (Some(_), Device::Refused(why)) => (Err(why), false),
+            }
+        };
+        if over {
+            self.page.say(&Up::CameraOff);
+        }
+        answer
     }
 
     /// Captures the camera of this browser while `on`, for the person to
@@ -422,6 +501,8 @@ impl Inner {
             gamepads: None,
             listens: false,
             voice: Device::Off,
+            takes: None,
+            film: Device::Off,
         });
     }
 
@@ -616,6 +697,12 @@ impl Page {
                         }
                     }));
                 }
+                if let engine::Event::Camera { attempt, offer } = &event
+                    && let Some(stream) = &mut inner.stream
+                    && stream.attempt == *attempt
+                {
+                    stream.takes = *offer;
+                }
                 inner.events.push(event.with_covers(|file| decode_cover(&file.0)));
             }
             Down::Pictures(format) => {
@@ -643,9 +730,75 @@ impl Page {
                     Err(why) => stream.silent = Some(why),
                 }
             }
+            Down::Camera { number, answer } => {
+                // The answer to an asking the person has given up since
+                // changes nothing: the bridge heard of that too.
+                if let Some(stream) = &mut inner.stream
+                    && let Device::On(sent) = &stream.film
+                    && sent.number == number
+                {
+                    let agreed = answer.is_ok();
+                    if let Err(why) = answer.and_then(|()| sent.film.start()) {
+                        // Refused, or taken no longer: the camera is let
+                        // go of.
+                        stream.film = Device::Refused(why);
+                        self.ctx.request_repaint();
+                        if agreed {
+                            // The PC waits for pictures that will not come.
+                            return Then::Say(Up::CameraOff);
+                        }
+                    }
+                }
+            }
         }
         self.ctx.request_repaint();
         Then::Nothing
+    }
+
+    /// The browser answered the `asked`-th request, which was for the
+    /// camera a PC is to get: with it, the PC can be asked.
+    fn film_answered(&self, asked: u32, answer: Result<Film, String>) {
+        let sending = {
+            let mut inner = self.inner.borrow_mut();
+            let Some(stream) = &mut inner.stream else { return };
+            if !matches!(stream.film, Device::Asked(waiting) if waiting == asked) {
+                // The switch went off or the stream ended while the browser
+                // was asking: the camera is let go of here, unused.
+                return;
+            }
+            self.ctx.request_repaint();
+            match answer {
+                Ok(film) => {
+                    let sending = film.sending();
+                    stream.film = Device::On(Sent { number: asked, film });
+                    sending
+                }
+                Err(why) => {
+                    stream.film = Device::Refused(why);
+                    return;
+                }
+            }
+        };
+        self.say(&Up::CameraOn { number: asked, sending });
+    }
+
+    /// Whether the line to the bridge has room for a picture of the camera.
+    fn has_room(&self) -> bool {
+        let inner = self.inner.borrow();
+        inner.line.as_ref().is_some_and(|line| {
+            line.socket.ready_state() == WebSocket::OPEN && line.socket.buffered_amount() < CROWDED
+        })
+    }
+
+    /// Sends a picture of the camera to the bridge, for the PC.
+    fn picture(&self, at: u32, keyframe: bool, data: &[u8]) {
+        let inner = self.inner.borrow();
+        let Some(line) = &inner.line else { return };
+        if line.socket.ready_state() == WebSocket::OPEN {
+            // A socket that just closed says so itself, in a moment.
+            let message = Frame::Camera { at, keyframe, data }.encode();
+            let _ = line.socket.send_with_u8_array(&message);
+        }
     }
 
     /// The browser answered the `asked`-th request for the microphone.
@@ -736,8 +889,8 @@ impl Page {
                 }
                 Then::Nothing
             }
-            // A microphone goes up, never down.
-            Some(Frame::Voice(_)) | None => Then::Nothing,
+            // A microphone and a camera go up, never down.
+            Some(Frame::Voice(_) | Frame::Camera { .. }) | None => Then::Nothing,
         }
     }
 }

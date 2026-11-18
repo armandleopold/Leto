@@ -4,8 +4,11 @@
 use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt as _, StreamExt as _};
-use leto_client::{Client, Service, Shell, engine::Event};
-use leto_core::bridge::{Down, Frame, Up, VOICE_PACKET};
+use leto_client::{
+    Client, Service, Shell,
+    engine::{Event, Request},
+};
+use leto_core::bridge::{Down, Frame, LONGEST_CAMERA_PICTURE, Up, VOICE_PACKET};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     time::{Instant, MissedTickBehavior, interval, sleep},
@@ -16,6 +19,7 @@ use tokio_tungstenite::{
 };
 
 use crate::{
+    camera::Camera,
     gate::{Gate, PAUSE},
     relay::{Outbox, Parcel, Pictures, Sound},
 };
@@ -27,9 +31,13 @@ const ASKED_EVERY: Duration = Duration::from_secs(5);
 /// still pretends: its stream is left.
 const GONE_AFTER: Duration = Duration::from_secs(20);
 
-/// The longest message a browser has reason to send. What a person does in
+/// The longest text a browser has reason to send. What a person does in
 /// one frame is far below it.
-const LONGEST_MESSAGE: usize = 64 * 1024;
+const LONGEST_TEXT: usize = 64 * 1024;
+
+/// The longest message of all: a picture of a browser's camera, with what
+/// says so in front of it.
+const LONGEST_MESSAGE: usize = LONGEST_CAMERA_PICTURE + 16;
 
 /// No Opus packet with one frame in it is longer than this.
 const LONGEST_VOICE: usize = 1275;
@@ -42,7 +50,9 @@ pub struct Shared {
     pub name: String,
 }
 
-/// The limits of a browser's WebSocket.
+/// The limits of a browser's WebSocket. They are those of a browser the
+/// gate let in, since they cannot change once it has: [`serve`] holds the
+/// others to less.
 pub fn limits() -> WebSocketConfig {
     WebSocketConfig::default()
         .max_message_size(Some(LONGEST_MESSAGE))
@@ -65,6 +75,11 @@ impl Shell for Browser {
     fn sinks(&self) -> Result<(Pictures, Sound), String> {
         Ok(self.outbox.sinks())
     }
+
+    /// A browser encodes its camera itself, and the bridge passes it on.
+    fn sends_camera(&self) -> bool {
+        true
+    }
 }
 
 /// Serves one browser until it leaves.
@@ -74,9 +89,10 @@ where
 {
     let (outbox, mut parcels) = Outbox::new();
     // The engine at work for this browser, once it is let in.
-    let mut service: Option<Service<Browser>> = None;
+    let mut service: Option<Arc<Service<Browser>>> = None;
     // Packets of this browser's microphone that left for a PC.
     let mut voices: u32 = 0;
+    let (mut camera, mut answers) = Camera::new();
     let mut heard = Instant::now();
     let mut asking = interval(ASKED_EVERY);
     asking.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -88,23 +104,36 @@ where
                 heard = Instant::now();
                 match message {
                     Message::Text(text) => {
-                        let Ok(said) = serde_json::from_str::<Up>(text.as_str()) else {
+                        let said = serde_json::from_str::<Up>(text.as_str());
+                        let Some(said) = said.ok().filter(|_| text.len() <= LONGEST_TEXT) else {
                             // Not a Leto page, or one of another version.
                             log::debug!("a browser said something the bridge does not understand");
                             break;
                         };
-                        hear(said, &shared, &outbox, &mut service);
+                        hear(said, &shared, &outbox, &mut service, &mut camera);
                     }
                     Message::Binary(bytes) => {
-                        // The microphone, which goes the way input does:
-                        // from a browser the gate let in, to the PC it is
-                        // watching, if that PC takes one.
-                        if let Some(service) = &service
-                            && let Some(Frame::Voice(packet)) = Frame::parse(&bytes)
-                            && (1..=LONGEST_VOICE).contains(&packet.len())
-                            && service.microphone(VOICE_PACKET * voices, packet)
-                        {
-                            voices = voices.wrapping_add(1);
+                        // The microphone and the camera, which go the way
+                        // input does: from a browser the gate let in, to
+                        // the PC it is watching, if that PC takes them. Any
+                        // other browser has nothing of the kind to send,
+                        // and the bridge does not go on reading it.
+                        let Some(service) = &service else { break };
+                        match Frame::parse(&bytes) {
+                            Some(Frame::Voice(packet)) => {
+                                if (1..=LONGEST_VOICE).contains(&packet.len())
+                                    && service.microphone(VOICE_PACKET * voices, packet)
+                                {
+                                    voices = voices.wrapping_add(1);
+                                }
+                            }
+                            Some(Frame::Camera { at, keyframe, data }) => {
+                                if let Some(news) = camera.picture(service, at, keyframe, data) {
+                                    outbox.say(&news);
+                                }
+                            }
+                            // Pictures and sound come from the bridge.
+                            _ => {}
                         }
                     }
                     Message::Close(_) => break,
@@ -127,6 +156,16 @@ where
                     break;
                 }
             }
+            answer = answers.recv() => {
+                // The camera lives as long as this function: never `None`.
+                let Some(answer) = answer else { break };
+                // No PC is asked for a browser that was not let in.
+                if let Some(service) = &service
+                    && let Some(news) = camera.answered(service, answer)
+                {
+                    outbox.say(&news);
+                }
+            }
             _ = asking.tick() => {
                 if heard.elapsed() > GONE_AFTER || socket.send(Message::Ping(Bytes::new())).await.is_err() {
                     break;
@@ -134,8 +173,12 @@ where
             }
         }
     }
-    // Dropping the service leaves the stream this browser was watching.
-    drop(service);
+    // The stream this browser was watching is left, and its camera stops
+    // with it. Dropping the service would do the same, but not before a PC
+    // that is being asked about a camera has answered.
+    if let Some(service) = service {
+        service.ask(Request::Leave);
+    }
     let _ = socket.close(None).await;
 }
 
@@ -144,12 +187,13 @@ fn hear(
     said: Up,
     shared: &Arc<Shared>,
     outbox: &Arc<Outbox>,
-    service: &mut Option<Service<Browser>>,
+    service: &mut Option<Arc<Service<Browser>>>,
+    camera: &mut Camera,
 ) {
     let mut welcome = |key: Option<String>| {
         if service.is_none() {
             let browser = Browser { outbox: Arc::clone(outbox) };
-            *service = Some(Service::new(Arc::clone(&shared.client), browser));
+            *service = Some(Arc::new(Service::new(Arc::clone(&shared.client), browser)));
         }
         outbox.say(&Down::Welcome { key, name: shared.name.clone() });
     };
@@ -186,5 +230,14 @@ fn hear(
             }
         }
         Up::KeyframeNeeded => outbox.want_keyframe(),
+        Up::CameraOn { number, sending } => match service {
+            Some(service) => camera.on(service, number, sending),
+            None => outbox.say(&Down::CodeNeeded { refused: false }),
+        },
+        Up::CameraOff => {
+            if let Some(service) = service {
+                camera.off(service);
+            }
+        }
     }
 }

@@ -17,14 +17,15 @@ use std::{
 use futures_util::{SinkExt as _, StreamExt as _};
 use leto_bridge::{Bridge, Options};
 use leto_client::{
-    Client,
-    engine::{Event, Request},
+    CameraSettings, Client,
+    engine::{CameraOffer, Event, Request},
     input::{Input, Key, Modifiers},
 };
 use leto_core::{
     bridge::{Down, Frame, Up},
     model::HostId,
 };
+use leto_media::{Picture, PictureEncoder, Sending};
 use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, quiet_voice};
 use rustls::{
     ClientConfig, RootCertStore,
@@ -43,6 +44,41 @@ use tokio_tungstenite::{
 
 /// How long any step may take before the test gives up.
 const PATIENCE: Duration = Duration::from_secs(30);
+
+/// A small camera, as a browser says it will send it.
+const SMALL: CameraSettings =
+    CameraSettings { width: 320, height: 240, fps: 30, bitrate_kbps: 500 };
+
+/// The start of a picture, for where what follows does not matter.
+const SOME_PICTURE: &[u8] = &[0, 0, 0, 1, 0x67];
+
+const RED: [u8; 3] = [200, 30, 30];
+const BLUE: [u8; 3] = [30, 30, 200];
+
+/// Waits until `done` says so.
+async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !done() {
+        assert!(start.elapsed() < PATIENCE, "timed out waiting for {what}");
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// What a camera would see: one colour on the left, another on the right.
+fn halves(width: usize, height: usize, left: [u8; 3], right: [u8; 3]) -> Picture {
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for _ in 0..height {
+        for column in 0..width {
+            let [red, green, blue] = if column < width / 2 { left } else { right };
+            rgba.extend_from_slice(&[red, green, blue, 255]);
+        }
+    }
+    Picture { width, height, rgba }
+}
+
+fn close(found: &[u8], wanted: [u8; 3]) -> bool {
+    found.iter().zip(wanted).all(|(found, wanted)| found.abs_diff(wanted) <= 12)
+}
 
 /// A bridge on this computer, with a folder of its own and a web client of
 /// one page.
@@ -213,6 +249,47 @@ impl Browser {
         .await;
         added.id
     }
+
+    /// Starts a stream and waits for the news of what camera its PC takes,
+    /// which comes once the stream plays.
+    async fn play(&mut self, host: HostId, attempt: u64) -> Option<CameraOffer> {
+        self.say(&Up::Ask(Request::Play { host, app: 1, attempt })).await;
+        self.news(|event| match event {
+            Event::Camera { attempt: told, offer } if told == attempt => Some(offer),
+            Event::PlayFailed { message, .. } => panic!("{message}"),
+            _ => None,
+        })
+        .await
+    }
+
+    /// Sends a picture of this browser's camera.
+    async fn picture(&mut self, at: u32, keyframe: bool, data: &[u8]) {
+        let message = Frame::Camera { at, keyframe, data }.encode();
+        self.socket.send(Message::binary(message)).await.unwrap();
+    }
+
+    /// The next thing the bridge says about this browser's camera: the
+    /// number of the asking it answers, and the answer.
+    async fn camera(&mut self) -> (u32, Result<(), String>) {
+        loop {
+            if let Down::Camera { number, answer } = self.hear().await {
+                return (number, answer);
+            }
+        }
+    }
+
+    /// Whether the bridge ends the link.
+    async fn is_hung_up_on(&mut self) -> bool {
+        let ended = timeout(PATIENCE, async {
+            loop {
+                match self.socket.next().await {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+        });
+        ended.await.is_ok()
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -336,16 +413,13 @@ async fn what_is_not_a_message_ends_the_link() {
     let setup = Setup::new();
     let mut browser = setup.open().await;
     browser.socket.send(Message::text("{\"Ask\":\"Everything\"}")).await.unwrap();
-    let ended = timeout(PATIENCE, async {
-        loop {
-            match browser.socket.next().await {
-                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
-                Some(Ok(_)) => {}
-            }
-        }
-    })
-    .await;
-    assert!(ended.is_ok(), "the bridge kept listening");
+    assert!(browser.is_hung_up_on().await, "the bridge kept listening");
+
+    // Nor is a message of the right kind that is far longer than any page
+    // of the bridge writes: here, a code of a hundred thousand digits.
+    let mut browser = setup.open().await;
+    browser.say(&Up::Code("7".repeat(100_000))).await;
+    assert!(browser.is_hung_up_on().await, "the bridge read a message without end");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -422,6 +496,7 @@ async fn a_stream_reaches_the_browser_and_input_reaches_the_pc() {
                     sounds += 1;
                 }
                 Frame::Voice(_) => panic!("the bridge sent a microphone down"),
+                Frame::Camera { .. } => panic!("the bridge sent a camera down"),
             },
         }
     }
@@ -499,4 +574,140 @@ async fn a_stream_reaches_the_browser_and_input_reaches_the_pc() {
         sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(host.running_app(), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browsers_camera_reaches_the_pc_it_is_watching() {
+    let setup = Setup::new();
+    let host = FakeHost::start();
+    let mut browser = setup.welcomed().await;
+    let id = browser.pair(&host).await;
+
+    // The browser hears what camera the PC takes, as the desktop app does.
+    let offer = browser.play(id, 3).await;
+    assert_eq!(offer, Some(CameraOffer { max_width: 1920, max_height: 1080, max_fps: 30 }));
+
+    // The PC is asked for nothing until the browser says so, and a picture
+    // that comes before goes nowhere.
+    browser.picture(0, true, SOME_PICTURE).await;
+    browser.say(&Up::CameraOn { number: 1, sending: SMALL }).await;
+    assert_eq!(browser.camera().await, (1, Ok(())));
+    let report = host.camera_report();
+    assert!(report.open);
+    assert_eq!(report.asked, Some((320, 240, 30)));
+    assert_eq!(report.packets, 0);
+
+    let mut encoder = PictureEncoder::new(Sending {
+        width: SMALL.width,
+        height: SMALL.height,
+        fps: SMALL.fps,
+        bitrate_kbps: SMALL.bitrate_kbps,
+    })
+    .unwrap();
+    let picture = halves(320, 240, RED, BLUE);
+    let mut sent = 0u64;
+    for number in 0..20u32 {
+        let Some(encoded) = encoder.encode(&picture, false).unwrap() else { continue };
+        browser.picture(33 * number, encoded.key_frame, encoded.data).await;
+        sent += 1;
+        sleep(Duration::from_millis(2)).await;
+    }
+    assert!(sent >= 10, "the encoder left out most pictures");
+    wait_for("the camera to arrive", || host.camera_report().pictures == sent).await;
+
+    // The PC sees what the browser's camera saw.
+    let report = host.camera_report();
+    assert_eq!((report.lost, report.refused), (0, 0));
+    assert!(report.key_frames >= 1);
+    assert_eq!(report.size, Some((320, 240)));
+    let seen = host.seen().expect("the host keeps the last picture");
+    let pixel = |column: usize, row: usize| {
+        let at = (row * seen.width + column) * 4;
+        &seen.rgba[at..at + 3]
+    };
+    assert!(close(pixel(80, 120), RED), "left: {:?}", pixel(80, 120));
+    assert!(close(pixel(240, 120), BLUE), "right: {:?}", pixel(240, 120));
+
+    // A picture may be far longer than anything else a browser says.
+    let before = host.camera_report().packets;
+    browser.picture(700, false, &vec![0x41; 200_000]).await;
+    wait_for("a long picture to arrive", || host.camera_report().packets > before).await;
+
+    browser.say(&Up::CameraOff).await;
+    wait_for("the PC to learn that the camera stopped", || !host.camera_report().open).await;
+
+    // A tab that closes with its camera on: the PC hears of it.
+    browser.say(&Up::CameraOn { number: 2, sending: SMALL }).await;
+    assert_eq!(browser.camera().await, (2, Ok(())));
+    assert!(host.camera_report().open);
+    drop(browser);
+    wait_for("the PC to learn that the browser left", || !host.camera_report().open).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_hears_why_its_camera_is_not_taken_and_its_last_word_counts() {
+    let setup = Setup::new();
+    let host = FakeHost::start();
+    let mut browser = setup.welcomed().await;
+    let id = browser.pair(&host).await;
+    browser.play(id, 7).await;
+
+    host.refuse_camera(true);
+    browser.say(&Up::CameraOn { number: 1, sending: SMALL }).await;
+    let (number, answer) = browser.camera().await;
+    let why = answer.unwrap_err();
+    assert_eq!(number, 1);
+    assert!(why.contains("owner") && why.ends_with('.'), "{why}");
+    assert!(!host.camera_report().open);
+    host.refuse_camera(false);
+
+    // On, off and on again before the PC has answered once: only the last
+    // asking is answered.
+    browser.say(&Up::CameraOn { number: 2, sending: SMALL }).await;
+    browser.say(&Up::CameraOff).await;
+    browser.say(&Up::CameraOn { number: 3, sending: SMALL }).await;
+    assert_eq!(browser.camera().await, (3, Ok(())));
+    assert!(host.camera_report().open);
+
+    // Asked for again, then turned off before the PC has answered: nothing
+    // is said of that asking, and the camera that follows is the only one.
+    browser.say(&Up::CameraOn { number: 4, sending: SMALL }).await;
+    browser.say(&Up::CameraOff).await;
+    browser.say(&Up::CameraOn { number: 5, sending: SMALL }).await;
+    assert_eq!(browser.camera().await, (5, Ok(())));
+    browser.say(&Up::CameraOff).await;
+    wait_for("the PC to learn that the camera stopped", || !host.camera_report().open).await;
+
+    // The app closes on the PC while the camera is on: the next picture
+    // finds nowhere to go, and the browser is told.
+    browser.say(&Up::CameraOn { number: 6, sending: SMALL }).await;
+    assert_eq!(browser.camera().await, (6, Ok(())));
+    host.close_app();
+    browser
+        .news(|event| matches!(event, Event::StreamEnded { attempt: 7, .. }).then_some(()))
+        .await;
+    browser.picture(0, true, SOME_PICTURE).await;
+    let (number, answer) = browser.camera().await;
+    assert_eq!(number, 6);
+    assert!(answer.unwrap_err().ends_with('.'));
+    wait_for("the PC to learn that the camera stopped", || !host.camera_report().open).await;
+
+    // With no stream there is no camera, and the browser hears why.
+    browser.say(&Up::CameraOn { number: 7, sending: SMALL }).await;
+    let (number, answer) = browser.camera().await;
+    assert_eq!(number, 7);
+    assert!(answer.is_err());
+    assert!(!host.camera_report().open);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_that_was_not_let_in_sends_no_camera() {
+    let setup = Setup::new();
+    let mut browser = setup.open().await;
+    browser.say(&Up::CameraOn { number: 1, sending: SMALL }).await;
+    assert_eq!(browser.hear().await, Down::CodeNeeded { refused: false });
+
+    // It has no pictures for a PC either: the bridge stops reading it.
+    browser.picture(0, true, SOME_PICTURE).await;
+    assert!(browser.is_hung_up_on().await, "the bridge kept listening");
 }

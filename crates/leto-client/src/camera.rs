@@ -18,6 +18,7 @@ use std::{
     time::Duration,
 };
 
+pub use leto_core::engine::CameraSettings;
 use leto_core::{engine::CameraOffer, model::join_address};
 use leto_protocol::ports::Service as Port;
 use leto_return::{
@@ -36,16 +37,6 @@ const PATIENCE: Duration = Duration::from_secs(3);
 /// How long a packet may wait for room on its way out. Pictures are worth
 /// little a moment later: better to lose one than to fall behind.
 const SEND_PATIENCE: Duration = Duration::from_millis(100);
-
-/// What this device says it will send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CameraSettings {
-    pub width: u32,
-    pub height: u32,
-    /// Pictures a second.
-    pub fps: u32,
-    pub bitrate_kbps: u32,
-}
 
 /// Why a PC does not take the camera of this device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
