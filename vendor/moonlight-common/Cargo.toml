@@ -166,6 +166,8 @@ tokio-hyper = [
 # Logs sensitive information: e.g. private keys and sensitive values used in encryption / decryption
 __tracing_sensitive = []
 
-# The C bindings are left out, and with them this feature.
+# Its warnings stay quiet, as they were when it came from git: they are
+# upstream's to fix. The C bindings are left out, and with them this feature.
 [lints.rust]
+warnings = "allow"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("stream-c"))'] }
