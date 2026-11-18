@@ -193,6 +193,37 @@ mod tests {
     }
 
     #[test]
+    fn sudden_sounds_are_heard_too() {
+        // Claps, a knock, a word that starts hard: what an encoder treats
+        // unlike a steady tone. A quiet room, with a burst every tenth of a
+        // second, each a little later in its frame than the one before.
+        let mut voice = VoiceEncoder::new(48_000, 1).expect("an encoder");
+        let captured: Vec<f32> = (0..48_000 * 3)
+            .map(|index: u32| {
+                let since_burst = index % 4_937;
+                let noise = (index.wrapping_mul(2_654_435_761) >> 8) as f32 / 8_388_608.0 - 1.0;
+                if since_burst < 200 { 0.8 * noise } else { 0.001 * noise }
+            })
+            .collect();
+        let mut packets = Vec::new();
+        for piece in captured.chunks(480) {
+            voice.push(piece, |packet| packets.push(packet.to_vec()));
+        }
+        assert_eq!(packets.len(), 150);
+
+        // Every frame decodes, and the bursts are in what comes out.
+        let mut decoder = OpusDecoder::new(VOICE_RATE, 1).expect("a decoder");
+        let mut samples = vec![0f32; FRAME];
+        let mut loudest = 0f32;
+        for packet in &packets {
+            let decoded = decoder.decode_float(packet, &mut samples, false).expect("it decodes");
+            assert_eq!(decoded, FRAME);
+            loudest = samples.iter().fold(loudest, |loudest, sample| loudest.max(sample.abs()));
+        }
+        assert!(loudest > 0.4, "the loudest sample heard was {loudest}");
+    }
+
+    #[test]
     fn silence_is_silent_and_nothing_makes_nothing() {
         let mut voice = VoiceEncoder::new(48_000, 2).expect("an encoder");
         let mut packets = 0;
