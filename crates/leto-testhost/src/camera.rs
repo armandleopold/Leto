@@ -379,6 +379,8 @@ fn write_response(stream: &mut impl Write, status: u16, body: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use leto_return::{api::CameraAsk, camera::Packer};
 
     use super::*;
@@ -510,6 +512,67 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(cameras.report().pictures, 0);
+
+        stop.store(true, Ordering::SeqCst);
+        receiving.join().unwrap();
+    }
+
+    #[test]
+    fn every_packet_is_taken_however_busy_the_computer_is() {
+        let cameras = cameras();
+        let stop = Arc::new(AtomicBool::new(false));
+        let receiving = thread::spawn({
+            let (cameras, stop) = (Arc::clone(&cameras), Arc::clone(&stop));
+            move || cameras.receive(&stop)
+        });
+        let granted = cameras.ask(b"one", &ask(640, 480, 30, api::H264)).expect("it fits");
+        let key = granted.camera.and_then(|grant| grant.key()).expect("a key for the camera");
+        let mut packer = Packer::new(&key);
+        let sender = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let to = ("127.0.0.1", cameras.port());
+
+        // As many threads with work to do as there are processors: whoever
+        // else needs one waits for it, the thread that takes the packets too.
+        let rest = Arc::new(AtomicBool::new(false));
+        let processors = thread::available_parallelism().map_or(2, usize::from);
+        let busy: Vec<_> = (0..processors)
+            .map(|_| {
+                let rest = Arc::clone(&rest);
+                thread::spawn(move || {
+                    while !rest.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+
+        // One packet at a time, each after the port was quiet for a while:
+        // none has a neighbour that would make up for it.
+        const PACKETS: u32 = 16;
+        for number in 0..PACKETS {
+            thread::sleep(Duration::from_millis(60));
+            packer
+                .pack(number * 3000, true, b"one picture", |packet| {
+                    assert_eq!(sender.send_to(packet, to).ok(), Some(packet.len()));
+                })
+                .unwrap();
+        }
+        let start = Instant::now();
+        while cameras.report().packets < u64::from(PACKETS)
+            && start.elapsed() < Duration::from_secs(5)
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        rest.store(true, Ordering::Relaxed);
+        for thread in busy {
+            thread.join().unwrap();
+        }
+        let report = cameras.report();
+        assert_eq!(
+            (report.packets, report.refused),
+            (u64::from(PACKETS), 0),
+            "packets that were sent one by one were not all taken"
+        );
 
         stop.store(true, Ordering::SeqCst);
         receiving.join().unwrap();
