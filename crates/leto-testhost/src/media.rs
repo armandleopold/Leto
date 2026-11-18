@@ -7,7 +7,8 @@
 //! so a gap or a crackle is easy to hear.
 //!
 //! The card also shows what the client does: a pointer where its mouse is, a
-//! square for every key held, and a dial for the first gamepad.
+//! square for every key held, a dial for the first gamepad, a meter for its
+//! microphone and, in a corner, what its camera sees.
 
 use leto_core::input::{GamepadButtons, Input};
 use openh264::{
@@ -16,6 +17,8 @@ use openh264::{
     formats::YUVSource,
 };
 use opus_rs::{Application, OpusEncoder};
+
+use crate::camera::Seen;
 
 /// The largest picture the encoder accepts.
 const MAX_WIDTH: u32 = 3840;
@@ -256,8 +259,14 @@ impl TestCard {
     }
 
     /// Draws and encodes the next picture, with what the client's `hands` are
-    /// doing. `keyframe` asks for a picture that can be decoded on its own.
-    pub fn next(&mut self, keyframe: bool, hands: Hands) -> Option<EncodedFrame<'_>> {
+    /// doing and what its `camera` sees. `keyframe` asks for a picture that
+    /// can be decoded on its own.
+    pub fn next(
+        &mut self,
+        keyframe: bool,
+        hands: Hands,
+        camera: Option<&Seen>,
+    ) -> Option<EncodedFrame<'_>> {
         let (width, height) = (self.canvas.width as f32, self.canvas.height as f32);
         let seconds = self.number as f32 / self.fps as f32;
         self.canvas.copy_from(&self.background);
@@ -280,6 +289,9 @@ impl TestCard {
             (self.canvas.height / 40).max(2),
             Yuv::from_rgb(0xF2, 0xED, 0xE4),
         );
+        if let Some(seen) = camera {
+            self.draw_camera(seen);
+        }
         self.draw_hands(hands);
 
         if keyframe {
@@ -301,6 +313,46 @@ impl TestCard {
 }
 
 impl TestCard {
+    /// What the client's camera sees, in the top right corner: a quarter of
+    /// the card each way at most, in the camera's own shape, as the client
+    /// sent it and not as a mirror would show it.
+    fn draw_camera(&mut self, seen: &Seen) {
+        let (card_width, card_height) = (self.canvas.width, self.canvas.height);
+        if seen.width == 0 || seen.height == 0 || seen.rgba.len() < seen.width * seen.height * 4 {
+            return;
+        }
+        let across = card_width as f32 / 4.0 / seen.width as f32;
+        let down = card_height as f32 / 4.0 / seen.height as f32;
+        let scale = across.min(down);
+        // Even numbers, so that colours fall on their own squares.
+        let width = ((seen.width as f32 * scale) as usize & !1).max(2);
+        let height = ((seen.height as f32 * scale) as usize & !1).max(2);
+        let unit = (card_height / 30).max(4);
+        let left = card_width.saturating_sub(width + unit) & !1;
+        let top = (unit * 2) & !1;
+        if left < 2 || top + height + 2 > card_height {
+            return;
+        }
+
+        let frame = Yuv::from_rgb(0xF2, 0xED, 0xE4);
+        self.canvas.rectangle(left - 2, top - 2, width + 4, height + 4, frame);
+        let half = card_width / 2;
+        for row in 0..height {
+            let from = row * seen.height / height * seen.width;
+            for column in 0..width {
+                let at = (from + column * seen.width / width) * 4;
+                let Yuv(y, u, v) =
+                    Yuv::from_rgb(seen.rgba[at], seen.rgba[at + 1], seen.rgba[at + 2]);
+                self.canvas.y[(top + row) * card_width + left + column] = y;
+                if row % 2 == 0 && column % 2 == 0 {
+                    let colour = (top + row) / 2 * half + (left + column) / 2;
+                    self.canvas.u[colour] = u;
+                    self.canvas.v[colour] = v;
+                }
+            }
+        }
+    }
+
     fn draw_hands(&mut self, hands: Hands) {
         let (width, height) = (self.canvas.width as f32, self.canvas.height as f32);
         let moon = Yuv::from_rgb(0xF2, 0xED, 0xE4);
@@ -405,9 +457,9 @@ mod tests {
     fn the_card_starts_with_a_keyframe_and_makes_one_on_request() {
         let mut card = TestCard::new(320, 180, 30, 2000).expect("the encoder starts");
         let hands = Hands::default();
-        assert!(card.next(false, hands).expect("a first picture").keyframe);
-        assert!(!card.next(false, hands).expect("a second picture").keyframe);
-        assert!(card.next(true, hands).expect("a requested picture").keyframe);
+        assert!(card.next(false, hands, None).expect("a first picture").keyframe);
+        assert!(!card.next(false, hands, None).expect("a second picture").keyframe);
+        assert!(card.next(true, hands, None).expect("a requested picture").keyframe);
     }
 
     #[test]
@@ -422,7 +474,7 @@ mod tests {
         // Three quarters of the sun's way round.
         let last = 6 * 30 - 1;
         for number in 0..=last {
-            let data = card.next(false, Hands::default()).expect("a picture").data.to_vec();
+            let data = card.next(false, Hands::default(), None).expect("a picture").data.to_vec();
             let decoded = decoder.decode(&data).expect("it decodes").expect("a picture comes out");
             if number < last {
                 continue;

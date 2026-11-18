@@ -2202,6 +2202,7 @@ version = "0.0.1"
 dependencies = [
  "image",
  "leto-core",
+ "leto-return",
  "mdns-sd",
  "moonlight-common",
  "openh264",
@@ -2209,6 +2210,8 @@ dependencies = [
  "opus-rs",
  "pem 3.0.6",
  "rustls",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

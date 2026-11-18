@@ -18,6 +18,12 @@
 //! microphone build of Apollo, and shows how loud it is on the test card.
 //! Type `voice` to save what it heard lately as a sound file to listen to.
 //! With `--no-microphone` it takes none, like a stock Sunshine or Apollo.
+//!
+//! It also takes the camera of a client, the way Leto's own host will, and
+//! shows it in a corner of the test card. Type `camera` to save the last
+//! picture it saw, `camera off` to refuse cameras as the owner of a host
+//! could, and `camera on` to take them again. With `--no-camera` it takes
+//! none, like every Sunshine and Apollo.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -40,9 +46,12 @@ const VOICE_FILE: &str = "leto-voice.wav";
 /// Samples per second in what the host heard.
 const VOICE_RATE: u32 = 48_000;
 
+/// Where the "camera" command saves the last picture of the client's camera.
+const CAMERA_FILE: &str = "leto-camera.png";
+
 const USAGE: &str = "\
 Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
-             [--no-microphone]
+             [--no-microphone] [--no-camera]
 
   --name NAME   The name the host gives itself (default: Salon)
   --id ID       The unique id it reports (default: a fixed one)
@@ -53,6 +62,8 @@ Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
                 list the apps and watch, and nothing else
   --no-microphone
                 Take no microphone from the client, like a stock Sunshine or
+                Apollo
+  --no-camera   Take no camera from the client, like every Sunshine and
                 Apollo
 ";
 
@@ -94,6 +105,10 @@ fn main() -> ExitCode {
                 options.microphone = false;
                 Ok(())
             }
+            "--no-camera" => {
+                options.camera = None;
+                Ok(())
+            }
             _ => Err(()),
         };
         if parsed.is_err() {
@@ -108,6 +123,10 @@ fn main() -> ExitCode {
     let name = options.name.clone();
     let host = FakeHost::start_with(options);
     println!("Stand-in host \"{name}\" is listening on port {}.", host.port());
+    match host.camera_port() {
+        Some(port) => println!("It takes a camera, asked for on port {port}."),
+        None => println!("It takes no camera."),
+    }
 
     // Kept alive until the end: dropping it withdraws the announcement.
     let _announcement = announce.then(|| {
@@ -132,6 +151,8 @@ fn main() -> ExitCode {
     println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
     println!("Type \"inputs\" to see what the keyboard, mouse and gamepads of the client sent.");
     println!("Type \"voice\" to save what the microphone of the client sent to {VOICE_FILE}.");
+    println!("Type \"camera\" to save what the camera of the client shows to {CAMERA_FILE},");
+    println!("\"camera off\" to refuse cameras and \"camera on\" to take them again.");
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         match line.trim() {
@@ -182,6 +203,40 @@ fn main() -> ExitCode {
                     }
                     Err(error) => println!("Could not save {VOICE_FILE}: {error}"),
                 }
+            }
+            "camera" => {
+                let report = host.camera_report();
+                println!(
+                    "{} pictures received, {} of them whole on their own, {} lost; \
+                     {} packets, {} refused.",
+                    report.pictures, report.key_frames, report.lost, report.packets, report.refused
+                );
+                let Some(seen) = host.seen() else {
+                    println!("No client is sending its camera.");
+                    continue;
+                };
+                let saved = image::save_buffer(
+                    CAMERA_FILE,
+                    &seen.rgba,
+                    u32::try_from(seen.width).expect("a picture is not that wide"),
+                    u32::try_from(seen.height).expect("a picture is not that tall"),
+                    image::ColorType::Rgba8,
+                );
+                match saved {
+                    Ok(()) => println!(
+                        "Saved the last one, {} by {}, to {CAMERA_FILE}.",
+                        seen.width, seen.height
+                    ),
+                    Err(error) => println!("Could not save {CAMERA_FILE}: {error}"),
+                }
+            }
+            "camera off" => {
+                host.refuse_camera(true);
+                println!("Devices may no longer send their camera.");
+            }
+            "camera on" => {
+                host.refuse_camera(false);
+                println!("Devices may send their camera.");
             }
             other => match other.parse::<Pin>() {
                 Ok(pin) => {

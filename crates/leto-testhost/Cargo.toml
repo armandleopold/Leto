@@ -14,6 +14,8 @@ workspace = true
 
 [dependencies]
 leto-core = { workspace = true }
+# The camera of a client arrives as Leto's own host will take it.
+leto-return = { workspace = true }
 moonlight-common = { workspace = true }
 # The test card and the melody are encoded for real.
 openh264 = { workspace = true }
@@ -22,6 +24,8 @@ opus-decoder = "0.1"
 opus-rs = "0.1"
 pem = "3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # For the `serve` example: cover images, and the announcement on the network.
