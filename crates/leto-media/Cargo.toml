@@ -1,0 +1,26 @@
+[package]
+name = "leto-media"
+description = "Video and audio for Leto: decoders for what a host sends, and the speakers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Sound output on every desktop system.
+cpal = "0.18"
+log = { workspace = true }
+openh264 = { workspace = true }
+# Opus in plain Rust: nothing to install, nothing unsafe.
+opus-decoder = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+# Encodes the sound the tests decode.
+opus-rs = "0.1"

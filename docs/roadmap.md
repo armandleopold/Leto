@@ -24,8 +24,14 @@ Progress:
 
 - Done: find PCs on the network or by address, pair with a PIN, list the apps
   and their covers, in the desktop app and on the command line.
-- Next: start a stream and show it, then input, then the same in the browser
-  through the bridge, then capture of the microphone and the camera.
+- Done: start an app, see its picture and hear its sound, leave, resume and
+  close it. H.264 in software and stereo sound for now.
+- Next: keyboard, mouse and gamepad, then the same in the browser through the
+  bridge, then capture of the microphone and the camera.
+- Later in this step: decoding on the graphics card, H.265, HDR, surround
+  sound, and the settings of Advanced mode (size, pictures per second, bit
+  rate). Until input exists, Esc leaves a stream; once the keyboard is sent
+  to the PC, leaving moves to a key combination and the bar.
 
 The receiver for microphone and camera on the PC (the companion in
 [return-channel.md](return-channel.md)) stays at the start of step 4. In this
@@ -36,7 +42,9 @@ Questions to settle at the start of this step:
 
 - How the web client shows video inside an egui page: WebCodecs into a WebGL
   texture, or a `<video>` element behind the canvas.
-- Which decoders the Windows client uses first (Media Foundation, then others).
+- Which hardware decoder the Windows client uses first (Media Foundation or
+  Direct3D 11 video). Software decoding with OpenH264 is in place as the
+  path that works everywhere.
 - AV1, which moonlight-common-rust does not support yet.
 
 ## 3. The Android client

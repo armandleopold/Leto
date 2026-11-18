@@ -24,7 +24,13 @@ log = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The client engine needs sockets, which a browser page does not have.
 leto-client = { workspace = true }
+# Decoders and speakers. The web build will use the browser's own.
+leto-media = { workspace = true }
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# A stand-in PC to stream from in tests.
+leto-testhost = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"

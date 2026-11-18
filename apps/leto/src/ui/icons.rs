@@ -79,3 +79,15 @@ pub fn info(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([at(rect, 0.5, 0.46), at(rect, 0.5, 0.72)], stroke);
     painter.circle_filled(pos2(rect.center().x, at(rect, 0.5, 0.29).y), stroke.width * 0.75, color);
 }
+
+/// Four corners pulling apart: fill the screen.
+pub fn expand(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+        let (inward_x, inward_y) = (0.5 - x, 0.5 - y);
+        let corner = at(rect, 0.5 - inward_x * 0.84, 0.5 - inward_y * 0.84);
+        let along_x = at(rect, 0.5 - inward_x * 0.2, 0.5 - inward_y * 0.84);
+        let along_y = at(rect, 0.5 - inward_x * 0.84, 0.5 - inward_y * 0.2);
+        painter.line(vec![along_x, corner, along_y], stroke);
+    }
+}

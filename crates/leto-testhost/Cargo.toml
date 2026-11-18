@@ -15,6 +15,9 @@ workspace = true
 [dependencies]
 leto-core = { workspace = true }
 moonlight-common = { workspace = true }
+# The test card and the melody are encoded for real.
+openh264 = { workspace = true }
+opus-rs = "0.1"
 pem = "3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 

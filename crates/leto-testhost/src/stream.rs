@@ -1,0 +1,743 @@
+//! The streaming half of the stand-in host.
+//!
+//! What a Sunshine or Apollo host does once an app is launched: the RTSP
+//! handshake on a TCP port, then three UDP services for control, video and
+//! audio. The picture is a test card and the sound a short melody, both
+//! encoded for real (H.264 and Opus), so a client decodes them exactly as it
+//! would decode a game.
+//!
+//! The handshake follows `rtsp.cpp` of Sunshine and Apollo, read at Apollo
+//! commit a40b179. The packets themselves are built by moonlight-common's own
+//! payloaders and control host.
+
+use std::{
+    collections::HashMap,
+    io::{self, Read, Write},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+use moonlight_common::{
+    ServerVersion,
+    crypto::rustcrypto::RustCryptoBackend,
+    stream::{
+        AesIv, AesKey,
+        proto::{
+            Instant as ProtocolInstant,
+            audio::payloader::{AudioPayloader, AudioPayloaderConfig},
+            control::{
+                packet::{ControlPacket, ControlPacketConfig, EnetChannel, TerminationReason},
+                peer::{
+                    ControlEncryptionMethod, ControlHost, ControlHostConfig, ControlHostEvent,
+                    ControlPeerConfig, ControlPeerId, ControlPeerRole,
+                },
+            },
+            crypto::CryptoBackend,
+            runtime::{Receive, UdpStream},
+            video::payloader::{VideoPayloader, VideoPayloaderConfig, VideoPayloaderFecConfig},
+        },
+        video::ServerFrameType,
+    },
+};
+
+use crate::media::{Melody, TestCard};
+
+/// The version the stand-in host reports, the one of a current Sunshine.
+pub(crate) const APP_VERSION: &str = "7.1.431.-1";
+
+/// Encryption the host can do, as bits of `x-ss-general.encryptionSupported`.
+const ENCRYPT_CONTROL: u32 = 0x01;
+const ENCRYPT_VIDEO: u32 = 0x02;
+const ENCRYPT_AUDIO: u32 = 0x04;
+
+/// Size of the header in front of an encrypted RTSP message: type and length,
+/// sequence number, authentication tag.
+const RTSP_HEADER: usize = 4 + 4 + 16;
+const RTSP_ENCRYPTED: u32 = 0x8000_0000;
+/// Largest RTSP message accepted from a client.
+const RTSP_LIMIT: usize = 64 * 1024;
+
+/// Sound is sent in packets of this length, as Sunshine does.
+const AUDIO_PACKET: Duration = Duration::from_millis(5);
+const AUDIO_RATE: u32 = 48_000;
+/// Bit rate of Sunshine's stereo stream. With packets of 5 ms it makes every
+/// packet 60 bytes long, and the audio packet format needs that fixed size.
+const AUDIO_BITRATE: i32 = 96_000;
+
+/// What `/launch` or `/resume` asked for.
+pub(crate) struct Launch {
+    pub key: AesKey,
+    pub key_id: AesIv,
+    /// Answer RTSP encrypted, as a host does for a client that sent `corever=1`.
+    pub encrypt_rtsp: bool,
+}
+
+/// What a test can observe of a stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamReport {
+    /// The client finished the handshake and opened the control connection.
+    pub connected: bool,
+    /// The client closed the control connection.
+    pub client_left: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub video_encrypted: bool,
+    pub audio_encrypted: bool,
+    pub control_encrypted: bool,
+    pub frames_sent: u64,
+    pub keyframes_sent: u64,
+    /// Keyframes the client asked for after the first one.
+    pub keyframes_requested: u64,
+    pub audio_packets_sent: u64,
+}
+
+/// What the client settled in its `ANNOUNCE`.
+#[derive(Debug, Clone, Copy)]
+struct Negotiated {
+    width: u32,
+    height: u32,
+    fps: u32,
+    /// Size of the video payload of a packet, before the headers.
+    packet_size: usize,
+    bitrate_kbps: u32,
+    min_fec_packets: usize,
+    encryption: u32,
+}
+
+struct Inner {
+    launch: Launch,
+    version: ServerVersion,
+    video: UdpSocket,
+    audio: UdpSocket,
+    control: UdpSocket,
+    /// What the client must send on the video and audio ports to be found.
+    ping: [u8; 16],
+    /// What the client must present when it opens the control connection.
+    connect_data: u32,
+    rtsp_sequence: AtomicU32,
+    stop: AtomicBool,
+    /// The host itself ends the stream: tell the client before leaving.
+    terminate: AtomicBool,
+    wants_keyframe: AtomicBool,
+    negotiated: Mutex<Option<Negotiated>>,
+    media: Mutex<Vec<thread::JoinHandle<()>>>,
+    connected: AtomicBool,
+    client_left: AtomicBool,
+    frames_sent: AtomicU64,
+    keyframes_sent: AtomicU64,
+    keyframes_requested: AtomicU64,
+    audio_packets_sent: AtomicU64,
+}
+
+/// One stream to one client, from `/launch` until either side leaves.
+pub(crate) struct Session {
+    inner: Arc<Inner>,
+    rtsp_port: u16,
+    rtsp: Option<thread::JoinHandle<()>>,
+}
+
+impl Session {
+    /// Opens the ports of a new stream on `interface`.
+    pub fn start(interface: IpAddr, launch: Launch) -> io::Result<Self> {
+        let listener = TcpListener::bind((interface, 0))?;
+        listener.set_nonblocking(true)?;
+        let rtsp_port = listener.local_addr()?.port();
+
+        let mut random = [0u8; 12];
+        fill_random(&mut random);
+        // Sixteen printable characters, as Sunshine sends them in a header.
+        let ping = hex(&random[..8]);
+        let mut ping_bytes = [0u8; 16];
+        ping_bytes.copy_from_slice(ping.as_bytes());
+
+        let inner = Arc::new(Inner {
+            launch,
+            version: APP_VERSION.parse().expect("the stand-in host's version is well formed"),
+            video: UdpSocket::bind((interface, 0))?,
+            audio: UdpSocket::bind((interface, 0))?,
+            control: UdpSocket::bind((interface, 0))?,
+            ping: ping_bytes,
+            connect_data: u32::from_le_bytes([random[8], random[9], random[10], random[11]]) | 1,
+            rtsp_sequence: AtomicU32::new(0),
+            stop: AtomicBool::new(false),
+            terminate: AtomicBool::new(false),
+            wants_keyframe: AtomicBool::new(false),
+            negotiated: Mutex::new(None),
+            media: Mutex::new(Vec::new()),
+            connected: AtomicBool::new(false),
+            client_left: AtomicBool::new(false),
+            frames_sent: AtomicU64::new(0),
+            keyframes_sent: AtomicU64::new(0),
+            keyframes_requested: AtomicU64::new(0),
+            audio_packets_sent: AtomicU64::new(0),
+        });
+
+        let rtsp = thread::spawn({
+            let inner = Arc::clone(&inner);
+            move || serve_rtsp(&inner, &listener)
+        });
+        Ok(Self { inner, rtsp_port, rtsp: Some(rtsp) })
+    }
+
+    /// The address a client finishes the handshake on, as `/launch` reports it.
+    pub fn url(&self, address: IpAddr) -> String {
+        let scheme = if self.inner.launch.encrypt_rtsp { "rtspenc" } else { "rtsp" };
+        format!("{scheme}://{}", SocketAddr::new(address, self.rtsp_port))
+    }
+
+    /// Whether a client is, or may still become, connected.
+    pub fn alive(&self) -> bool {
+        !self.inner.client_left.load(Ordering::SeqCst) && !self.inner.stop.load(Ordering::SeqCst)
+    }
+
+    pub fn report(&self) -> StreamReport {
+        let inner = &self.inner;
+        let negotiated = *lock(&inner.negotiated);
+        let encryption = negotiated.map_or(0, |negotiated| negotiated.encryption);
+        StreamReport {
+            connected: inner.connected.load(Ordering::SeqCst),
+            client_left: inner.client_left.load(Ordering::SeqCst),
+            width: negotiated.map_or(0, |negotiated| negotiated.width),
+            height: negotiated.map_or(0, |negotiated| negotiated.height),
+            fps: negotiated.map_or(0, |negotiated| negotiated.fps),
+            video_encrypted: encryption & ENCRYPT_VIDEO != 0,
+            audio_encrypted: encryption & ENCRYPT_AUDIO != 0,
+            control_encrypted: encryption & ENCRYPT_CONTROL != 0,
+            frames_sent: inner.frames_sent.load(Ordering::SeqCst),
+            keyframes_sent: inner.keyframes_sent.load(Ordering::SeqCst),
+            keyframes_requested: inner.keyframes_requested.load(Ordering::SeqCst),
+            audio_packets_sent: inner.audio_packets_sent.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Ends the stream. With `tell_client`, the host says goodbye first, as it
+    /// does when the app closes or its owner stops the stream.
+    pub fn stop(&mut self, tell_client: bool) {
+        self.inner.terminate.store(tell_client, Ordering::SeqCst);
+        self.inner.stop.store(true, Ordering::SeqCst);
+        if let Some(rtsp) = self.rtsp.take() {
+            let _ = rtsp.join();
+        }
+        let media: Vec<_> = lock(&self.inner.media).drain(..).collect();
+        for thread in media {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.stop(false);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RTSP
+// ---------------------------------------------------------------------------
+
+/// One RTSP request, decrypted and split.
+struct RtspRequest {
+    method: String,
+    target: String,
+    sequence: String,
+    payload: String,
+}
+
+/// Answers RTSP requests until the session stops. Like Sunshine, one request
+/// per connection: the client reads the answer until the connection closes.
+fn serve_rtsp(inner: &Arc<Inner>, listener: &TcpListener) {
+    while !inner.stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = stream.set_nodelay(true);
+                if let Some(request) = read_rtsp(inner, &mut stream) {
+                    let response = answer_rtsp(inner, &request);
+                    write_rtsp(inner, &mut stream, &response);
+                }
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            Err(_) => thread::sleep(Duration::from_millis(2)),
+        }
+    }
+}
+
+fn read_rtsp(inner: &Inner, stream: &mut TcpStream) -> Option<RtspRequest> {
+    let text = if inner.launch.encrypt_rtsp {
+        let mut header = [0u8; RTSP_HEADER];
+        stream.read_exact(&mut header).ok()?;
+        let type_and_length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+        let sequence = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let length = (type_and_length & !RTSP_ENCRYPTED) as usize;
+        if type_and_length & RTSP_ENCRYPTED == 0 || length > RTSP_LIMIT {
+            return None;
+        }
+        let mut encrypted = vec![0u8; length];
+        stream.read_exact(&mut encrypted).ok()?;
+        let mut plain = vec![0u8; length];
+        RustCryptoBackend
+            .decrypt_aes_gcm(
+                &inner.launch.key,
+                &rtsp_iv(sequence, b'C'),
+                &encrypted,
+                &header[8..24],
+                &mut plain,
+            )
+            .ok()?;
+        String::from_utf8(plain).ok()?
+    } else {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position + 4;
+            }
+            let read = stream.read(&mut chunk).ok()?;
+            if read == 0 || buffer.len() > RTSP_LIMIT {
+                return None;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        };
+        let head = String::from_utf8_lossy(&buffer[..head_end]).into_owned();
+        let length = header_of(&head, "Content-length")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(RTSP_LIMIT);
+        while buffer.len() < head_end + length {
+            let read = stream.read(&mut chunk).ok()?;
+            if read == 0 {
+                return None;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        String::from_utf8(buffer).ok()?
+    };
+
+    let (head, payload) = text.split_once("\r\n\r\n").unwrap_or((text.as_str(), ""));
+    let mut words = head.lines().next()?.split(' ');
+    Some(RtspRequest {
+        method: words.next()?.to_owned(),
+        target: words.next()?.to_owned(),
+        sequence: header_of(head, "CSeq")?.to_owned(),
+        payload: payload.to_owned(),
+    })
+}
+
+/// The value of header `name` in the head of an RTSP message.
+fn header_of<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim().eq_ignore_ascii_case(name).then_some(value.trim())
+    })
+}
+
+/// The answer to one request: status line, extra headers, payload.
+struct RtspResponse {
+    status: &'static str,
+    sequence: String,
+    headers: Vec<(&'static str, String)>,
+    payload: String,
+}
+
+fn answer_rtsp(inner: &Arc<Inner>, request: &RtspRequest) -> RtspResponse {
+    let mut response = RtspResponse {
+        status: "200 OK",
+        sequence: request.sequence.clone(),
+        headers: Vec::new(),
+        payload: String::new(),
+    };
+
+    match request.method.as_str() {
+        "OPTIONS" | "PLAY" => {}
+        "DESCRIBE" => {
+            let supported = ENCRYPT_CONTROL | ENCRYPT_VIDEO | ENCRYPT_AUDIO;
+            // Stereo twice (normal and high quality), then the surround
+            // layouts, written the way Sunshine writes them.
+            response.payload = format!(
+                "a=x-ss-general.featureFlags:0\n\
+                 a=x-ss-general.encryptionSupported:{supported}\n\
+                 a=x-ss-general.encryptionRequested:{ENCRYPT_CONTROL}\n\
+                 a=fmtp:97 surround-params=21101\n\
+                 a=fmtp:97 surround-params=21101\n\
+                 a=fmtp:97 surround-params=642041235\n\
+                 a=fmtp:97 surround-params=660012345\n\
+                 a=fmtp:97 surround-params=85304123567\n\
+                 a=fmtp:97 surround-params=88001234567\n"
+            );
+        }
+        "SETUP" => {
+            // The target looks like `streamid=video/0/0`.
+            let kind = request
+                .target
+                .split_once('=')
+                .map_or("", |(_, rest)| rest.split('/').next().unwrap_or(""));
+            let (socket, extra) = match kind {
+                "audio" => (&inner.audio, ("X-SS-Ping-Payload", ascii(&inner.ping))),
+                "video" => (&inner.video, ("X-SS-Ping-Payload", ascii(&inner.ping))),
+                "control" => {
+                    (&inner.control, ("X-SS-Connect-Data", inner.connect_data.to_string()))
+                }
+                _ => {
+                    response.status = "404 NOT FOUND";
+                    return response;
+                }
+            };
+            let port = socket.local_addr().map_or(0, |address| address.port());
+            response.headers.push(("Session", "DEADBEEFCAFE;timeout = 90".to_owned()));
+            response.headers.push(("Transport", format!("server_port={port}")));
+            response.headers.push(extra);
+        }
+        "ANNOUNCE" => match parse_announce(&request.payload) {
+            Some(negotiated) => start_media(inner, negotiated),
+            None => response.status = "400 BAD REQUEST",
+        },
+        _ => response.status = "404 NOT FOUND",
+    }
+    response
+}
+
+/// Reads the settings a client announces. Returns `None` when one the stream
+/// cannot start without is missing.
+fn parse_announce(payload: &str) -> Option<Negotiated> {
+    let attributes: HashMap<&str, &str> = payload
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("a=")?.split_once(':'))
+        .map(|(key, value)| (key, value.trim()))
+        .collect();
+    let number = |key: &str| attributes.get(key).and_then(|value| value.parse::<u32>().ok());
+
+    Some(Negotiated {
+        width: number("x-nv-video[0].clientViewportWd")?,
+        height: number("x-nv-video[0].clientViewportHt")?,
+        fps: number("x-nv-video[0].maxFPS")?.clamp(1, 240),
+        packet_size: number("x-nv-video[0].packetSize")? as usize,
+        bitrate_kbps: number("x-ml-video.configuredBitrateKbps")
+            .or_else(|| number("x-nv-vqos[0].bw.maximumBitrateKbps"))
+            .unwrap_or(10_000),
+        min_fec_packets: number("x-nv-vqos[0].fec.minRequiredFecPackets").unwrap_or(2) as usize,
+        encryption: number("x-ss-general.encryptionEnabled").unwrap_or(0),
+    })
+}
+
+fn write_rtsp(inner: &Inner, stream: &mut TcpStream, response: &RtspResponse) {
+    let mut message = format!("RTSP/1.0 {}\r\nCSeq: {}\r\n", response.status, response.sequence);
+    for (name, value) in &response.headers {
+        message.push_str(&format!("{name}: {value}\r\n"));
+    }
+    message.push_str("\r\n");
+    message.push_str(&response.payload);
+
+    let bytes = if inner.launch.encrypt_rtsp {
+        let sequence = inner.rtsp_sequence.fetch_add(1, Ordering::SeqCst);
+        let mut encrypted = vec![0u8; message.len()];
+        let mut tag = [0u8; 16];
+        if RustCryptoBackend
+            .encrypt_aes_gcm(
+                &inner.launch.key,
+                &rtsp_iv(sequence, b'H'),
+                message.as_bytes(),
+                &mut encrypted,
+                &mut tag,
+            )
+            .is_err()
+        {
+            return;
+        }
+        let mut framed = Vec::with_capacity(RTSP_HEADER + encrypted.len());
+        framed.extend_from_slice(&(message.len() as u32 | RTSP_ENCRYPTED).to_be_bytes());
+        framed.extend_from_slice(&sequence.to_be_bytes());
+        framed.extend_from_slice(&tag);
+        framed.extend_from_slice(&encrypted);
+        framed
+    } else {
+        message.into_bytes()
+    };
+    let _ = stream.write_all(&bytes);
+    let _ = stream.flush();
+}
+
+/// The nonce of an RTSP message: its sequence number, and who wrote it
+/// (`C` for the client, `H` for the host).
+fn rtsp_iv(sequence: u32, origin: u8) -> [u8; 12] {
+    let mut iv = [0u8; 12];
+    iv[..4].copy_from_slice(&sequence.to_le_bytes());
+    iv[10] = origin;
+    iv[11] = b'R';
+    iv
+}
+
+// ---------------------------------------------------------------------------
+// Control, video, audio
+// ---------------------------------------------------------------------------
+
+/// Starts the three services once the client has announced its settings.
+fn start_media(inner: &Arc<Inner>, negotiated: Negotiated) {
+    {
+        let mut slot = lock(&inner.negotiated);
+        if slot.is_some() {
+            return;
+        }
+        *slot = Some(negotiated);
+    }
+    let mut media = lock(&inner.media);
+    for service in [serve_control, serve_video, serve_audio] {
+        let inner = Arc::clone(inner);
+        media.push(thread::spawn(move || service(&inner, negotiated)));
+    }
+}
+
+/// The control connection: where the client asks for keyframes and sends
+/// input, and where the host says the stream is over.
+fn serve_control(inner: &Inner, negotiated: Negotiated) {
+    let clock = Instant::now();
+    let now = || ProtocolInstant::from_std(clock);
+    let encrypted = negotiated.encryption & ENCRYPT_CONTROL != 0;
+    let (Ok(mut host), Some(packets)) = (
+        ControlHost::new(
+            now(),
+            ControlHostConfig { peer_count: 1, peer_channel_count: EnetChannel::CHANNEL_COUNT },
+            Arc::new(RustCryptoBackend),
+        ),
+        ControlPacketConfig::new(inner.version, encrypted),
+    ) else {
+        return;
+    };
+    let socket = &inner.control;
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(5)));
+    let mut buffer = vec![0u8; 4096];
+    let mut peer: Option<ControlPeerId> = None;
+    // Once the host has said goodbye, how long it still waits for the
+    // goodbye to arrive.
+    let mut leaving: Option<Instant> = None;
+
+    loop {
+        if let Ok((length, source)) = socket.recv_from(&mut buffer) {
+            let _ = host.handle_receive(now(), Receive { source, data: &buffer[..length] });
+        }
+        let _ = host.handle_timeout(now());
+
+        while let Some(event) = host.poll_event() {
+            match event {
+                ControlHostEvent::Connected { id, sunshine_connect_data } => {
+                    // A client that does not know this session's secret is
+                    // not the one that launched it.
+                    if sunshine_connect_data != Some(inner.connect_data) {
+                        let _ = host.disconnect_now(id, 0);
+                        continue;
+                    }
+                    let config = ControlPeerConfig {
+                        role: ControlPeerRole::Server,
+                        encryption: encrypted
+                            .then_some((ControlEncryptionMethod::Sunshine, inner.launch.key)),
+                        packets: packets.clone(),
+                    };
+                    if host.configure_peer(id, config).is_ok() {
+                        peer = Some(id);
+                        inner.connected.store(true, Ordering::SeqCst);
+                    }
+                }
+                ControlHostEvent::Receive { packet, .. } => {
+                    if matches!(
+                        packet,
+                        ControlPacket::RequestIdr | ControlPacket::InvalidateReferenceFrames { .. }
+                    ) {
+                        inner.wants_keyframe.store(true, Ordering::SeqCst);
+                        inner.keyframes_requested.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                ControlHostEvent::Disconnected { id } => {
+                    if peer == Some(id) {
+                        inner.client_left.store(true, Ordering::SeqCst);
+                        inner.stop.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+
+        if inner.stop.load(Ordering::SeqCst) && leaving.is_none() {
+            if let (true, Some(id)) = (inner.terminate.load(Ordering::SeqCst), peer) {
+                let packet =
+                    ControlPacket::ServerTermination { reason: TerminationReason::GRACEFUL };
+                let (channel, kind) = packet.channel(inner.version);
+                let _ = host.send(id, channel, kind, packet);
+                let _ = host.disconnect(id, 0);
+            }
+            leaving = Some(Instant::now());
+        }
+
+        while let Some(transmit) = host.poll_transmit() {
+            let _ = socket.send_to(&transmit.data, transmit.destination);
+        }
+
+        if leaving.is_some_and(|since| since.elapsed() > Duration::from_millis(150)) {
+            break;
+        }
+    }
+}
+
+/// Waits for the client to show itself on `socket` and returns its address.
+///
+/// A client cannot be sent anything until it has sent a ping: the ping opens
+/// the way back through routers and firewalls, and tells the host the port.
+fn wait_for_client(inner: &Inner, socket: &UdpSocket) -> Option<SocketAddr> {
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(20)));
+    let mut buffer = [0u8; 64];
+    while !inner.stop.load(Ordering::SeqCst) {
+        if let Ok((length, source)) = socket.recv_from(&mut buffer)
+            && length >= inner.ping.len()
+            && buffer[..inner.ping.len()] == inner.ping
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+/// Empties the socket of the pings the client keeps sending.
+fn drain(socket: &UdpSocket) {
+    let mut buffer = [0u8; 64];
+    while socket.recv_from(&mut buffer).is_ok() {}
+}
+
+fn serve_video(inner: &Inner, negotiated: Negotiated) {
+    let socket = &inner.video;
+    let Some(client) = wait_for_client(inner, socket) else { return };
+    let _ = socket.set_nonblocking(true);
+
+    let encrypted = negotiated.encryption & ENCRYPT_VIDEO != 0;
+    let mut payloader = VideoPayloader::new(
+        VideoPayloaderConfig {
+            server_version: inner.version,
+            // The client announces the payload size. The packet adds the RTP
+            // header and, when encrypted, the encryption header.
+            packet_size: negotiated.packet_size + 16 + if encrypted { 32 } else { 0 },
+            max_data_shards_per_block: 90,
+            fec: Some(VideoPayloaderFecConfig {
+                min_required_fec_packets: negotiated.min_fec_packets,
+                fec_percentage: 20,
+            }),
+            encryption: encrypted.then_some((inner.launch.key, inner.launch.key_id)),
+        },
+        Arc::new(RustCryptoBackend),
+    );
+    let Some(mut card) =
+        TestCard::new(negotiated.width, negotiated.height, negotiated.fps, negotiated.bitrate_kbps)
+    else {
+        return;
+    };
+
+    let interval = Duration::from_secs_f64(1.0 / f64::from(negotiated.fps));
+    let mut due = Instant::now();
+    let mut number: u64 = 0;
+    while !inner.stop.load(Ordering::SeqCst) {
+        drain(socket);
+        let keyframe = inner.wants_keyframe.swap(false, Ordering::SeqCst);
+        if let Some(frame) = card.next(keyframe) {
+            let kind = if frame.keyframe { ServerFrameType::Idr } else { ServerFrameType::PFrame };
+            // Video time counts in ninetieths of a millisecond.
+            let timestamp = (number * 90_000 / u64::from(negotiated.fps)) as u32;
+            if payloader.push_frame(timestamp, None, kind, frame.data).is_ok() {
+                while let Some(packet) = payloader.poll_packet() {
+                    send(socket, &packet, client);
+                }
+                inner.frames_sent.fetch_add(1, Ordering::SeqCst);
+                if frame.keyframe {
+                    inner.keyframes_sent.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+        number += 1;
+        due = pace(due, interval);
+    }
+}
+
+fn serve_audio(inner: &Inner, negotiated: Negotiated) {
+    let socket = &inner.audio;
+    let Some(client) = wait_for_client(inner, socket) else { return };
+    let _ = socket.set_nonblocking(true);
+
+    let samples = (AUDIO_RATE as usize * AUDIO_PACKET.as_millis() as usize) / 1000;
+    let frame_bytes = AUDIO_BITRATE as usize / 8 * AUDIO_PACKET.as_millis() as usize / 1000;
+    let Some(mut melody) = Melody::new(AUDIO_RATE, AUDIO_BITRATE, samples) else { return };
+    let encrypted = negotiated.encryption & ENCRYPT_AUDIO != 0;
+    let mut payloader = AudioPayloader::new(
+        AudioPayloaderConfig {
+            // A real host always adds recovery packets. moonlight-common's
+            // payloader sizes them wrongly for encrypted sound (at commit
+            // 5a3aa1f) and panics, so they are left out in that case. A
+            // client only needs them when packets are lost.
+            fec: !encrypted,
+            frame_len: frame_bytes,
+            encryption: encrypted.then_some((inner.launch.key, inner.launch.key_id)),
+        },
+        Arc::new(RustCryptoBackend),
+    );
+
+    let mut due = Instant::now();
+    let mut number: u32 = 0;
+    while !inner.stop.load(Ordering::SeqCst) {
+        drain(socket);
+        if let Some(packet) = melody.next()
+            && packet.len() == frame_bytes
+            && payloader.push_frame(AUDIO_PACKET * number, packet).is_ok()
+        {
+            while let Some(packet) = payloader.poll_packet() {
+                send(socket, &packet, client);
+            }
+            inner.audio_packets_sent.fetch_add(1, Ordering::SeqCst);
+        }
+        number = number.wrapping_add(1);
+        due = pace(due, AUDIO_PACKET);
+    }
+}
+
+/// Sends one packet, waiting a little when the system's buffer is full.
+fn send(socket: &UdpSocket, packet: &[u8], client: SocketAddr) {
+    for _ in 0..50 {
+        match socket.send_to(packet, client) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_micros(200));
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Sleeps until `due + interval` and returns that instant. After a stall it
+/// starts counting again from now instead of rushing to catch up.
+fn pace(due: Instant, interval: Duration) -> Instant {
+    let next = due + interval;
+    let now = Instant::now();
+    if next > now {
+        thread::sleep(next - now);
+        next
+    } else if now - next > interval * 4 {
+        now
+    } else {
+        next
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn fill_random(bytes: &mut [u8]) {
+    use moonlight_common::http::pair::PairingCryptoBackend;
+    RustCryptoBackend.random_bytes(bytes).expect("the system provides random bytes");
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+}
+
+fn ascii(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}

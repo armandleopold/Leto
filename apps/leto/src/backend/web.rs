@@ -25,4 +25,12 @@ impl Backend {
     pub fn events(&self) -> Vec<Event> {
         Vec::new()
     }
+
+    pub fn take_picture(&self) -> Option<egui::ColorImage> {
+        None
+    }
+
+    pub fn sound_problem(&self) -> Option<String> {
+        None
+    }
 }

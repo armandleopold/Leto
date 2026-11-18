@@ -69,6 +69,8 @@ pub struct HostSummary {
     pub reachability: Reachability,
     /// An app is running on the host and a stream can be resumed.
     pub busy: bool,
+    /// The app running on the host, when the host says which.
+    pub running_app: Option<u32>,
 }
 
 /// One app a host offers to stream.

@@ -19,8 +19,10 @@ Sunshine hosts.
 
 ## Status
 
-Very early. The app finds PCs that run Apollo or Sunshine, pairs with them and
-lists their apps. Streaming does not work yet.
+Very early. The desktop app finds PCs that run Apollo or Sunshine, pairs with
+them, lists their apps and streams one: you see its picture and hear its
+sound. Keyboard, mouse and gamepad are not sent yet, so it is for watching
+only.
 
 | Step | State |
 |---|---|
@@ -41,7 +43,9 @@ lists their apps. Streaming does not work yet.
 
 ## Try it
 
-You need [Rust](https://rustup.rs). The right version installs itself.
+You need [Rust](https://rustup.rs) and a C++ compiler (the Visual Studio
+Build Tools on Windows). The right Rust version installs itself. Installing
+[NASM](https://www.nasm.us) too makes video decoding several times faster.
 
 ```sh
 cargo run -p leto                 # the app
@@ -49,8 +53,8 @@ cargo run -p leto-cli -- pcs      # the command line: the PCs on your network
 cargo xtask web                   # the web client, into dist/web
 ```
 
-The app looks for your PC on the network. Choose it, then type the PIN the app
-shows in Apollo or Sunshine on the PC.
+The app looks for your PC on the network. Choose it, type the PIN the app
+shows in Apollo or Sunshine on the PC, then choose an app to stream it.
 
 ## Documentation
 

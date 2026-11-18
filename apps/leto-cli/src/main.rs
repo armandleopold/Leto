@@ -5,11 +5,12 @@
 //! prints plain text by default and JSON with `--json`.
 
 mod pcs;
+mod stream;
 
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use leto_client::{Client, Pin};
+use leto_client::{Client, Pin, StreamSettings};
 use leto_core::{brand, platform::Platform};
 use leto_protocol::ports::{DEFAULT_BASE_PORT, PortMap, Service, Transport};
 use serde::Serialize;
@@ -68,6 +69,33 @@ enum Command {
         /// Name, address or id of the PC.
         pc: String,
     },
+    /// Stream an app for a moment and report what arrived. Shows no picture.
+    Play {
+        /// Name, address or id of the PC.
+        pc: String,
+        /// Title or id of the app.
+        app: String,
+        /// Seconds to stream for.
+        #[arg(long, default_value_t = 5, value_name = "SECONDS")]
+        seconds: u64,
+        /// Width of the picture to ask for.
+        #[arg(long, default_value_t = StreamSettings::default().width)]
+        width: u32,
+        /// Height of the picture to ask for.
+        #[arg(long, default_value_t = StreamSettings::default().height)]
+        height: u32,
+        /// Pictures per second to ask for.
+        #[arg(long, default_value_t = StreamSettings::default().fps)]
+        fps: u32,
+        /// Video bit rate to ask for, in kilobits per second.
+        #[arg(long, default_value_t = StreamSettings::default().bitrate_kbps, value_name = "KBPS")]
+        bitrate: u32,
+    },
+    /// Close the app running on a PC.
+    Quit {
+        /// Name, address or id of the PC.
+        pc: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -111,6 +139,16 @@ fn run(cli: &Cli) -> Result<String, String> {
         Command::Pair { pc, pin } => pcs::pair(&client(cli)?, pc, *pin, json),
         Command::Apps { pc } => pcs::apps(&client(cli)?, pc, json),
         Command::Forget { pc } => pcs::forget(&client(cli)?, pc, json),
+        Command::Play { pc, app, seconds, width, height, fps, bitrate } => {
+            let settings = StreamSettings {
+                width: *width,
+                height: *height,
+                fps: *fps,
+                bitrate_kbps: *bitrate,
+            };
+            stream::play(&client(cli)?, pc, app, *seconds, settings, json)
+        }
+        Command::Quit { pc } => stream::quit(&client(cli)?, pc, json),
     }
 }
 

@@ -88,7 +88,7 @@ pub fn forget(client: &Client, pc: &str, json: bool) -> Result<String, String> {
 /// Finds the PC a person means by a name, an address or an id: among the
 /// saved PCs first, then on the network, then, with `or_add`, by taking the
 /// text as the address of a PC to add.
-fn find(client: &Client, wanted: &str, or_add: bool) -> Result<HostSummary, String> {
+pub(crate) fn find(client: &Client, wanted: &str, or_add: bool) -> Result<HostSummary, String> {
     if let Some(found) = pick(&client.hosts(), wanted)? {
         return Ok(found);
     }

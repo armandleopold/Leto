@@ -2,7 +2,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -10,10 +10,15 @@ use std::{
     time::Duration,
 };
 
-use leto_client::{Client, Error, HostId};
+#[cfg(test)]
+use leto_client::Permission;
+use leto_client::{Client, Ended, Error, HostId, Session, StreamSettings};
 
-use super::Unavailable;
-use crate::state::{AppsProblem, Event, Request};
+use super::{
+    Unavailable,
+    stream::{Outlet, Screen, Sound, sentence},
+};
+use crate::state::{AppsProblem, Event, Request, StreamEnd};
 
 /// How long a search listens for PCs announcing themselves.
 const LISTEN_TIME: Duration = Duration::from_secs(2);
@@ -29,6 +34,17 @@ pub struct Backend {
     /// Counts the app lists asked for. A worker loading the covers of a list
     /// nobody looks at any more notices and stops.
     apps_asked: Arc<AtomicU64>,
+    watching: Arc<Mutex<Watching>>,
+}
+
+/// The stream the person is watching, or waiting for.
+#[derive(Default)]
+struct Watching {
+    /// The attempt on screen. A stream that connects for another one is
+    /// stopped at once: the person has left in the meantime.
+    wanted: Option<u64>,
+    session: Option<Session>,
+    outlet: Arc<Outlet>,
 }
 
 /// Sends events to the interface and wakes it up.
@@ -58,6 +74,7 @@ impl Backend {
             reporter: Reporter { events: sender, ctx: ctx.clone() },
             events,
             apps_asked: Arc::new(AtomicU64::new(0)),
+            watching: Arc::default(),
         }
     }
 
@@ -71,14 +88,44 @@ impl Backend {
         self.events.try_iter().collect()
     }
 
+    /// The latest picture of the stream that nobody has shown yet.
+    pub fn take_picture(&self) -> Option<egui::ColorImage> {
+        let outlet = Arc::clone(&lock(&self.watching).outlet);
+        outlet.take_picture()
+    }
+
+    /// Why the stream has no sound, when it has none.
+    pub fn sound_problem(&self) -> Option<String> {
+        let outlet = Arc::clone(&lock(&self.watching).outlet);
+        outlet.sound_problem()
+    }
+
     /// Starts `request` on a worker thread. The outcome arrives as events.
     pub fn send(&self, request: Request) {
         let Ok(client) = &self.client else { return };
         let client = Arc::clone(client);
         let report = self.reporter.clone();
         let apps_asked = Arc::clone(&self.apps_asked);
-        if matches!(request, Request::Apps(_)) {
-            apps_asked.fetch_add(1, Ordering::SeqCst);
+        let watching = Arc::clone(&self.watching);
+        // The stream to stop, for `Request::Leave`.
+        let mut left = None;
+        match &request {
+            Request::Apps(_) => {
+                apps_asked.fetch_add(1, Ordering::SeqCst);
+            }
+            // Which stream is wanted changes at once, not when a worker gets
+            // to it: the next request may already be about another one.
+            Request::Play { attempt, .. } => {
+                let mut watching = lock(&watching);
+                watching.wanted = Some(*attempt);
+                watching.outlet = Arc::default();
+            }
+            Request::Leave => {
+                let mut watching = lock(&watching);
+                watching.wanted = None;
+                left = watching.session.take();
+            }
+            _ => {}
         }
         let name = format!("leto: {request:?}");
         let spawned = thread::Builder::new().name(name).spawn(move || match request {
@@ -95,6 +142,21 @@ impl Backend {
                     report.send(Event::Notice(explain(&error)));
                 }
                 report.send(Event::Hosts(client.hosts()));
+            }
+            Request::Play { host, app, attempt } => {
+                play(&client, &report, &watching, &host, app, attempt);
+            }
+            Request::Leave => {
+                // Winding a stream down takes a moment: not on the
+                // interface's thread.
+                if let Some(session) = left {
+                    session.stop();
+                }
+            }
+            Request::Quit(host) => {
+                let result = client.quit_app(&host).map(|_| ()).map_err(|error| explain(&error));
+                report.send(Event::Hosts(client.hosts()));
+                report.send(Event::QuitEnded { host, result });
             }
         });
         if let Err(error) = spawned {
@@ -165,6 +227,60 @@ fn apps(client: &Client, report: &Reporter, host: &HostId, apps_asked: &AtomicU6
     }
 }
 
+fn play(
+    client: &Arc<Client>,
+    report: &Reporter,
+    watching: &Mutex<Watching>,
+    host: &HostId,
+    app: u32,
+    attempt: u64,
+) {
+    let outlet = Arc::clone(&lock(watching).outlet);
+    let started = Screen::new(&outlet, &report.ctx)
+        .map_err(|error| sentence(&error.to_string()))
+        .and_then(|screen| {
+            let ended = {
+                let (client, report) = (Arc::clone(client), report.clone());
+                move |reason| {
+                    let why = match reason {
+                        Ended::ByHost => StreamEnd::AppClosed,
+                        Ended::ConnectionLost => StreamEnd::ConnectionLost,
+                        Ended::HostError(code) => StreamEnd::HostError(code),
+                    };
+                    report.send(Event::Hosts(client.hosts()));
+                    report.send(Event::StreamEnded { attempt, why });
+                }
+            };
+            let settings = StreamSettings::default();
+            client
+                .play(host, app, settings, screen, Sound::new(&outlet), ended)
+                .map_err(|error| explain(&error))
+        });
+    // The PC is running the app now, or still runs another one.
+    report.send(Event::Hosts(client.hosts()));
+
+    match started {
+        Ok(session) => {
+            let mut watching = lock(watching);
+            if watching.wanted == Some(attempt) {
+                watching.session = Some(session);
+                drop(watching);
+                report.send(Event::Playing { attempt });
+            } else {
+                // The person left while the PC was starting the app.
+                drop(watching);
+                session.stop();
+            }
+        }
+        Err(message) => report.send(Event::PlayFailed { attempt, message }),
+    }
+}
+
+fn lock(watching: &Mutex<Watching>) -> MutexGuard<'_, Watching> {
+    // What is being watched stays true even if a thread panicked meanwhile.
+    watching.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Turns the bytes of an image file into pixels, scaled down for the grid.
 fn decode_cover(bytes: &[u8]) -> Option<egui::ColorImage> {
     let image = image::load_from_memory(bytes).ok()?.into_rgba8();
@@ -198,13 +314,17 @@ fn explain(error: &Error) -> String {
             "This PC no longer knows this device. Pair again to continue.".to_owned()
         }
         Error::UnknownHost => "Leto no longer knows this PC.".to_owned(),
-        Error::Storage(error) => format!("Leto could not read or write its settings: {error}"),
-        Error::Discovery(_) | Error::Protocol(_) => {
-            let text = error.to_string();
-            let mut letters = text.chars();
-            let first = letters.next().map(|letter| letter.to_uppercase().to_string());
-            format!("{}{}.", first.unwrap_or_default(), letters.as_str())
+        Error::OtherAppRunning => {
+            "Another app is running on this PC. Close it first, then start this one.".to_owned()
         }
+        Error::NotAllowed(permission) => format!(
+            "This PC does not let this device {permission}. On the PC, open Apollo's PIN page \
+             and, under Device Management, allow \"{}\" for this device.",
+            permission.apollo_name()
+        ),
+        Error::Unsupported(reason) => format!("This PC cannot stream to Leto yet: {reason}."),
+        Error::Storage(error) => format!("Leto could not read or write its settings: {error}"),
+        Error::Discovery(_) | Error::Protocol(_) => sentence(&error.to_string()),
     }
 }
 
@@ -223,6 +343,9 @@ mod tests {
             Error::PairingFailed,
             Error::NotPaired,
             Error::UnknownHost,
+            Error::OtherAppRunning,
+            Error::NotAllowed(Permission::LaunchApps),
+            Error::Unsupported("the host is too old".into()),
             Error::Discovery("no network interface".into()),
             Error::Protocol("unexpected answer".into()),
         ];
