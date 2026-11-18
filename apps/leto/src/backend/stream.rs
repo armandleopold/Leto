@@ -6,7 +6,9 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use leto_client::{AudioSetup, AudioSink, Decoded, VideoFrame, VideoSetup, VideoSink};
+use leto_client::{
+    AudioSetup, AudioSink, Decoded, VideoFrame, VideoSetup, VideoSink, service::sentence,
+};
 use leto_media::{Picture, SoundDecoder, Speaker, VideoDecoder};
 
 /// What a stream leaves for the interface to pick up.
@@ -123,13 +125,6 @@ impl AudioSink for Sound {
     }
 }
 
-/// Makes a sentence of an error message: a capital first, a full stop last.
-pub fn sentence(text: &str) -> String {
-    let mut letters = text.chars();
-    let first = letters.next().map(|letter| letter.to_uppercase().to_string());
-    format!("{}{}.", first.unwrap_or_default(), letters.as_str().trim_end_matches('.'))
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -142,12 +137,6 @@ mod tests {
     use leto_testhost::FakeHost;
 
     use super::*;
-
-    #[test]
-    fn sentences_get_a_capital_and_one_full_stop() {
-        assert_eq!(sentence("the PC did not answer"), "The PC did not answer.");
-        assert_eq!(sentence("It may have been disconnected."), "It may have been disconnected.");
-    }
 
     /// The whole way of a picture: drawn and encoded by the stand-in PC,
     /// encrypted, sent with recovery data, put together again, decoded and

@@ -71,8 +71,10 @@ impl eframe::App for LetoApp {
                     self.player.picture(ui.ctx(), picture);
                 }
                 let sound_problem = self.backend.sound_problem();
+                // The stream screen paints its own ground: on the web the
+                // pictures show through the window.
                 let inputs = egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(egui::Color32::BLACK))
+                    .frame(egui::Frame::new())
                     .show(ui, |ui| {
                         let problem = sound_problem.as_deref();
                         ui::stream::show(ui, &mut self.state, &view, &mut self.player, problem)
@@ -81,9 +83,11 @@ impl eframe::App for LetoApp {
                 // Before anything else is asked of the backend: what was
                 // held down is let go of before the stream is left.
                 self.backend.input(inputs);
+                self.backend.place_picture(self.player.hole());
             }
             (unavailable, screen) => {
                 self.player.clear(ui.ctx());
+                self.backend.place_picture(None);
                 let ground = egui::Frame::new().fill(theme::GROUND);
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);

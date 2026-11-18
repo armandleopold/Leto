@@ -6,12 +6,15 @@
 //! and Apollo hosts as they are. All calls block; a shell with an interface
 //! runs them on worker threads.
 //!
-//! A stream arrives still encoded. See [`session`] for where it goes.
+//! A stream arrives still encoded. See [`session`] for where it goes. A
+//! shell that would rather ask and be told than call and wait uses
+//! [`service`].
 //!
 //! It does not compile for the web: browsers have no sockets. The web client
 //! reaches hosts through a bridge instead.
 
 pub mod discovery;
+pub mod service;
 pub mod session;
 pub mod store;
 mod transport;
@@ -26,7 +29,7 @@ use std::{
 };
 
 pub use leto_core::{
-    input,
+    engine, input,
     model::{
         AppSummary, HostId, HostKind, HostSummary, Pin, Reachability, join_address, parse_address,
     },
@@ -42,6 +45,7 @@ use moonlight_common::{
     },
     stream::{AesIv, AesKey, std::MoonlightStream},
 };
+pub use service::{Service, Shell};
 pub use session::{
     AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings, Tally,
     VideoFrame, VideoSetup, VideoSink,

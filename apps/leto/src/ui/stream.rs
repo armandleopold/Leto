@@ -12,6 +12,7 @@ use leto_core::input::Input;
 
 use super::{icons, widgets};
 use crate::{
+    backend::Picture,
     input::{Controls, Shortcut},
     state::{State, StreamView},
     theme,
@@ -45,10 +46,31 @@ struct KeyStroke {
     down: bool,
 }
 
+/// What the pictures of the stream are shown on.
+enum Surface {
+    /// The window draws them.
+    Texture(TextureHandle),
+    /// The backend shows them behind the window, this large: the window
+    /// leaves a hole.
+    Behind([usize; 2]),
+}
+
+impl Surface {
+    /// Width and height of the pictures.
+    fn size(&self) -> [usize; 2] {
+        match self {
+            Self::Texture(texture) => texture.size(),
+            Self::Behind(size) => *size,
+        }
+    }
+}
+
 /// The stream on screen: its picture, and what the person does to it.
 #[derive(Default)]
 pub struct Player {
-    texture: Option<TextureHandle>,
+    surface: Option<Surface>,
+    /// Where the window lets pictures shown behind it through.
+    hole: Option<Rect>,
     /// The stream screen made the window fill the screen, so leaving the
     /// stream gives the window back.
     filled_screen: bool,
@@ -68,13 +90,23 @@ pub struct Player {
 
 impl Player {
     /// Shows `picture` from now on.
-    pub fn picture(&mut self, ctx: &egui::Context, picture: egui::ColorImage) {
-        match &mut self.texture {
-            Some(texture) => texture.set(picture, TextureOptions::LINEAR),
-            None => {
-                self.texture = Some(ctx.load_texture("stream", picture, TextureOptions::LINEAR));
+    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture) {
+        match (picture, &mut self.surface) {
+            (Picture::Pixels(pixels), Some(Surface::Texture(texture))) => {
+                texture.set(pixels, TextureOptions::LINEAR);
             }
+            (Picture::Pixels(pixels), _) => {
+                let texture = ctx.load_texture("stream", pixels, TextureOptions::LINEAR);
+                self.surface = Some(Surface::Texture(texture));
+            }
+            (Picture::Behind(size), _) => self.surface = Some(Surface::Behind(size)),
         }
+    }
+
+    /// Where the backend should show its pictures, when it is the one
+    /// showing them: the hole the window leaves, in points.
+    pub fn hole(&self) -> Option<Rect> {
+        self.hole
     }
 
     /// Takes the keyboard away from the interface, for the PC: while a
@@ -127,13 +159,27 @@ pub fn show(
         ui.input(|input| (input.time, input.focused, input.viewport().fullscreen.unwrap_or(false)));
     let mut asked = Asked::default();
 
-    ui.painter().rect_filled(window, 0, Color32::BLACK);
-    let picture = player.texture.as_ref().map(|texture| {
-        let place = fit(texture.size_vec2(), window);
-        egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
-        (place, texture.size())
+    player.hole = None;
+    let picture = player.surface.as_ref().map(|surface| {
+        let size = surface.size();
+        let place = fit(vec2(size[0] as f32, size[1] as f32), window);
+        match surface {
+            Surface::Texture(texture) => {
+                ui.painter().rect_filled(window, 0, Color32::BLACK);
+                egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
+            }
+            Surface::Behind(_) => {
+                // Black around the pictures, and nothing over them.
+                for side in around(place, window) {
+                    ui.painter().rect_filled(side, 0, Color32::BLACK);
+                }
+                player.hole = Some(place);
+            }
+        }
+        (place, size)
     });
     if picture.is_none() {
+        ui.painter().rect_filled(window, 0, Color32::BLACK);
         asked.leave |= waiting(ui, window, view);
     }
 
@@ -270,7 +316,7 @@ fn overlay(
     now: f64,
     asked: &mut Asked,
 ) {
-    let has_picture = player.texture.is_some();
+    let has_picture = player.surface.is_some();
     let (idle, pointer) =
         ui.input(|input| (input.pointer.time_since_last_movement(), input.pointer.hover_pos()));
     // With the game mouse the pointer is hidden and going nowhere: it opens
@@ -289,7 +335,7 @@ fn overlay(
     if opacity > 0.0 {
         let content = Bar {
             view,
-            picture: player.texture.as_ref().map(TextureHandle::size),
+            picture: player.surface.as_ref().map(Surface::size),
             sound_problem,
             game_mouse: player.game_mouse,
             // A note under the buttons when there is something to say, not
@@ -505,6 +551,16 @@ fn fit(picture: Vec2, window: Rect) -> Rect {
     }
     let scale = (window.width() / picture.x).min(window.height() / picture.y);
     Rect::from_center_size(window.center(), picture * scale)
+}
+
+/// What is left of `window` around `place`: above, below, left and right.
+fn around(place: Rect, window: Rect) -> [Rect; 4] {
+    [
+        Rect::from_min_max(window.min, Pos2::new(window.max.x, place.min.y)),
+        Rect::from_min_max(Pos2::new(window.min.x, place.max.y), window.max),
+        Rect::from_min_max(Pos2::new(window.min.x, place.min.y), place.left_bottom()),
+        Rect::from_min_max(place.right_top(), Pos2::new(window.max.x, place.max.y)),
+    ]
 }
 
 #[cfg(test)]
