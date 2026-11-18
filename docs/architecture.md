@@ -309,6 +309,14 @@ the ones shipped with moonlight-common-rust accept any certificate. A PC that
 was reinstalled therefore has to be paired again, and something else on the
 network cannot pass for it.
 
+Every HTTPS connection to a PC is a full TLS handshake, in which the client
+shows its certificate again: the transport never resumes a session. Apollo
+asks for the client's certificate without giving OpenSSL a session id
+context, and OpenSSL answers a resumed session with an `internal_error`
+alert, so every request after the first would fail (Sunshine, whose code
+that is, most likely behaves the same). The stand-in host hangs up on a
+resumed session for the same reason, so the tests catch a client that tries.
+
 The bridge adds nothing to this and takes nothing away: it is the paired
 device, and the check is the engine's. What it adds is the gate described
 above, between itself and browsers.

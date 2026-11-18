@@ -29,7 +29,10 @@ use pem::Pem;
 use rustls::{
     CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme,
     StreamOwned,
-    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    client::{
+        Resumption,
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    },
     crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
     pki_types::{
         CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime,
@@ -342,6 +345,11 @@ fn tls_config(
         .map_err(other)?;
     // Hosts are reached by address and their certificate names nobody.
     config.enable_sni = false;
+    // Every connection shows the certificate again. Apollo asks for one
+    // without giving OpenSSL a session id context (Sunshine, whose code that
+    // is, most likely too), so OpenSSL answers a resumed session with an
+    // `internal_error` alert: every request to a PC after the first fails.
+    config.resumption = Resumption::disabled();
     Ok(config)
 }
 

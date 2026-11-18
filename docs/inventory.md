@@ -93,6 +93,16 @@ How the port maps onto Apollo's files:
 
 Linux and macOS host code is ported after Windows works end to end.
 
+Apollo's HTTPS server asks for the client's certificate but gives OpenSSL no
+session id context: its `after_bind` in `nvhttp.cpp` sets the verify mode and
+callback, nothing else. OpenSSL then answers any resumed TLS session with an
+`internal_error` alert ("session id context uninitialized"), so a client must
+make a full handshake on every connection. Seen on a real Apollo: the PC
+showed the pairing as done, and Leto's next request failed with that alert.
+The same failure was reproduced against an OpenSSL server set up the same way,
+and went away once Leto stopped resuming sessions. Sunshine, whose code this
+is, most likely does the same.
+
 ### Client microphone: not in stock Apollo
 
 Stock Apollo cannot receive the client's microphone. The feature lives in the

@@ -40,8 +40,8 @@ use moonlight_common::{
     stream::{AesIv, AesKey},
 };
 use rustls::{
-    DigitallySignedStruct, DistinguishedName, ServerConfig, ServerConnection, SignatureScheme,
-    StreamOwned,
+    DigitallySignedStruct, DistinguishedName, HandshakeKind, ServerConfig, ServerConnection,
+    SignatureScheme, StreamOwned,
     crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, UnixTime},
     server::danger::{ClientCertVerified, ClientCertVerifier},
@@ -451,12 +451,25 @@ fn handle_secure(stream: TcpStream, shared: &Shared) {
     let mut stream = StreamOwned::new(connection, stream);
     // Reading the request runs the handshake first.
     let Some(target) = read_request(&mut stream) else { return };
+    if resumed(&stream.conn) {
+        return;
+    }
     let client =
         stream.conn.peer_certificates().and_then(|chain| chain.first()).map(|c| c.to_vec());
     let (kind, body) = respond(shared, &target, Some(client), local_ip(&stream.sock));
     write_response(&mut stream, kind, &body);
     stream.conn.send_close_notify();
     let _ = stream.flush();
+}
+
+/// Whether the client picked up an earlier TLS session instead of showing
+/// its certificate again. Apollo then hangs up: it asks for a certificate
+/// without giving OpenSSL a session id context (Sunshine, whose code that
+/// is, most likely too), and OpenSSL answers such a session with an
+/// `internal_error` alert. This host hangs up too, so that a client that
+/// would fail on a real PC fails here.
+fn resumed(connection: &ServerConnection) -> bool {
+    connection.handshake_kind() == Some(HandshakeKind::Resumed)
 }
 
 /// The address of this machine the client reached.
