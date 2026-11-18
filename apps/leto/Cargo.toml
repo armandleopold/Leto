@@ -27,6 +27,10 @@ leto-client = { workspace = true }
 # Decoders and speakers. The web build will use the browser's own.
 leto-media = { workspace = true }
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+# Reads what to paste into the app's text fields. The version eframe uses.
+arboard = { version = "3.6", default-features = false }
+# Gamepads. On Linux it needs the udev headers (`libudev-dev`) to build.
+gilrs = { version = "0.11", default-features = false, features = ["wgi"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # A stand-in PC to stream from in tests.

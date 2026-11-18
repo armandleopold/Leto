@@ -20,9 +20,10 @@ Sunshine hosts.
 ## Status
 
 Very early. The desktop app finds PCs that run Apollo or Sunshine, pairs with
-them, lists their apps and streams one: you see its picture and hear its
-sound. Keyboard, mouse and gamepad are not sent yet, so it is for watching
-only.
+them, lists their apps and streams one: you see its picture, hear its sound
+and play with the keyboard, the mouse and gamepads of your device. Nothing
+has been tried against a real PC yet, only against the stand-in host of the
+tests.
 
 | Step | State |
 |---|---|

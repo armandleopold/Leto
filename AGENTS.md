@@ -21,13 +21,15 @@ cargo xtask web            # the web client, into dist/web
 Building needs a C++ compiler, for the H.264 codec (OpenH264, built from
 source). With [NASM](https://www.nasm.us) on the `PATH` the codec is built
 with its fast assembly routines; without it the build still works and
-decoding is several times slower. On Linux, sound needs the ALSA headers
-(`libasound2-dev` on Debian and Ubuntu).
+decoding is several times slower. On Linux, sound needs the ALSA headers and
+gamepads need the udev headers (`libasound2-dev` and `libudev-dev` on Debian
+and Ubuntu).
 
 No gaming PC at hand? This keeps a stand-in host running on this machine. The
 app finds it, and you type the PIN the app shows into its terminal. It streams
-a test card and a melody. Type `close` to close the running app as its owner
-would, or `drop` to break the stream:
+a test card and a melody, and draws on the card what your keyboard, mouse and
+gamepad do. Type `close` to close the running app as its owner would, `drop`
+to break the stream, or `inputs` to list what it received:
 
 ```sh
 cargo run -p leto-testhost --example serve -- --port 47989 --announce

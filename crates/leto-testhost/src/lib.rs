@@ -30,7 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use leto_core::model::Pin;
+use leto_core::{input::Input, model::Pin};
 use moonlight_common::{
     crypto::rustcrypto::RustCryptoBackend,
     http::{
@@ -181,6 +181,9 @@ struct Playing {
     session: Option<stream::Session>,
     /// What the last stream that ended had done.
     last: Option<StreamReport>,
+    /// What the client of that stream had done with its keyboard, mouse and
+    /// gamepads.
+    last_inputs: Vec<Input>,
 }
 
 impl Playing {
@@ -189,6 +192,7 @@ impl Playing {
         if let Some(mut session) = self.session.take() {
             session.stop(tell_client);
             self.last = Some(session.report());
+            self.last_inputs = session.inputs();
         }
     }
 }
@@ -270,6 +274,16 @@ impl FakeHost {
     pub fn stream_report(&self) -> Option<StreamReport> {
         let playing = self.shared.playing.lock().unwrap();
         playing.session.as_ref().map(stream::Session::report).or(playing.last)
+    }
+
+    /// What the client did with its keyboard, mouse and gamepads during the
+    /// current stream, in order, or during the last one if it ended.
+    pub fn inputs(&self) -> Vec<Input> {
+        let playing = self.shared.playing.lock().unwrap();
+        match &playing.session {
+            Some(session) => session.inputs(),
+            None => playing.last_inputs.clone(),
+        }
     }
 
     /// The app closes on the host: the host tells the client and the stream

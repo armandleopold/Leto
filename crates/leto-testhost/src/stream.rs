@@ -22,11 +22,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+use leto_core::input::{
+    GamepadButtons, GamepadKind, GamepadState, Input, Key, Modifiers, MouseButton,
+};
 use moonlight_common::{
     ServerVersion,
     crypto::rustcrypto::RustCryptoBackend,
     stream::{
         AesIv, AesKey,
+        control::{
+            ActiveGamepads, ControllerButtons, ControllerType, KeyAction, KeyModifiers,
+            MouseButton as ProtocolMouseButton, MouseButtonAction,
+        },
         proto::{
             Instant as ProtocolInstant,
             audio::payloader::{AudioPayloader, AudioPayloaderConfig},
@@ -45,7 +52,7 @@ use moonlight_common::{
     },
 };
 
-use crate::media::{Melody, TestCard};
+use crate::media::{Hands, Melody, TestCard};
 
 /// The version the stand-in host reports, the one of a current Sunshine.
 pub(crate) const APP_VERSION: &str = "7.1.431.-1";
@@ -133,6 +140,10 @@ struct Inner {
     keyframes_sent: AtomicU64,
     keyframes_requested: AtomicU64,
     audio_packets_sent: AtomicU64,
+    /// Everything the client did with keyboard, mouse and gamepads, in order.
+    inputs: Mutex<Vec<Input>>,
+    /// What of it the test card shows.
+    hands: Mutex<Hands>,
 }
 
 /// One stream to one client, from `/launch` until either side leaves.
@@ -176,6 +187,8 @@ impl Session {
             keyframes_sent: AtomicU64::new(0),
             keyframes_requested: AtomicU64::new(0),
             audio_packets_sent: AtomicU64::new(0),
+            inputs: Mutex::new(Vec::new()),
+            hands: Mutex::new(Hands::default()),
         });
 
         let rtsp = thread::spawn({
@@ -214,6 +227,11 @@ impl Session {
             keyframes_requested: inner.keyframes_requested.load(Ordering::SeqCst),
             audio_packets_sent: inner.audio_packets_sent.load(Ordering::SeqCst),
         }
+    }
+
+    /// What the client did with keyboard, mouse and gamepads so far.
+    pub fn inputs(&self) -> Vec<Input> {
+        lock(&self.inner.inputs).clone()
     }
 
     /// Ends the stream. With `tell_client`, the host says goodbye first, as it
@@ -550,6 +568,9 @@ fn serve_control(inner: &Inner, negotiated: Negotiated) {
                     ) {
                         inner.wants_keyframe.store(true, Ordering::SeqCst);
                         inner.keyframes_requested.fetch_add(1, Ordering::SeqCst);
+                    } else if let Some(input) = understood(&packet) {
+                        lock(&inner.hands).follow(input, negotiated.width, negotiated.height);
+                        lock(&inner.inputs).push(input);
                     }
                 }
                 ControlHostEvent::Disconnected { id } => {
@@ -580,6 +601,107 @@ fn serve_control(inner: &Inner, negotiated: Negotiated) {
             break;
         }
     }
+}
+
+/// What a packet of the client says about its keyboard, mouse or gamepads.
+fn understood(packet: &ControlPacket) -> Option<Input> {
+    Some(match *packet {
+        ControlPacket::Keyboard { action, key_code, modifiers, .. } => Input::Key {
+            key: Key(key_code.0 as u16),
+            down: action == KeyAction::Down,
+            modifiers: Modifiers {
+                shift: modifiers.contains(KeyModifiers::SHIFT),
+                ctrl: modifiers.contains(KeyModifiers::CTRL),
+                alt: modifiers.contains(KeyModifiers::ALT),
+                meta: modifiers.contains(KeyModifiers::META),
+            },
+        },
+        ControlPacket::MouseMoveRelative { delta_x, delta_y } => {
+            Input::MouseMove { dx: delta_x, dy: delta_y }
+        }
+        ControlPacket::MouseMoveAbsolute { x, y, reference_width, reference_height, .. } => {
+            Input::MousePosition { x, y, width: reference_width, height: reference_height }
+        }
+        ControlPacket::MouseButton { action, button } => Input::MouseButton {
+            button: match button {
+                ProtocolMouseButton::Left => MouseButton::Left,
+                ProtocolMouseButton::Middle => MouseButton::Middle,
+                ProtocolMouseButton::Right => MouseButton::Right,
+                ProtocolMouseButton::X1 => MouseButton::Back,
+                ProtocolMouseButton::X2 => MouseButton::Forward,
+            },
+            down: action == MouseButtonAction::Press,
+        },
+        ControlPacket::MouseScroll { scroll_amount_1, .. } => {
+            Input::Scroll { horizontal: 0, vertical: scroll_amount_1 }
+        }
+        ControlPacket::MouseHorizontalScroll { scroll_amount } => {
+            Input::Scroll { horizontal: scroll_amount, vertical: 0 }
+        }
+        ControlPacket::ControllerArrival { controller_number, ty, .. } => Input::GamepadArrived {
+            number: controller_number,
+            kind: match ty {
+                ControllerType::Xbox => GamepadKind::Xbox,
+                ControllerType::PlayStation => GamepadKind::PlayStation,
+                ControllerType::Nintendo => GamepadKind::Nintendo,
+                ControllerType::Unknown | ControllerType::Steam => GamepadKind::Unknown,
+            },
+        },
+        ControlPacket::ControllerState {
+            controller_number,
+            active_gamepad_mask,
+            button_flags,
+            button_flags_2,
+            left_trigger,
+            right_trigger,
+            left_stick_x,
+            left_stick_y,
+            right_stick_x,
+            right_stick_y,
+            ..
+        } => {
+            let number = u8::try_from(controller_number).ok()?;
+            // A gamepad that is no longer among the active ones was unplugged.
+            if !active_gamepad_mask.contains(ActiveGamepads::from_id(number)?) {
+                return Some(Input::GamepadLeft { number });
+            }
+            let held = ControllerButtons::from_bits_truncate(
+                u32::from(button_flags as u16) | u32::from(button_flags_2 as u16) << 16,
+            );
+            let mut buttons = GamepadButtons::NONE;
+            for (theirs, ours) in [
+                (ControllerButtons::A, GamepadButtons::A),
+                (ControllerButtons::B, GamepadButtons::B),
+                (ControllerButtons::X, GamepadButtons::X),
+                (ControllerButtons::Y, GamepadButtons::Y),
+                (ControllerButtons::UP, GamepadButtons::UP),
+                (ControllerButtons::DOWN, GamepadButtons::DOWN),
+                (ControllerButtons::LEFT, GamepadButtons::LEFT),
+                (ControllerButtons::RIGHT, GamepadButtons::RIGHT),
+                (ControllerButtons::LB, GamepadButtons::LEFT_SHOULDER),
+                (ControllerButtons::RB, GamepadButtons::RIGHT_SHOULDER),
+                (ControllerButtons::PLAY, GamepadButtons::START),
+                (ControllerButtons::BACK, GamepadButtons::BACK),
+                (ControllerButtons::LS_CLK, GamepadButtons::LEFT_STICK),
+                (ControllerButtons::RS_CLK, GamepadButtons::RIGHT_STICK),
+                (ControllerButtons::SPECIAL, GamepadButtons::GUIDE),
+            ] {
+                buttons.set(ours, held.contains(theirs));
+            }
+            let stick = |value: i16| f32::from(value) / f32::from(i16::MAX);
+            Input::Gamepad {
+                number,
+                state: GamepadState {
+                    buttons,
+                    left_trigger: f32::from(left_trigger) / 255.0,
+                    right_trigger: f32::from(right_trigger) / 255.0,
+                    left_stick: [stick(left_stick_x), stick(left_stick_y)],
+                    right_stick: [stick(right_stick_x), stick(right_stick_y)],
+                },
+            }
+        }
+        _ => return None,
+    })
 }
 
 /// Waits for the client to show itself on `socket` and returns its address.
@@ -639,7 +761,8 @@ fn serve_video(inner: &Inner, negotiated: Negotiated) {
     while !inner.stop.load(Ordering::SeqCst) {
         drain(socket);
         let keyframe = inner.wants_keyframe.swap(false, Ordering::SeqCst);
-        if let Some(frame) = card.next(keyframe) {
+        let hands = *lock(&inner.hands);
+        if let Some(frame) = card.next(keyframe, hands) {
             let kind = if frame.keyframe { ServerFrameType::Idr } else { ServerFrameType::PFrame };
             // Video time counts in ninetieths of a millisecond.
             let timestamp = (number * 90_000 / u64::from(negotiated.fps)) as u32;

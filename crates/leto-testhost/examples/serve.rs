@@ -26,6 +26,9 @@ use image::{ImageFormat, Rgb, RgbImage};
 use leto_core::model::Pin;
 use leto_testhost::{App, FakeHost, HOST_ID, Options, permission};
 
+/// How many inputs the "inputs" command prints, counted from the last.
+const SHOWN_INPUTS: usize = 24;
+
 const USAGE: &str = "\
 Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
 
@@ -108,6 +111,7 @@ fn main() -> ExitCode {
     println!("Pair from a client, then type the PIN it shows here and press Enter.");
     println!("Type \"close\" to close the running app, \"drop\" to break the stream.");
     println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
+    println!("Type \"inputs\" to see what the keyboard, mouse and gamepads of the client sent.");
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         match line.trim() {
@@ -126,6 +130,15 @@ fn main() -> ExitCode {
             "restrict" => {
                 host.set_permissions(Some(permission::DEFAULT));
                 println!("Paired devices may list the apps and watch.");
+            }
+            "inputs" => {
+                // The most recent ones: a mouse alone sends hundreds.
+                let inputs = host.inputs();
+                let skipped = inputs.len().saturating_sub(SHOWN_INPUTS);
+                println!("{} inputs received in this stream.", inputs.len());
+                for input in &inputs[skipped..] {
+                    println!("  {input:?}");
+                }
             }
             other => match other.parse::<Pin>() {
                 Ok(pin) => {

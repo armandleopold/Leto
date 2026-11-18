@@ -91,3 +91,11 @@ pub fn expand(painter: &Painter, rect: Rect, color: Color32) {
         painter.line(vec![along_x, corner, along_y], stroke);
     }
 }
+
+/// A computer mouse seen from above: the game mouse.
+pub fn mouse(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let body = Rect::from_min_max(at(rect, 0.2, 0.02), at(rect, 0.8, 0.98));
+    painter.rect_stroke(body, rect.width() * 0.3, stroke, StrokeKind::Inside);
+    painter.line_segment([at(rect, 0.5, 0.2), at(rect, 0.5, 0.42)], stroke);
+}

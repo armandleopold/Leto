@@ -5,6 +5,7 @@
 //! web (WebAssembly).
 
 pub mod brand;
+pub mod input;
 pub mod model;
 pub mod platform;
 

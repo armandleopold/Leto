@@ -12,10 +12,12 @@ use std::{
 
 #[cfg(test)]
 use leto_client::Permission;
-use leto_client::{Client, Ended, Error, HostId, Session, StreamSettings};
+use leto_client::{
+    Client, Ended, Error, HostId, InputError, Session, StreamSettings, input::Input,
+};
 
 use super::{
-    Unavailable,
+    Unavailable, gamepad,
     stream::{Outlet, Screen, Sound, sentence},
 };
 use crate::state::{AppsProblem, Event, Request, StreamEnd};
@@ -69,12 +71,29 @@ impl Backend {
         if let Err(error) = &client {
             log::error!("the client engine did not start: {error}");
         }
+        let watching = Arc::<Mutex<Watching>>::default();
+        if client.is_ok() {
+            // Gamepads go to the stream that is connected, whichever it is.
+            let (asked, sent) = (Arc::clone(&watching), Arc::clone(&watching));
+            gamepad::watch(
+                move || {
+                    let watching = lock(&asked);
+                    watching.session.as_ref().and(watching.wanted)
+                },
+                move |input| {
+                    if let Some(session) = &lock(&sent).session {
+                        // The interface says what the PC does not accept.
+                        let _ = session.send(input);
+                    }
+                },
+            );
+        }
         Self {
             client,
             reporter: Reporter { events: sender, ctx: ctx.clone() },
             events,
             apps_asked: Arc::new(AtomicU64::new(0)),
-            watching: Arc::default(),
+            watching,
         }
     }
 
@@ -98,6 +117,23 @@ impl Backend {
     pub fn sound_problem(&self) -> Option<String> {
         let outlet = Arc::clone(&lock(&self.watching).outlet);
         outlet.sound_problem()
+    }
+
+    /// Passes what the person did on to the PC being watched, in order.
+    pub fn input(&self, inputs: Vec<Input>) {
+        if inputs.is_empty() {
+            return;
+        }
+        let watching = lock(&self.watching);
+        let Some(session) = &watching.session else { return };
+        for input in inputs {
+            match session.send(input) {
+                // The interface says what the PC does not accept.
+                Ok(()) | Err(InputError::NotAllowed) => {}
+                // The news that the stream ended is on its way.
+                Err(InputError::NotConnected) => break,
+            }
+        }
     }
 
     /// Starts `request` on a worker thread. The outcome arrives as events.
@@ -263,9 +299,10 @@ fn play(
         Ok(session) => {
             let mut watching = lock(watching);
             if watching.wanted == Some(attempt) {
+                let input = session.input_allowed();
                 watching.session = Some(session);
                 drop(watching);
-                report.send(Event::Playing { attempt });
+                report.send(Event::Playing { attempt, input });
             } else {
                 // The person left while the PC was starting the app.
                 drop(watching);

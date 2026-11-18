@@ -35,6 +35,9 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # Permissive, compatible with the GPL. Used by the Windows clipboard
+    # code behind `arboard`.
+    "BSL-1.0",
     "GPL-3.0-only",
     # moonlight-common-rust, the client protocol core.
     "GPL-3.0-or-later",

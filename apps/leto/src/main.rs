@@ -8,6 +8,9 @@
 
 mod app;
 mod backend;
+#[cfg(not(target_arch = "wasm32"))]
+mod clipboard;
+mod input;
 mod state;
 mod theme;
 mod ui;
@@ -35,6 +38,9 @@ fn main() -> eframe::Result {
             .with_inner_size([960.0, 600.0])
             .with_min_inner_size([480.0, 360.0])
             .with_icon(icon),
+        // A stream needs Ctrl+C and Ctrl+V as keys, for the PC. Leto's own
+        // text fields get them back through `clipboard`.
+        clipboard_shortcuts: false,
         ..Default::default()
     };
 
