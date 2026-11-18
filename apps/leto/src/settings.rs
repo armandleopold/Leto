@@ -5,7 +5,7 @@
 //! an update that adds one, is its default; a saved file that cannot be
 //! read is all defaults.
 
-use leto_core::engine::{Choices, ScreenMode, bitrate_for};
+use leto_core::engine::{Choices, Codec, Codecs, Decodable, ScreenMode, bitrate_for};
 use serde::{Deserialize, Serialize};
 
 /// The picture sizes offered besides the screen's own, as in Moonlight.
@@ -60,8 +60,50 @@ pub struct Settings {
     pub swap_gamepad_buttons: bool,
 
     // Advanced.
+    /// Who decodes the pictures.
+    pub decoder: Decoder,
+    /// The codec the PC is asked for. `None`: the best this device's
+    /// graphics card decodes, AV1 then H.265, and otherwise H.264.
+    pub codec: Option<Codec>,
     /// The statistics show from the start of every stream.
     pub statistics: bool,
+}
+
+/// Who decodes the pictures of a stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Decoder {
+    /// The graphics card when it can, the processor otherwise.
+    #[default]
+    Automatic,
+    /// The processor, always.
+    Software,
+}
+
+impl Decoder {
+    pub const ALL: [Self; 2] = [Self::Automatic, Self::Software];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic",
+            Self::Software => "Software",
+        }
+    }
+
+    /// The graphics card may decode.
+    pub const fn hardware(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+}
+
+/// The codecs offered to choose from, `None` for the automatic one.
+pub const CODECS: [Option<Codec>; 4] =
+    [None, Some(Codec::Av1), Some(Codec::H265), Some(Codec::H264)];
+
+pub const fn codec_name(codec: Option<Codec>) -> &'static str {
+    match codec {
+        None => "Automatic",
+        Some(codec) => codec.name(),
+    }
 }
 
 /// When the system's own shortcuts, such as the Windows key or Alt+Tab, go
@@ -96,6 +138,8 @@ impl Default for Settings {
             swap_mouse_buttons: false,
             reverse_scroll: false,
             swap_gamepad_buttons: false,
+            decoder: Decoder::Automatic,
+            codec: None,
             statistics: false,
         }
     }
@@ -125,15 +169,33 @@ impl Capture {
 
 impl Settings {
     /// The screen a stream is made for, from `native`, this screen when the
-    /// window knows it, and what the PC is told besides.
-    pub fn stream(&self, native: Option<ScreenMode>) -> (Option<ScreenMode>, Choices) {
+    /// window knows it, and what the PC is told besides, for a device that
+    /// decodes `decodable`.
+    pub fn stream(
+        &self,
+        native: Option<ScreenMode>,
+        decodable: Decodable,
+    ) -> (Option<ScreenMode>, Choices) {
         let choices = Choices {
             bitrate_kbps: self.bitrate_kbps,
             virtual_display: self.virtual_display,
             optimize_games: self.optimize_games,
             sound_on_pc: !self.mute_pc,
+            codecs: self.codecs(decodable),
         };
         (self.screen(native), choices)
+    }
+
+    /// The codecs the PC may send, of those this device decodes: the one
+    /// chosen, or by default those the graphics card decodes. H.264 always,
+    /// as every PC makes it: the PC picks the best of them it can.
+    pub fn codecs(&self, decodable: Decodable) -> Codecs {
+        let wanted = match self.codec {
+            Some(codec) if decodable.any.contains(codec) => Codecs::of(codec),
+            None if self.decoder.hardware() => decodable.hardware,
+            _ => Codecs::NONE,
+        };
+        wanted.with(Codec::H264)
     }
 
     /// The screen a stream is made for. `None` when there is nothing to go
@@ -250,12 +312,20 @@ mod tests {
     const NATIVE: ScreenMode =
         ScreenMode { width: 2560, height: 1600, refresh_hz: 120, scale_percent: 150 };
 
+    /// A device whose graphics card decodes H.265 and H.264, and that
+    /// decodes AV1 on the processor.
+    const DEVICE: Decodable = Decodable {
+        hardware: Codecs::of(Codec::H265).with(Codec::H264),
+        any: Codecs::of(Codec::Av1).with(Codec::H265).with(Codec::H264),
+    };
+
     #[test]
     fn by_default_a_stream_is_just_like_this_screen() {
-        let (screen, choices) = Settings::default().stream(Some(NATIVE));
+        let (screen, choices) = Settings::default().stream(Some(NATIVE), Decodable::SOFTWARE);
         assert_eq!(screen, Some(NATIVE));
         assert_eq!(choices, Choices::default());
-        assert_eq!(Settings::default().stream(None), (None, Choices::default()));
+        let plain = Settings::default().stream(None, Decodable::SOFTWARE);
+        assert_eq!(plain, (None, Choices::default()));
     }
 
     #[test]
@@ -288,7 +358,7 @@ mod tests {
             optimize_games: false,
             ..Settings::default()
         };
-        let (_, choices) = chosen.stream(None);
+        let (_, choices) = chosen.stream(None, DEVICE);
         assert_eq!(
             choices,
             Choices {
@@ -296,8 +366,29 @@ mod tests {
                 virtual_display: false,
                 optimize_games: false,
                 sound_on_pc: true,
+                codecs: Codecs::of(Codec::H265).with(Codec::H264),
             }
         );
+    }
+
+    #[test]
+    fn the_pc_is_offered_what_the_graphics_card_decodes_or_what_was_chosen() {
+        let automatic = Settings::default();
+        // The best the card decodes, and H.264 to fall back on.
+        assert_eq!(automatic.codecs(DEVICE), DEVICE.hardware);
+        assert_eq!(automatic.codecs(Decodable::SOFTWARE), Codecs::of(Codec::H264));
+        // AV1 only decodes on the processor here, so it takes being chosen.
+        let av1 = Settings { codec: Some(Codec::Av1), ..automatic };
+        assert_eq!(av1.codecs(DEVICE), Codecs::of(Codec::Av1).with(Codec::H264));
+        // A codec chosen on another device, that this one cannot decode.
+        assert_eq!(av1.codecs(Decodable::SOFTWARE), Codecs::of(Codec::H264));
+        let h264 = Settings { codec: Some(Codec::H264), ..automatic };
+        assert_eq!(h264.codecs(DEVICE), Codecs::of(Codec::H264));
+        // The processor alone gets H.264, unless something else is chosen.
+        let software = Settings { decoder: Decoder::Software, ..automatic };
+        assert_eq!(software.codecs(DEVICE), Codecs::of(Codec::H264));
+        let h265 = Settings { codec: Some(Codec::H265), ..software };
+        assert_eq!(h265.codecs(DEVICE), Codecs::of(Codec::H265).with(Codec::H264));
     }
 
     #[test]
@@ -323,6 +414,8 @@ mod tests {
             bitrate_kbps: Some(50_000),
             capture_shortcuts: Capture::FullScreen,
             swap_gamepad_buttons: true,
+            decoder: Decoder::Software,
+            codec: Some(Codec::Av1),
             ..Settings::default()
         };
         assert_eq!(Settings::from_saved(&chosen.to_saved()), chosen);

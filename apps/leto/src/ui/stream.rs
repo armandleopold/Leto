@@ -9,7 +9,7 @@ use egui::{
 };
 use std::time::Duration;
 
-use leto_core::input::Input;
+use leto_core::{engine::Codec, input::Input};
 
 use super::{icons, widgets};
 use crate::{
@@ -229,6 +229,8 @@ impl Player {
 pub struct Status<'a> {
     /// Why the stream has no sound, when it has none.
     pub sound_problem: Option<&'a str>,
+    /// Why it has no pictures, when it has none.
+    pub picture_problem: Option<&'a str>,
     /// How loud the microphone is, from 0 to 1, while it captures. `None`
     /// with the switch on means it is still opening: a browser asks the
     /// person first.
@@ -293,7 +295,7 @@ pub fn show(
     });
     if picture.is_none() {
         ui.painter().rect_filled(window, 0, Color32::BLACK);
-        asked.leave |= waiting(ui, window, view);
+        asked.leave |= waiting(ui, window, view, status.picture_problem);
     }
 
     if view.connected {
@@ -628,8 +630,8 @@ impl Statistics {
 }
 
 /// What decodes the pictures, for the statistics.
-const DECODER: &str =
-    if cfg!(target_arch = "wasm32") { "The browser's" } else { "In software, on the processor" };
+/// Who decodes the pictures, when the backend does not say.
+const DECODER: &str = if cfg!(target_arch = "wasm32") { "The browser's" } else { "Not yet known" };
 
 /// The statistics over the picture, in a corner, as in Moonlight.
 fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status<'_>) {
@@ -675,9 +677,15 @@ fn statistics_lines(
     };
     let mut lines = Vec::new();
     if let Some([width, height, fps]) = counts.sent {
-        lines.push(("Video", format!("{width} × {height}, {fps} per second, H.264")));
+        let codec = counts.codec.unwrap_or(Codec::H264).name();
+        lines.push(("Video", format!("{width} × {height}, {fps} per second, {codec}")));
     }
-    lines.push(("Decoder", DECODER.to_owned()));
+    let decoder = match counts.on_graphics_card {
+        Some(true) => "On the graphics card",
+        Some(false) => "In software, on the processor",
+        None => DECODER,
+    };
+    lines.push(("Decoder", decoder.to_owned()));
     let Some(rates) = statistics.rates else {
         lines.push(("Arrived", "Counting…".to_owned()));
         return lines;
@@ -744,9 +752,9 @@ pub(super) fn meter(level: f32) -> f32 {
     ((decibels - METER_FLOOR) / -METER_FLOOR).clamp(0.0, 1.0)
 }
 
-/// What is shown until the first picture. Returns true when the person
-/// gives up waiting.
-fn waiting(ui: &mut Ui, window: Rect, view: &StreamView) -> bool {
+/// What is shown until the first picture, or why none comes. Returns true
+/// when the person gives up waiting.
+fn waiting(ui: &mut Ui, window: Rect, view: &StreamView, problem: Option<&str>) -> bool {
     let text = if view.connected {
         "Waiting for the first picture…".to_owned()
     } else {
@@ -755,6 +763,12 @@ fn waiting(ui: &mut Ui, window: Rect, view: &StreamView) -> bool {
     let area = Rect::from_center_size(window.center(), vec2(window.width().min(420.0), 120.0));
     let layout = Layout::top_down(Align::Center);
     ui.scope_builder(UiBuilder::new().max_rect(area).layout(layout), |ui| {
+        if let Some(problem) = problem {
+            let text = RichText::new(problem).color(theme::PROBLEM);
+            ui.add(egui::Label::new(text).wrap().halign(Align::Center));
+            ui.add_space(6.0);
+            return widgets::quiet_button(ui, "Leave").clicked();
+        }
         ui.add(egui::Spinner::new().size(26.0).color(theme::SUN));
         ui.add_space(6.0);
         ui.add(egui::Label::new(widgets::dim(text)).wrap().halign(Align::Center));
@@ -1205,7 +1219,12 @@ mod tests {
 
     #[test]
     fn the_statistics_say_how_the_stream_is_doing() {
-        let mut counts = Counts { sent: Some([2560, 1440, 144]), ..Counts::default() };
+        let mut counts = Counts {
+            sent: Some([2560, 1440, 144]),
+            codec: Some(Codec::H265),
+            on_graphics_card: Some(true),
+            ..Counts::default()
+        };
         let mut statistics = Statistics::new(Some(counts), 0, 10.0);
         let lines = statistics_lines(&statistics, Some(counts), None);
         assert_eq!(lines.last(), Some(&("Arrived", "Counting…".to_owned())));
@@ -1223,8 +1242,8 @@ mod tests {
         assert_eq!(
             said,
             [
-                "Video: 2560 × 1440, 144 per second, H.264".to_owned(),
-                format!("Decoder: {DECODER}"),
+                "Video: 2560 × 1440, 144 per second, H.265".to_owned(),
+                "Decoder: On the graphics card".to_owned(),
                 "Arrived: 144.0 per second, 23.0 Mbit/s".to_owned(),
                 "Lost on the way: 0 in all, 0.0 % lately".to_owned(),
                 "Decoded: 144.0 per second, 9.0 ms each".to_owned(),
@@ -1235,6 +1254,10 @@ mod tests {
         );
         // A backend that counts nothing says so.
         assert_eq!(statistics_lines(&statistics, None, None).len(), 1);
+        // One that does not know who decodes says that.
+        let unknown = Counts { on_graphics_card: None, ..counts };
+        let lines = statistics_lines(&statistics, Some(unknown), None);
+        assert_eq!(lines[1], ("Decoder", DECODER.to_owned()));
     }
 
     #[test]

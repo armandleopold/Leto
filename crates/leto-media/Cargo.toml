@@ -31,6 +31,17 @@ thiserror = "2"
 # crate: Leto reads the pictures itself.
 [target.'cfg(windows)'.dependencies]
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
+# Pictures decoded by Windows itself, on the graphics card when it can: Media
+# Foundation's decoders, given a Direct3D 11 device.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
 
 # On Linux it needs libclang to build (`libclang-dev`).
 [target.'cfg(target_os = "linux")'.dependencies]

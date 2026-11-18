@@ -982,11 +982,34 @@ impl MoonlightStreamSetup {
         };
 
         // -- Select Video Format
-        // Av1 is not supported in this implementation currently
         // See https://github.com/moonlight-stream/moonlight-common-c/blob/7b026e77be62175104640e7e722b758df6d3d0d7/src/RtspConnection.c#L1090-L1136
         let negotiated_video_format;
 
-        if self
+        // Leto: AV1 first, as moonlight-common-c does, when the host's
+        // DESCRIBE offers it and the client decodes it. Before this change
+        // AV1 was never chosen.
+        let server_codecs = self.client_config.server_codec_mode_support;
+        let client_formats = self.client_settings.supported_video_formats;
+        if server_sdp.video_formats.intersects(VideoFormats::MASK_AV1)
+            && client_formats.intersects(VideoFormats::MASK_AV1)
+        {
+            negotiated_video_format = if server_codecs
+                .contains(ServerCodecModeSupport::AV1_HIGH10_444)
+                && client_formats.contains(VideoFormats::AV1_HIGH10_444)
+            {
+                VideoFormat::Av1High10_444
+            } else if server_codecs.contains(ServerCodecModeSupport::AV1_MAIN10)
+                && client_formats.contains(VideoFormats::AV1_MAIN10)
+            {
+                VideoFormat::Av1Main10
+            } else if server_codecs.contains(ServerCodecModeSupport::AV1_HIGH8_444)
+                && client_formats.contains(VideoFormats::AV1_HIGH8_444)
+            {
+                VideoFormat::Av1High8_444
+            } else {
+                VideoFormat::Av1Main8
+            };
+        } else if self
             .client_config
             .server_codec_mode_support
             .intersects(ServerCodecModeSupport::MASK_HEVC)

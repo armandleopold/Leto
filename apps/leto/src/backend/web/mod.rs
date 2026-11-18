@@ -26,7 +26,7 @@ use std::{
 use js_sys::{ArrayBuffer, Uint8Array};
 use leto_core::{
     bridge::{Down, Frame, PATH, Up},
-    engine,
+    engine::{self, Decodable},
     input::Input,
 };
 use wasm_bindgen::{JsCast as _, closure::Closure};
@@ -500,6 +500,21 @@ impl Backend {
             [place.left(), place.top(), place.width(), place.height()].map(|length| length * zoom)
         }));
     }
+
+    /// A browser that cannot decode the pictures gives the stream up: it
+    /// never goes on without them.
+    pub const fn picture_problem(&self) -> Option<String> {
+        None
+    }
+
+    /// The codecs the PC may send: H.264 alone, which the bridge reads for
+    /// the browser.
+    pub const fn decodable(&self) -> Decodable {
+        Decodable::SOFTWARE
+    }
+
+    /// The browser decides where it decodes.
+    pub const fn allow_graphics_card(&self, _allowed: bool) {}
 
     /// Why the stream has no sound, when it has none.
     pub fn sound_problem(&self) -> Option<String> {

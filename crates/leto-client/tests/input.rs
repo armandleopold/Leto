@@ -13,6 +13,7 @@ use std::{
 
 use leto_client::{
     Client, Counter, InputError, Session, StreamSettings,
+    engine::{Codec, Codecs},
     input::{
         GamepadButtons, GamepadKind, GamepadState, Input, InputAllowed, Key, Modifiers, MouseButton,
     },
@@ -28,6 +29,7 @@ const SMALL: StreamSettings = StreamSettings {
     virtual_display: None,
     optimize_games: true,
     sound_on_pc: false,
+    codecs: Codecs::of(Codec::H264),
 };
 
 /// A fresh settings folder per test.

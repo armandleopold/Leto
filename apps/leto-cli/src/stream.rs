@@ -17,7 +17,8 @@ use std::{
 
 use leto_client::{
     AppSummary, CameraLink, CameraSettings, Client, Counter, Decoded, Ended, HostId, Session,
-    StreamSettings, VideoFrame, VideoSetup, VideoSink, engine::CameraOffer,
+    StreamSettings, VideoFrame, VideoSetup, VideoSink,
+    engine::{CameraOffer, Codec},
 };
 use leto_media::{
     CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Picture, Sending, VOICE_FRAME,
@@ -32,6 +33,14 @@ const LISTEN_EVERY: Duration = Duration::from_millis(50);
 
 /// How long a camera gets to open and the PC to agree to take it.
 const CAMERA_PATIENCE: Duration = Duration::from_secs(10);
+
+/// The stream to ask the PC for, and who decodes it.
+#[derive(Debug, Clone, Copy)]
+pub struct Asked {
+    pub settings: StreamSettings,
+    /// The graphics card may decode.
+    pub hardware: bool,
+}
 
 /// What of this device goes to the PC while it streams.
 #[derive(Debug, Default, Clone, Copy)]
@@ -72,6 +81,11 @@ struct Report {
     decoded_height: usize,
     /// Pictures that arrived and could not be decoded.
     pictures_undecodable: u64,
+    /// The codec the PC sent, whether the graphics card decoded it, and why
+    /// nothing could, if nothing could.
+    codec: Option<&'static str>,
+    decoded_on_graphics_card: bool,
+    decoder_problem: Option<String>,
     video_kbps: u64,
     sound_packets: u64,
     sound_kbps: u64,
@@ -104,10 +118,11 @@ pub fn play(
     pc: &str,
     app: &str,
     seconds: u64,
-    settings: StreamSettings,
+    asked: Asked,
     back: Back,
     json: bool,
 ) -> Result<String, String> {
+    let Asked { settings, hardware } = asked;
     let host = find(client, pc, false)?;
     let apps = client.apps(&host.id).map_err(|error| error.to_string())?;
     let app = pick_app(&apps, app)?;
@@ -116,7 +131,8 @@ pub fn play(
     let decoding = Arc::new(Mutex::new(Decoding::default()));
     let video = Decoder {
         counter: counter.video(),
-        decoder: VideoDecoder::new().map_err(|error| error.to_string())?,
+        decoder: None,
+        hardware,
         picture: Picture::default(),
         decoding: Arc::clone(&decoding),
     };
@@ -162,7 +178,7 @@ pub fn play(
     };
     let watched = connected.elapsed().as_secs_f64();
     let tally = counter.tally();
-    let decoding = *decoding.lock().unwrap_or_else(PoisonError::into_inner);
+    let decoding = decoding.lock().unwrap_or_else(PoisonError::into_inner).clone();
     // The microphone stops with the stream. Leaving a stream is letting go
     // of it.
     let voice = listening
@@ -188,6 +204,9 @@ pub fn play(
         decoded_width: decoding.width,
         decoded_height: decoding.height,
         pictures_undecodable: decoding.failed,
+        codec: decoding.codec.map(Codec::name),
+        decoded_on_graphics_card: decoding.on_graphics_card,
+        decoder_problem: decoding.problem.clone(),
         video_kbps: kbps(tally.video_bytes),
         sound_packets: tally.audio_packets,
         sound_kbps: kbps(tally.audio_bytes),
@@ -233,13 +252,21 @@ pub fn play(
             report.pictures_missing,
             report.video_kbps
         ),
-        format!(
-            "       decoded {} of them as {}x{}, could not decode {}",
-            report.pictures_decoded,
-            report.decoded_width,
-            report.decoded_height,
-            report.pictures_undecodable
-        ),
+        match &report.decoder_problem {
+            Some(problem) => format!(
+                "       in {}, which this device cannot decode: {problem}",
+                report.codec.unwrap_or("an unknown codec")
+            ),
+            None => format!(
+                "       in {}, decoded {} of them as {}x{} on the {}, could not decode {}",
+                report.codec.unwrap_or("an unknown codec"),
+                report.pictures_decoded,
+                report.decoded_width,
+                report.decoded_height,
+                if report.decoded_on_graphics_card { "graphics card" } else { "processor" },
+                report.pictures_undecodable
+            ),
+        },
         format!("Sound  {} packets, {} kbit/s", report.sound_packets, report.sound_kbps),
         match (&report.microphone_problem, report.microphone_frames, report.takes_microphone) {
             (Some(problem), _, _) => format!("Voice  not sent: {problem}"),
@@ -424,32 +451,58 @@ impl Drop for ToPc {
 }
 
 /// How decoding went.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct Decoding {
     decoded: u64,
     failed: u64,
     width: usize,
     height: usize,
+    codec: Option<Codec>,
+    on_graphics_card: bool,
+    /// Why there was no decoder.
+    problem: Option<String>,
 }
 
 /// Counts the pictures that arrive and decodes them as the app would,
 /// asking for a keyframe when one cannot be decoded.
 struct Decoder<V> {
     counter: V,
-    decoder: VideoDecoder,
+    /// Made once the PC says what it sends.
+    decoder: Option<VideoDecoder>,
+    /// It may decode on the graphics card.
+    hardware: bool,
     picture: Picture,
     decoding: Arc<Mutex<Decoding>>,
 }
 
 impl<V: VideoSink> VideoSink for Decoder<V> {
     fn setup(&mut self, setup: VideoSetup) {
+        let VideoSetup { codec, width, height, fps } = setup;
+        let made = VideoDecoder::for_stream(codec, width, height, fps, self.hardware);
+        let mut decoding = self.decoding.lock().unwrap_or_else(PoisonError::into_inner);
+        decoding.codec = Some(codec);
+        match made {
+            Ok(decoder) => {
+                decoding.on_graphics_card = decoder.on_graphics_card();
+                self.decoder = Some(decoder);
+            }
+            Err(error) => decoding.problem = Some(error.to_string()),
+        }
+        drop(decoding);
         self.counter.setup(setup);
     }
 
     fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
-        let outcome = self.decoder.decode(frame.data, &mut self.picture);
+        let Some(decoder) = &mut self.decoder else {
+            self.counter.frame(frame);
+            return Decoded::Ok;
+        };
+        let outcome = decoder.decode(frame.data, &mut self.picture);
+        let on_graphics_card = decoder.on_graphics_card();
         self.counter.frame(frame);
         let mut decoding = self.decoding.lock().unwrap_or_else(PoisonError::into_inner);
+        // A graphics card that fails H.264 hands it to the processor.
+        decoding.on_graphics_card = on_graphics_card;
         match outcome {
             Ok(true) => {
                 decoding.decoded += 1;
@@ -485,20 +538,24 @@ fn pick_app<'a>(apps: &'a [AppSummary], wanted: &str) -> Result<&'a AppSummary, 
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use leto_client::Pin;
+    use leto_client::{Pin, engine::Codecs};
     use leto_testhost::{FakeHost, HOST_NAME};
 
     use super::*;
     use crate::pcs::pair;
 
-    const SMALL: StreamSettings = StreamSettings {
-        width: 320,
-        height: 180,
-        fps: 30,
-        bitrate_kbps: 2000,
-        virtual_display: None,
-        optimize_games: true,
-        sound_on_pc: false,
+    const SMALL: Asked = Asked {
+        settings: StreamSettings {
+            width: 320,
+            height: 180,
+            fps: 30,
+            bitrate_kbps: 2000,
+            virtual_display: None,
+            optimize_games: true,
+            sound_on_pc: false,
+            codecs: Codecs::of(Codec::H264),
+        },
+        hardware: true,
     };
 
     #[test]
@@ -523,6 +580,9 @@ mod tests {
         assert!(report["keyframes"].as_u64().unwrap() >= 1, "{json}");
         assert_eq!(report["pictures_decoded"], report["pictures"], "{json}");
         assert_eq!(report["pictures_undecodable"], 0, "{json}");
+        // The stand-in PC sends H.264 alone.
+        assert_eq!(report["codec"], "H.264", "{json}");
+        assert_eq!(report["decoder_problem"], serde_json::Value::Null, "{json}");
         assert_eq!(
             (&report["decoded_width"], &report["decoded_height"]),
             (&320.into(), &180.into())

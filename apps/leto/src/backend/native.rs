@@ -12,7 +12,7 @@ use std::{
 
 use leto_client::{
     CameraSettings, Client, Service, Shell,
-    engine::{self, ImageFile},
+    engine::{self, Decodable, ImageFile},
     input::Input,
     service::{explain, sentence},
 };
@@ -67,6 +67,8 @@ struct Desk {
     outlet: Mutex<Arc<Outlet>>,
     voice: Mutex<Voice>,
     film: Mutex<Film>,
+    /// The person lets the graphics card decode the pictures.
+    hardware: AtomicBool,
 }
 
 /// The microphone of this device, which only ever captures for a stream
@@ -190,8 +192,7 @@ impl Shell for Desk {
 
     fn sinks(&self) -> Result<(Screen, Sound), String> {
         let outlet = self.outlet();
-        let screen =
-            Screen::new(&outlet, &self.ctx).map_err(|error| sentence(&error.to_string()))?;
+        let screen = Screen::new(&outlet, &self.ctx, self.hardware.load(Ordering::Relaxed));
         Ok((screen, Sound::new(&outlet)))
     }
 
@@ -210,7 +211,12 @@ impl Backend {
             outlet: Mutex::default(),
             voice: Mutex::default(),
             film: Mutex::default(),
+            hardware: AtomicBool::new(true),
         };
+        // Finding out what this device decodes takes a moment on Windows,
+        // better spent now than when the person asks for a stream.
+        let _ =
+            std::thread::Builder::new().name("leto-decoders".into()).spawn(leto_media::decodable);
         let service = Client::open_default()
             .map(|client| Arc::new(Service::new(Arc::new(client), desk)))
             .map_err(|error| explain(&error));
@@ -267,6 +273,11 @@ impl Backend {
         outlet.sound_problem()
     }
 
+    /// Why the stream has no pictures, when it has none.
+    pub fn picture_problem(&self) -> Option<String> {
+        self.service.as_ref().ok()?.shell().outlet().picture_problem()
+    }
+
     /// Makes as many pictures of the stream into pixels as the person sees.
     pub fn pace(&self, pace: Pace) {
         if let Ok(service) = &self.service {
@@ -284,6 +295,19 @@ impl Backend {
     /// Has A and B change places on the gamepads, and X and Y, or not.
     pub fn swap_gamepad_buttons(&self, swap: bool) {
         self.swapped.store(swap, Ordering::Relaxed);
+    }
+
+    /// The codecs this device decodes, on its graphics card and at all.
+    pub fn decodable(&self) -> Decodable {
+        leto_media::decodable()
+    }
+
+    /// Lets the graphics card decode the pictures of the next streams, or
+    /// leaves them to the processor.
+    pub fn allow_graphics_card(&self, allowed: bool) {
+        if let Ok(service) = &self.service {
+            service.shell().hardware.store(allowed, Ordering::Relaxed);
+        }
     }
 
     /// What happened to the pictures of the stream so far.

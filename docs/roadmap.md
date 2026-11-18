@@ -62,8 +62,12 @@ Progress:
   when leaving, the system's shortcuts, the mouse buttons and wheel, gamepad
   buttons, silence in the background and statistics. Leto keeps them. See
   [architecture.md](architecture.md#a-stream).
-- Later in this step: decoding on the graphics card, AV1 and H.265 with a
-  choice of codec and decoder in the settings, HDR, surround sound.
+- Done: decoding on the graphics card on Windows, and AV1 and H.265 with it.
+  The PC is offered what the card decodes, AV1 first, then H.265, and H.264
+  always; the settings choose the codec and the decoder. See
+  [architecture.md](architecture.md#a-stream).
+- Later in this step: HDR, surround sound, decoding on the graphics card on
+  macOS and Linux, and H.265 and AV1 in the browser.
 
 What the web client does not do yet:
 
@@ -74,7 +78,8 @@ What the web client does not do yet:
   asks a new browser for is printed in its terminal.
 - Reaching the bridge from outside the home network. It is built for the
   network it runs on.
-- H.265 and AV1: like the desktop app, it asks PCs for H.264.
+- H.265 and AV1: the bridge asks PCs for H.264 alone, which it reads to tell
+  the browser what the pictures are made of.
 - It was checked in Chromium only. Firefox and Safari have the same decoders
   in their recent versions, and nothing here was tried in them.
 - The web client is one file of 5 MB that the bridge sends as it is, without
@@ -154,13 +159,11 @@ Questions settled in this step:
   every picture.
 - How a browser and the bridge talk: a WebSocket, not WebRTC. The reasons are
   in the [inventory](inventory.md#the-web-client-moonlight-web-stream).
-
-Questions still open:
-
-- Which hardware decoder the Windows client uses first (Media Foundation or
-  Direct3D 11 video). Software decoding with OpenH264 is in place as the
-  path that works everywhere.
-- AV1, which moonlight-common-rust does not support yet.
+- Which hardware decoder the Windows client uses: Media Foundation's, given a
+  Direct3D 11 device. They hide the differences between graphics cards, and
+  OpenH264 stays as the H.264 decoder that works everywhere.
+- How to get AV1 when moonlight-common-rust never chooses it: a copy of it
+  that Leto changed, until the project chooses it itself.
 
 ## 3. The Android client
 

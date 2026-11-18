@@ -10,7 +10,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use leto_client::{AudioSetup, AudioSink, Decoded, VideoFrame, VideoSetup, VideoSink};
+use leto_client::{
+    AudioSetup, AudioSink, Decoded, VideoFrame, VideoSetup, VideoSink, engine::Codec,
+};
 use leto_core::bridge::{AudioFormat, Down, Frame, VideoFormat};
 use tokio::sync::mpsc;
 
@@ -110,7 +112,12 @@ impl VideoSink for Pictures {
                 return Decoded::NeedsKeyframe;
             };
             if self.codec.as_deref() != Some(&codec) {
-                let setup = self.setup.unwrap_or(VideoSetup { width: 0, height: 0, fps: 0 });
+                let setup = self.setup.unwrap_or(VideoSetup {
+                    codec: Codec::H264,
+                    width: 0,
+                    height: 0,
+                    fps: 0,
+                });
                 outbox.say(&Down::Pictures(VideoFormat {
                     codec: codec.clone(),
                     width: setup.width,
@@ -208,7 +215,7 @@ mod tests {
     /// A picture that builds on the ones before.
     const DELTA: &[u8] = &[0, 0, 0, 1, 0x41, 0x9A];
 
-    const SETUP: VideoSetup = VideoSetup { width: 1920, height: 1080, fps: 60 };
+    const SETUP: VideoSetup = VideoSetup { codec: Codec::H264, width: 1920, height: 1080, fps: 60 };
 
     fn frame(number: u32, data: &[u8]) -> VideoFrame<'_> {
         VideoFrame { number, keyframe: avc_codec(data).is_some(), data, host_latency: None }

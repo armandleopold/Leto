@@ -6,7 +6,7 @@ use std::{sync::Arc, time::Duration};
 use futures_util::{SinkExt as _, StreamExt as _};
 use leto_client::{
     Client, Service, Shell,
-    engine::{Event, Request},
+    engine::{Choices, Codec, Codecs, Event, Request},
 };
 use leto_core::bridge::{Down, Frame, LONGEST_CAMERA_PICTURE, Up, VOICE_PACKET};
 use tokio::{
@@ -221,7 +221,7 @@ fn hear(
         // Everything else is for browsers the gate let in. One that asks
         // without having been welcomed is told what it has to do first.
         Up::Ask(request) => match service {
-            Some(service) => service.ask(request),
+            Some(service) => service.ask(in_h264(request)),
             None => outbox.say(&Down::CodeNeeded { refused: false }),
         },
         Up::Input(inputs) => {
@@ -239,5 +239,17 @@ fn hear(
                 camera.off(service);
             }
         }
+    }
+}
+
+/// `request`, with a stream in H.264 only: the bridge reads what a picture
+/// is made of to tell the browser, and knows how to only for H.264.
+fn in_h264(request: Request) -> Request {
+    match request {
+        Request::Play { host, app, attempt, screen, choices } => {
+            let choices = Choices { codecs: Codecs::of(Codec::H264), ..choices };
+            Request::Play { host, app, attempt, screen, choices }
+        }
+        other => other,
     }
 }

@@ -80,7 +80,13 @@ impl ServerSdp {
                 // https://github.com/LizardByte/Sunshine/blob/7228c2553c393739c3387d5a152c9b255be2328f/src/rtsp.cpp#L793
                 // https://github.com/moonlight-stream/moonlight-common-c/blob/b126e481a195fdc7152d211def17190e3434bcce/src/RtspConnection.c#L1091
                 parsed.video_formats |= VideoFormats::MASK_H265;
-            } else if attribute.key == "AV1/90000" {
+            } else if attribute.key == "AV1/90000"
+                // Leto: Sunshine and Apollo write `a=rtpmap:98 AV1/90000`,
+                // which is read as the attribute `rtpmap`. moonlight-common-c
+                // looks for `AV1/90000` anywhere in the reply.
+                || (attribute.key == "rtpmap"
+                    && attribute.value.as_deref().is_some_and(|value| value.contains("AV1/90000")))
+            {
                 // If the server supports AV1
                 // See
                 // https://github.com/LizardByte/Sunshine/blob/7228c2553c393739c3387d5a152c9b255be2328f/src/rtsp.cpp#L797

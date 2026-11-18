@@ -14,7 +14,7 @@ use std::{
 };
 
 use leto_core::{
-    engine::{BITRATES_KBPS, Choices, ScreenMode, bitrate_for},
+    engine::{BITRATES_KBPS, Choices, Codec, Codecs, ScreenMode, bitrate_for},
     input::{GamepadButtons, GamepadKind, Input, InputAllowed, MouseButton},
 };
 use moonlight_common::{
@@ -36,7 +36,7 @@ use moonlight_common::{
         std::MoonlightStream,
         video::{
             ColorRange, ColorSpace, DecodeResult, FrameType, VideoDecodeUnit, VideoDecoder,
-            VideoFormats, VideoSetup as ProtocolVideoSetup,
+            VideoFormat, VideoFormats, VideoSetup as ProtocolVideoSetup,
         },
     },
 };
@@ -69,6 +69,9 @@ pub struct StreamSettings {
     pub optimize_games: bool,
     /// The host's own speakers keep playing too.
     pub sound_on_pc: bool,
+    /// The codecs the pictures may come in. H.264 always may: every host
+    /// sends it.
+    pub codecs: Codecs,
 }
 
 /// The screen a host makes for a stream.
@@ -90,6 +93,7 @@ impl Default for StreamSettings {
             virtual_display: None,
             optimize_games: true,
             sound_on_pc: false,
+            codecs: Codecs::default(),
         }
     }
 }
@@ -127,6 +131,7 @@ impl StreamSettings {
         }
         settings.optimize_games = choices.optimize_games;
         settings.sound_on_pc = choices.sound_on_pc;
+        settings.codecs = choices.codecs;
         settings
     }
 
@@ -159,7 +164,7 @@ impl StreamSettings {
             // Let the host set the game's resolution to the stream's.
             sops: self.optimize_games,
             hdr: false,
-            supported_video_formats: VideoFormats::H264,
+            supported_video_formats: video_formats(self.codecs),
             // What a software decoder converts to the screen's colours.
             color_space: ColorSpace::Rec601,
             color_range: ColorRange::Limited,
@@ -186,9 +191,38 @@ fn fit(width: u32, height: u32) -> (u32, u32) {
 /// The video the host is about to send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoSetup {
+    pub codec: Codec,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+}
+
+/// What the protocol is told this device decodes: 8-bit pictures of the
+/// codecs it has, which every PC can make. H.264 always.
+fn video_formats(codecs: Codecs) -> VideoFormats {
+    let mut formats = VideoFormats::H264;
+    if codecs.contains(Codec::H265) {
+        formats |= VideoFormats::H265;
+    }
+    if codecs.contains(Codec::Av1) {
+        formats |= VideoFormats::AV1_MAIN8;
+    }
+    formats
+}
+
+/// The codec of what the protocol agreed with the host.
+fn codec(format: VideoFormat) -> Codec {
+    match format {
+        VideoFormat::H264 | VideoFormat::H264High8_444 => Codec::H264,
+        VideoFormat::H265
+        | VideoFormat::H265Main10
+        | VideoFormat::H265Rext8_444
+        | VideoFormat::H265Rext10_444 => Codec::H265,
+        VideoFormat::Av1Main8
+        | VideoFormat::Av1Main10
+        | VideoFormat::Av1High8_444
+        | VideoFormat::Av1High10_444 => Codec::Av1,
+    }
 }
 
 /// One encoded picture.
@@ -199,7 +233,8 @@ pub struct VideoFrame<'a> {
     pub number: u32,
     /// A picture that decodes on its own. The others build on the ones before.
     pub keyframe: bool,
-    /// An H.264 access unit with start codes.
+    /// A whole picture: for H.264 and H.265 an access unit with start
+    /// codes, for AV1 its OBUs one after the other.
     pub data: &'a [u8],
     /// How long the host took to capture and encode it, when it says.
     pub host_latency: Option<Duration>,
@@ -308,6 +343,7 @@ impl Session {
         // Asked for, and the handshake only succeeds when the host agrees.
         let microphone = config.foundation_enable_mic;
 
+        let formats = settings.supported_video_formats;
         let stream = MoonlightStream::connect(
             config,
             settings,
@@ -316,6 +352,7 @@ impl Session {
                 control: Arc::clone(&control),
                 waiting_for_keyframe: None,
                 scratch: Vec::new(),
+                formats,
             },
             AudioAdapter { sink: audio },
             Listener { ended: Some(Box::new(ended)), leaving: Arc::clone(&leaving) },
@@ -564,11 +601,14 @@ struct VideoAdapter<S> {
     waiting_for_keyframe: Option<Instant>,
     /// The picture being handed over, put back together in one piece.
     scratch: Vec<u8>,
+    /// What the protocol was told this device decodes.
+    formats: VideoFormats,
 }
 
 impl<S: VideoSink> VideoDecoder for VideoAdapter<S> {
     fn setup(&mut self, setup: ProtocolVideoSetup) -> i32 {
         self.sink.setup(VideoSetup {
+            codec: codec(setup.format),
             width: setup.width,
             height: setup.height,
             fps: setup.redraw_rate,
@@ -619,7 +659,7 @@ impl<S: VideoSink> VideoDecoder for VideoAdapter<S> {
     }
 
     fn supported_formats(&self) -> VideoFormats {
-        VideoFormats::H264
+        self.formats
     }
 }
 
@@ -829,6 +869,7 @@ mod tests {
             virtual_display: false,
             optimize_games: false,
             sound_on_pc: true,
+            codecs: Codecs::of(Codec::Av1).with(Codec::H264),
         };
         let settings = StreamSettings::chosen(Some(native), chosen);
         assert_eq!((settings.width, settings.height, settings.fps), (2560, 1440, 144));
@@ -837,6 +878,13 @@ mod tests {
         let protocol = settings.to_protocol();
         assert!(!protocol.sops);
         assert!(protocol.local_audio_play_mode);
+        assert_eq!(protocol.supported_video_formats, VideoFormats::AV1_MAIN8 | VideoFormats::H264);
+        // H.264 is offered whatever else is: every PC makes it.
+        let none = Choices { codecs: Codecs::NONE, ..Choices::default() };
+        assert_eq!(
+            StreamSettings::chosen(None, none).to_protocol().supported_video_formats,
+            VideoFormats::H264
+        );
         // Within what a stream can be given.
         let greedy = Choices { bitrate_kbps: Some(900_000), ..Choices::default() };
         assert_eq!(StreamSettings::chosen(None, greedy).bitrate_kbps, BITRATES_KBPS.1);
