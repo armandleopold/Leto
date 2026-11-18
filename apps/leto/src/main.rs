@@ -26,7 +26,10 @@ const STATUS_ID: &str = "leto_status";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    env_logger::init();
+    // The app has no terminal on Windows: what it says goes to a file.
+    if let Ok(settings) = leto_client::default_directory() {
+        leto_client::logs::start("leto", &settings);
+    }
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!(
         "../../../assets/brand/png/leto-icon-256.png"

@@ -125,6 +125,8 @@ struct About {
     homepage: &'static str,
     platform: Option<Platform>,
     can_host: bool,
+    /// The folder of Leto's logs, to send to whoever helps.
+    logs: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -137,12 +139,19 @@ struct PortRow {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // The bridge runs for long, beside other commands: it keeps its own log.
+    let program =
+        if matches!(cli.command, Command::Bridge { .. }) { "leto-bridge" } else { "leto-cli" };
+    if let Ok(settings) = settings_folder(&cli) {
+        leto_client::logs::start(program, &settings);
+    }
     match run(&cli) {
         Ok(output) => {
             println!("{output}");
             ExitCode::SUCCESS
         }
         Err(message) => {
+            log::error!("{message}");
             eprintln!("error: {message}");
             ExitCode::FAILURE
         }
@@ -152,7 +161,7 @@ fn main() -> ExitCode {
 fn run(cli: &Cli) -> Result<String, String> {
     let json = cli.json;
     match &cli.command {
-        Command::About => about(json),
+        Command::About => about(settings_folder(cli).ok(), json),
         Command::Ports { base } => ports(*base, json),
         Command::Pcs { wait } => pcs::list(&client(cli)?, *wait, json),
         Command::Add { address } => pcs::add(&client(cli)?, address, json),
@@ -200,7 +209,7 @@ fn client(cli: &Cli) -> Result<Client, String> {
     .map_err(|error| error.to_string())
 }
 
-fn about(json: bool) -> Result<String, String> {
+fn about(settings: Option<PathBuf>, json: bool) -> Result<String, String> {
     let platform = Platform::current();
     let about = About {
         name: brand::NAME,
@@ -208,14 +217,16 @@ fn about(json: bool) -> Result<String, String> {
         homepage: brand::HOMEPAGE,
         platform,
         can_host: platform.is_some_and(Platform::can_host),
+        logs: settings.as_deref().map(leto_client::logs::folder),
     };
     if json {
         return to_json(&about);
     }
     let platform_name = platform.map_or("unsupported platform", Platform::name);
     let role = if about.can_host { "host and client" } else { "client only" };
+    let logs = about.logs.as_ref().map_or("none".into(), |folder| folder.display().to_string());
     Ok(format!(
-        "{} {}\n{}\n{}\nPlatform: {platform_name} ({role})",
+        "{} {}\n{}\n{}\nPlatform: {platform_name} ({role})\nLogs: {logs}",
         about.name,
         about.version,
         brand::TAGLINE,
