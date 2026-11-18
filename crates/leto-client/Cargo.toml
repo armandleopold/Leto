@@ -28,3 +28,5 @@ thiserror = "2"
 
 [dev-dependencies]
 leto-testhost = { workspace = true }
+# Encodes the voice the tests send to the stand-in host.
+opus-rs = "0.1"

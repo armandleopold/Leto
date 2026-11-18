@@ -193,6 +193,8 @@ pub struct Session {
     /// The host knows a wheel that turns sideways: Sunshine and its
     /// descendants do, Nvidia's old service does not.
     sideways_wheel: bool,
+    /// The host takes the microphone of this device.
+    microphone: bool,
 }
 
 impl Session {
@@ -208,6 +210,8 @@ impl Session {
         let leaving = Arc::new(AtomicBool::new(false));
         let input_allowed = input_allowed(config.apollo_permissions.as_ref());
         let sideways_wheel = config.version.is_sunshine_like();
+        // Asked for, and the handshake only succeeds when the host agrees.
+        let microphone = config.foundation_enable_mic;
 
         let stream = MoonlightStream::connect(
             config,
@@ -228,7 +232,7 @@ impl Session {
         if control.keyframe_wanted_early.swap(false, Ordering::SeqCst) {
             control.request_keyframe();
         }
-        Ok(Self { stream, leaving, input_allowed, sideways_wheel })
+        Ok(Self { stream, leaving, input_allowed, sideways_wheel, microphone })
     }
 
     /// Whether the stream has ended, by either side.
@@ -245,6 +249,20 @@ impl Session {
     /// gamepads, as it was when the stream started.
     pub fn input_allowed(&self) -> InputAllowed {
         self.input_allowed
+    }
+
+    /// Whether the PC takes the microphone of this device. Few do: it needs
+    /// the Apollo microphone fork, Foundation Sunshine, or Leto on the PC.
+    pub fn takes_microphone(&self) -> bool {
+        self.microphone
+    }
+
+    /// Sends a moment of the microphone: one Opus frame, one channel at
+    /// 48 kHz, that starts `at` this long after the first one. Does not
+    /// wait. It travels encrypted, like the rest of the stream. Returns
+    /// whether it left.
+    pub fn send_microphone(&self, at: Duration, frame: &[u8]) -> bool {
+        self.microphone && self.stream.send_microphone_opus_data(at, frame)
     }
 
     /// Passes on something the person did with the keyboard, the mouse or a

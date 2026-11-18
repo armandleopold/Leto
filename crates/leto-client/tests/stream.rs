@@ -304,3 +304,89 @@ fn a_device_that_may_do_nothing_is_told_so_instead_of_shown_a_fake_app() {
     let refused = client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {});
     assert!(matches!(refused, Err(Error::NotAllowed(Permission::LaunchApps))));
 }
+
+/// One second of a 440 Hz tone as a microphone would send it: Opus frames of
+/// twenty milliseconds, one channel at 48 kHz.
+fn tone() -> Vec<Vec<u8>> {
+    use opus_rs::{Application, OpusEncoder};
+
+    let mut encoder = OpusEncoder::new(48_000, 1, Application::RestrictedLowDelay).unwrap();
+    encoder.bitrate_bps = 48_000;
+    let mut packet = vec![0u8; 1500];
+    (0..50u32)
+        .map(|frame| {
+            let samples: Vec<f32> = (0..960u32)
+                .map(|index| {
+                    let time = (frame * 960 + index) as f32 / 48_000.0;
+                    0.5 * (time * 440.0 * std::f32::consts::TAU).sin()
+                })
+                .collect();
+            let written = encoder.encode(&samples, 960, &mut packet).unwrap();
+            packet[..written].to_vec()
+        })
+        .collect()
+}
+
+#[test]
+fn the_microphone_reaches_a_host_that_takes_one() {
+    for encrypt_rtsp in [true, false] {
+        let settings = Settings::new();
+        let host = FakeHost::start_with(Options { encrypt_rtsp, ..Options::default() });
+        let client = settings.open();
+        let paired = pair(&client, &host);
+        let counter = Counter::default();
+
+        let session =
+            client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+        wait_for_stream(&counter);
+        assert!(session.takes_microphone());
+        let report = host.stream_report().expect("the host is streaming");
+        assert!(report.microphone, "the host listens, to an encrypted microphone");
+        assert_eq!(report.microphone_packets, 0, "nothing is sent until asked");
+
+        for (number, frame) in tone().iter().enumerate() {
+            assert!(session.send_microphone(Duration::from_millis(20) * number as u32, frame));
+            thread::sleep(Duration::from_millis(2));
+        }
+        wait_for("the microphone to arrive", || {
+            host.stream_report().is_some_and(|report| report.microphone_packets == 50)
+        });
+
+        // What the host heard is the tone: as loud, and at the same pitch.
+        let heard = host.heard();
+        assert_eq!(heard.len(), 48_000);
+        let settled = &heard[4_800..];
+        let mean = settled.iter().map(|sample| sample * sample).sum::<f32>() / settled.len() as f32;
+        let amplitude = (mean * 2.0).sqrt();
+        assert!((0.4..0.6).contains(&amplitude), "heard at {amplitude} instead of 0.5");
+        let rises = settled.windows(2).filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0).count();
+        let pitch = rises as f32 / (settled.len() as f32 / 48_000.0);
+        assert!((435.0..445.0).contains(&pitch), "heard at {pitch} Hz instead of 440");
+
+        session.stop();
+        wait_for("the stream to wind down", || counter.tally().stopped);
+        // The host remembers what the last stream said.
+        assert_eq!(host.heard().len(), 48_000);
+    }
+}
+
+#[test]
+fn a_host_that_knows_nothing_of_microphones_streams_as_before() {
+    let settings = Settings::new();
+    let host = FakeHost::start_with(Options { microphone: false, ..Options::default() });
+    let client = settings.open();
+    let paired = pair(&client, &host);
+    let counter = Counter::default();
+
+    let session =
+        client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+    let tally = wait_for_stream(&counter);
+    assert!(tally.keyframes >= 1);
+
+    assert!(!session.takes_microphone());
+    assert!(!session.send_microphone(Duration::ZERO, &tone()[0]));
+    let report = host.stream_report().expect("the host is streaming");
+    assert!(!report.microphone);
+    assert_eq!(report.microphone_packets, 0);
+    assert!(host.heard().is_empty());
+}
