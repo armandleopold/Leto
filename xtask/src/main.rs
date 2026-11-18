@@ -23,7 +23,7 @@ struct Target {
 const WEB_TARGET: &str = "wasm32-unknown-unknown";
 
 /// Packages with no platform code: they must compile everywhere.
-const PORTABLE: &[&str] = &["leto-core", "leto-protocol"];
+const PORTABLE: &[&str] = &["leto-core", "leto-protocol", "leto-return"];
 
 /// Every non-native target checked by `cargo xtask targets`.
 ///
@@ -38,7 +38,11 @@ const PORTABLE: &[&str] = &["leto-core", "leto-protocol"];
 /// land.
 const TARGETS: &[Target] = &[
     Target { triple: "aarch64-apple-darwin", packages: &[], zig: Some("aarch64-macos") },
-    Target { triple: WEB_TARGET, packages: &["leto", "leto-core", "leto-protocol"], zig: None },
+    Target {
+        triple: WEB_TARGET,
+        packages: &["leto", "leto-core", "leto-protocol", "leto-return"],
+        zig: None,
+    },
     Target { triple: "aarch64-linux-android", packages: PORTABLE, zig: None },
     Target { triple: "aarch64-apple-ios", packages: PORTABLE, zig: None },
 ];

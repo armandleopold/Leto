@@ -10,9 +10,13 @@
 //! shell that would rather ask and be told than call and wait uses
 //! [`service`].
 //!
+//! The camera of this device goes the other way, to a PC that takes one:
+//! see [`Client::send_camera`].
+//!
 //! It does not compile for the web: browsers have no sockets. The web client
 //! reaches hosts through a bridge instead.
 
+mod camera;
 mod describe;
 pub mod discovery;
 pub mod logs;
@@ -30,6 +34,7 @@ use std::{
     time::Duration,
 };
 
+pub use camera::{CameraLink, CameraRefusal, CameraSettings};
 pub use leto_core::{
     engine, input,
     model::{
@@ -95,6 +100,8 @@ pub enum Error {
     NotAllowed(Permission),
     #[error("the PC cannot stream with these settings: {0}")]
     Unsupported(String),
+    #[error("the PC does not take the camera of this device: {0}")]
+    Camera(CameraRefusal),
     #[error("Leto could not read or write its settings: {0}")]
     Storage(#[from] io::Error),
     #[error("searching the network failed: {0}")]
@@ -466,6 +473,38 @@ impl Client {
         };
         let ended = move |reason| ended(witness.confirm(reason));
         Ok(Session::connect(config, protocol, video, audio, ended)?)
+    }
+
+    /// The camera a paired host takes from this device, when it takes one.
+    /// No Sunshine or Apollo does. Blocks for a few seconds at most.
+    pub fn camera_offer(&self, id: &HostId) -> Result<Option<engine::CameraOffer>, Error> {
+        Ok(self.leto_api(id)?.camera_offer())
+    }
+
+    /// Asks a paired host to take the camera of this device, and opens the
+    /// way there. `sending` is what the pictures will be like: within what
+    /// [`Client::camera_offer`] said. Blocks until the host has answered.
+    ///
+    /// The pictures travel sealed with a key of their own, which the host
+    /// made and told over the paired HTTPS connection.
+    pub fn send_camera(&self, id: &HostId, sending: CameraSettings) -> Result<CameraLink, Error> {
+        self.leto_api(id)?.send_camera(sending)
+    }
+
+    /// Leto's own API on a paired host, which few have.
+    fn leto_api(&self, id: &HostId) -> Result<camera::LetoApi, Error> {
+        let (address, port, certificate) = {
+            let hosts = self.lock();
+            let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
+            (entry.summary.address.clone(), entry.summary.port, entry.certificate.clone())
+        };
+        camera::LetoApi::of(
+            &address,
+            port,
+            &self.identifier,
+            &self.secret,
+            &certificate.ok_or(Error::NotPaired)?,
+        )
     }
 
     /// Closes the app running on a paired host.

@@ -1,0 +1,21 @@
+[package]
+name = "leto-return"
+description = "The part of the return channel that is Leto's own: the packets of the camera, and the API a client asks its way on."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Every packet of the camera is sealed with it.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

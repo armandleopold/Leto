@@ -2144,6 +2144,9 @@ dependencies = [
  "gethostname",
  "httparse",
  "leto-core",
+ "leto-media",
+ "leto-protocol",
+ "leto-return",
  "leto-testhost",
  "log",
  "mdns-sd",
@@ -2187,11 +2190,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "leto-return"
+version = "0.0.1"
+dependencies = [
+ "aes-gcm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "leto-testhost"
 version = "0.0.1"
 dependencies = [
  "image",
  "leto-core",
+ "leto-return",
  "mdns-sd",
  "moonlight-common",
  "openh264",
@@ -2199,6 +2212,8 @@ dependencies = [
  "opus-rs",
  "pem 3.0.6",
  "rustls",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

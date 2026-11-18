@@ -54,7 +54,10 @@ use moonlight_common::{
 
 use opus_decoder::OpusDecoder;
 
-use crate::media::{Hands, Melody, TestCard};
+use crate::{
+    camera::Cameras,
+    media::{Hands, Melody, TestCard},
+};
 
 /// The version the stand-in host reports, the one of a current Sunshine.
 pub(crate) const APP_VERSION: &str = "7.1.431.-1";
@@ -100,14 +103,33 @@ pub(crate) struct Launch {
     pub encrypt_rtsp: bool,
     /// Take the microphone of a client that offers it.
     pub microphone: bool,
+    /// Where the camera of a client arrives, when the host takes one: the
+    /// test card shows what it sees.
+    pub camera: Option<Arc<Cameras>>,
 }
+
+/// How long the host may take to say that a client left
+/// ([`StreamReport::client_left`]) when the client went away without a word,
+/// which is how a client built on the protocol library leaves.
+///
+/// The host is told nothing: it gives up on a client that stopped answering.
+/// It looks at that each time its wait for an answer runs out, and doubles
+/// the wait each time. It gives up the first time it looks after thirty
+/// seconds, or after five once it has asked six times: the defaults of ENet,
+/// in `rusty_enet` 0.4.1. The first wait is as long as the host thinks an
+/// answer takes. With a client on the same computer that makes five to ten
+/// seconds. A host that was held up for a moment as it met its client thinks
+/// answers are slow: held up for 150 milliseconds, it was seen to take 29
+/// seconds, and by the rule above it can take up to a minute.
+pub const CLIENT_MISSED_WITHIN: Duration = Duration::from_secs(65);
 
 /// What a test can observe of a stream.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StreamReport {
     /// The client finished the handshake and opened the control connection.
     pub connected: bool,
-    /// The client closed the control connection.
+    /// The client said that it leaves, or stopped answering for so long that
+    /// the host gave up on it: see [`CLIENT_MISSED_WITHIN`].
     pub client_left: bool,
     pub width: u32,
     pub height: u32,
@@ -831,7 +853,8 @@ fn serve_video(inner: &Inner, negotiated: Negotiated) {
         drain(socket);
         let keyframe = inner.wants_keyframe.swap(false, Ordering::SeqCst);
         let hands = *lock(&inner.hands);
-        if let Some(frame) = card.next(keyframe, hands) {
+        let seen = inner.launch.camera.as_ref().and_then(|cameras| cameras.seen());
+        if let Some(frame) = card.next(keyframe, hands, seen.as_deref()) {
             let kind = if frame.keyframe { ServerFrameType::Idr } else { ServerFrameType::PFrame };
             // Video time counts in ninetieths of a millisecond.
             let timestamp = (number * 90_000 / u64::from(negotiated.fps)) as u32;
@@ -991,7 +1014,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn fill_random(bytes: &mut [u8]) {
+pub(crate) fn fill_random(bytes: &mut [u8]) {
     use moonlight_common::http::pair::PairingCryptoBackend;
     RustCryptoBackend.random_bytes(bytes).expect("the system provides random bytes");
 }

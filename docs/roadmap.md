@@ -39,7 +39,13 @@ Progress:
   desktop app (Windows and Linux) and in the browser, on a screen that also
   shows whether the microphone hears. Nothing of the camera is sent yet. See
   [architecture.md](architecture.md#the-camera).
-- Next: the camera on its way to a PC, over the return channel.
+- Done: the camera on its way to a PC that takes one, from the desktop app
+  and the command line: asked on Leto's API, encoded as H.264, sealed. One
+  switch in the bar over the picture, off at the start of every stream. No
+  Sunshine or Apollo takes a camera, so for now it reaches the stand-in host
+  only. See [architecture.md](architecture.md#on-its-way-to-a-pc) and
+  [return-channel.md](return-channel.md#camera-new-leto-extension).
+- Next: the camera from the browser, through the bridge.
 - Later in this step: decoding on the graphics card, H.265, HDR, surround
   sound, and the settings of Advanced mode (size, pictures per second, bit
   rate).
@@ -77,6 +83,26 @@ What the microphone does not do yet:
 - Sent to a stock Apollo or Sunshine it would go nowhere, so the switch is
   dimmed there. The receiver that changes this is the companion of step 4.
 - Nothing remembers that it was on: it is off at the start of every stream.
+
+What the camera does not do yet:
+
+- It reaches no real PC. The receiver is the companion of step 4, and until
+  then the switch is dimmed on every Sunshine and Apollo. What was checked is
+  the way to the stand-in host, which decodes the pictures and shows them.
+- No real camera was captured, on any system: the container this was written
+  in has none, and sends a test card. The Windows capture compiles and passes
+  its tests in the pipeline, and was never run by hand.
+- How a real Apollo or Sunshine reacts to the question on port + 13 was not
+  tried. A PC whose firewall drops it without a word delays the answer by
+  three seconds, after the stream plays.
+- From a browser it is captured and shown, not sent.
+- It is encoded in software. A hardware encoder comes with the hardware
+  decoder.
+- No choice of camera, of size or of bit rate, and nothing remembers that it
+  was on: it is off at the start of every stream.
+- Nothing is repaired on a poor network: a picture that lost a packet is
+  dropped, with the ones after it until the next that decodes on its own, two
+  seconds later at most.
 
 What input does not do yet:
 

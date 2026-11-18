@@ -15,14 +15,18 @@ use std::{
 };
 
 use leto_client::{
-    AudioSink, Client, Counter, Service, Shell, VideoSink,
-    engine::{Event, Request, StreamEnd},
+    AudioSink, CameraSettings, Client, Counter, Service, Shell, VideoSink,
+    engine::{CameraOffer, Event, Request, StreamEnd},
     input::{Input, InputAllowed, Key, Modifiers},
 };
-use leto_testhost::{FakeHost, Options, permission, quiet_voice};
+use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, Options, permission, quiet_voice};
 
 /// How long any step may take before the test gives up.
 const PATIENCE: Duration = Duration::from_secs(20);
+
+/// What a small camera would send.
+const CAMERA: CameraSettings =
+    CameraSettings { width: 320, height: 240, fps: 30, bitrate_kbps: 500 };
 
 /// A fresh settings folder per test.
 struct Settings(PathBuf);
@@ -53,6 +57,8 @@ struct Listener {
     counter: Counter,
     /// What `sinks` answers when set: this shell cannot show a stream.
     cannot_show: Option<&'static str>,
+    /// This shell has a camera to send.
+    camera: bool,
 }
 
 /// The counter's sinks have types without a name: boxed, they have one.
@@ -76,6 +82,10 @@ impl Shell for Listener {
             )),
         }
     }
+
+    fn sends_camera(&self) -> bool {
+        self.camera
+    }
 }
 
 struct Desk {
@@ -90,11 +100,20 @@ impl Desk {
     }
 
     fn with(cannot_show: Option<&'static str>) -> Self {
+        Self::of(cannot_show, false)
+    }
+
+    /// A desk with a camera to send.
+    fn with_camera() -> Self {
+        Self::of(None, true)
+    }
+
+    fn of(cannot_show: Option<&'static str>, camera: bool) -> Self {
         let settings = Settings::new();
         let client = Arc::new(Client::open(&settings.0).unwrap());
         let (sender, news) = mpsc::channel();
         let listener =
-            Listener { news: Mutex::new(sender), counter: Counter::default(), cannot_show };
+            Listener { news: Mutex::new(sender), counter: Counter::default(), cannot_show, camera };
         Self { service: Service::new(client, listener), news, _settings: settings }
     }
 
@@ -272,6 +291,127 @@ fn an_app_closed_on_the_pc_ends_the_stream_with_news() {
     assert_eq!(why, StreamEnd::AppClosed);
 }
 
+/// Waits until `done` says so.
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !done() {
+        assert!(start.elapsed() < PATIENCE, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_camera_goes_along_with_a_stream_and_stops_when_it_is_left() {
+    let host = FakeHost::start();
+    let desk = Desk::with_camera();
+    let id = desk.pair(&host);
+    // The stand-in PC would take it, and the engine waits for a stream.
+    assert!(desk.service.camera_open(CAMERA).is_err());
+    assert!(!host.camera_report().open);
+
+    desk.service.ask(Request::Play { host: id, app: 1, attempt: 4 });
+    // The news that the stream plays comes first: nothing waits for the
+    // camera.
+    let mut playing = false;
+    let offer = desk.wait(|event| match event {
+        Event::Playing { attempt: 4, .. } => {
+            playing = true;
+            None
+        }
+        Event::Camera { attempt: 4, offer } => Some(offer),
+        Event::PlayFailed { message, .. } => panic!("{message}"),
+        _ => None,
+    });
+    assert!(playing);
+    assert_eq!(offer, Some(CameraOffer { max_width: 1920, max_height: 1080, max_fps: 30 }));
+    assert!(!host.camera_report().open, "nothing is sent until the person says so");
+
+    let camera = desk.service.camera_open(CAMERA).unwrap();
+    assert_eq!(host.camera_report().asked, Some((320, 240, 30)));
+    // Three packets of something: what the pictures are is not the
+    // engine's business.
+    assert_eq!(desk.service.camera(camera, Duration::ZERO, true, &[7; 3000]), Some(true));
+    wait_for("the camera to arrive", || host.camera_report().packets == 3);
+    assert_eq!(host.camera_report().refused, 0);
+
+    desk.service.ask(Request::Leave);
+    assert_eq!(desk.service.camera(camera, Duration::ZERO, true, &[7; 3000]), None);
+    wait_for("the PC to learn that the camera stopped", || !host.camera_report().open);
+}
+
+#[test]
+fn a_camera_stops_with_a_stream_that_ends_and_when_asked() {
+    let host = FakeHost::start();
+    let desk = Desk::with_camera();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2 });
+    desk.wait(|event| matches!(event, Event::Camera { attempt: 2, .. }).then_some(()));
+
+    let first = desk.service.camera_open(CAMERA).unwrap();
+    desk.service.camera_close(first);
+    assert_eq!(desk.service.camera(first, Duration::ZERO, true, b"a picture"), None);
+    wait_for("the PC to learn that the camera stopped", || !host.camera_report().open);
+
+    // A camera that is asked for again takes the place of the one before,
+    // and whoever still holds that one neither sends through it nor stops
+    // it.
+    let second = desk.service.camera_open(CAMERA).unwrap();
+    let third = desk.service.camera_open(CAMERA).unwrap();
+    assert_eq!(desk.service.camera(second, Duration::ZERO, true, b"a picture"), None);
+    desk.service.camera_close(second);
+    assert_eq!(desk.service.camera(third, Duration::ZERO, true, b"a picture"), Some(true));
+    wait_for("the camera to arrive", || host.camera_report().packets == 1);
+    assert!(host.camera_report().open);
+
+    host.close_app();
+    desk.wait(|event| matches!(event, Event::StreamEnded { attempt: 2, .. }).then_some(()));
+    assert_eq!(desk.service.camera(third, Duration::ZERO, true, b"a picture"), None);
+    wait_for("the PC to learn that the camera stopped", || !host.camera_report().open);
+}
+
+#[test]
+fn a_pc_that_takes_no_camera_says_so_and_one_that_refuses_is_explained() {
+    let stock = FakeHost::start_with(Options { camera: None, ..Options::default() });
+    let desk = Desk::with_camera();
+    let id = desk.pair(&stock);
+    desk.service.ask(Request::Play { host: id, app: 1, attempt: 1 });
+    let offer = desk.wait(|event| match event {
+        Event::Camera { attempt: 1, offer } => Some(offer),
+        Event::PlayFailed { message, .. } => panic!("{message}"),
+        _ => None,
+    });
+    assert_eq!(offer, None);
+    drop(desk);
+
+    let host = FakeHost::start();
+    let desk = Desk::with_camera();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play { host: id, app: 1, attempt: 1 });
+    desk.wait(|event| matches!(event, Event::Camera { attempt: 1, .. }).then_some(()));
+    host.refuse_camera(true);
+    let message = desk.service.camera_open(CAMERA).unwrap_err();
+    assert!(message.contains("does not let this device send its camera"), "{message}");
+    assert!(message.ends_with('.'), "{message}");
+    assert!(!host.camera_report().open);
+}
+
+#[test]
+fn a_shell_without_a_camera_hears_nothing_about_one() {
+    let host = FakeHost::start();
+    let desk = Desk::new();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2 });
+    desk.wait(|event| matches!(event, Event::Playing { attempt: 2, .. }).then_some(()));
+    // Long enough for the news about a camera to have come, had the PC
+    // been asked.
+    host.close_app();
+    desk.wait(|event| match event {
+        Event::Camera { .. } => panic!("nobody has a camera to send"),
+        Event::StreamEnded { attempt: 2, .. } => Some(()),
+        _ => None,
+    });
+}
+
 #[test]
 fn a_shell_that_cannot_show_a_stream_says_why_and_starts_nothing() {
     let host = FakeHost::start();
@@ -319,10 +459,12 @@ fn a_service_that_goes_away_leaves_its_stream() {
     }
     assert!(host.stream_report().is_some_and(|report| !report.client_left));
 
+    // Nobody tells the host: it has to miss the client, which takes it
+    // seconds at best.
     drop(desk);
     let start = Instant::now();
     while !host.stream_report().is_some_and(|report| report.client_left) {
-        assert!(start.elapsed() < PATIENCE, "the stream was never left");
+        assert!(start.elapsed() < CLIENT_MISSED_WITHIN, "the stream was never left");
         std::thread::sleep(Duration::from_millis(20));
     }
 }

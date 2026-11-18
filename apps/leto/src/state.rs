@@ -98,6 +98,7 @@ pub struct StreamView {
     /// What the PC lets this device play with, known once connected.
     pub input: InputAllowed,
     pub microphone: Mic,
+    pub camera: Cam,
 }
 
 /// The microphone of this device during a stream.
@@ -111,6 +112,22 @@ pub enum Mic {
     /// opened.
     On,
     /// It was turned on and cannot be used: why.
+    Failed(String),
+}
+
+/// The camera of this device during a stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cam {
+    /// Nobody said yet whether the PC takes one: there is nothing to show.
+    Unknown,
+    /// The PC takes none.
+    NotTaken,
+    /// The PC would take it and sees nothing: nobody turned it on.
+    Off,
+    /// It is on: the PC sees this device as soon as the camera has opened
+    /// and the PC agreed.
+    On,
+    /// It was turned on and cannot be sent: why.
     Failed(String),
 }
 
@@ -269,9 +286,10 @@ impl State {
             attempt: self.attempts,
             connected: false,
             input: InputAllowed::ALL,
-            // Off at the start of every stream: a PC hears this device
-            // only once the person says so.
+            // Off at the start of every stream: a PC hears and sees this
+            // device only once the person says so.
             microphone: Mic::NotTaken,
+            camera: Cam::Unknown,
         });
     }
 
@@ -295,6 +313,30 @@ impl State {
             && view.microphone == Mic::On
         {
             view.microphone = Mic::Failed(why);
+        }
+    }
+
+    /// The person turns the camera on, or off again. A camera that failed
+    /// is tried again.
+    pub fn switch_camera(&mut self) {
+        if let Screen::Stream(view) = &mut self.screen
+            && view.connected
+        {
+            view.camera = match view.camera {
+                Cam::Unknown => Cam::Unknown,
+                Cam::NotTaken => Cam::NotTaken,
+                Cam::On => Cam::Off,
+                Cam::Off | Cam::Failed(_) => Cam::On,
+            };
+        }
+    }
+
+    /// The camera that was turned on cannot be sent, for this reason.
+    pub fn camera_failed(&mut self, why: String) {
+        if let Screen::Stream(view) = &mut self.screen
+            && view.camera == Cam::On
+        {
+            view.camera = Cam::Failed(why);
         }
     }
 
@@ -484,6 +526,14 @@ impl State {
                     view.microphone = if microphone { Mic::Off } else { Mic::NotTaken };
                 }
             }
+            Event::Camera { attempt, offer } => {
+                if let Screen::Stream(view) = &mut self.screen
+                    && view.attempt == attempt
+                    && view.camera == Cam::Unknown
+                {
+                    view.camera = if offer.is_some() { Cam::Off } else { Cam::NotTaken };
+                }
+            }
             Event::PlayFailed { attempt, message } => {
                 // A stream the person already left changes no screen.
                 let Screen::Stream(view) = &self.screen else { return };
@@ -535,7 +585,7 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use leto_core::model::HostKind;
+    use leto_core::{engine::CameraOffer, model::HostKind};
 
     use super::*;
 
@@ -811,6 +861,84 @@ mod tests {
 
         state.switch_microphone();
         assert_eq!(microphone(&state), &Mic::On);
+    }
+
+    /// The news that the PC of stream `attempt` takes a camera, or none.
+    fn camera_news(attempt: u64, takes: bool) -> Event {
+        let offer = CameraOffer { max_width: 1920, max_height: 1080, max_fps: 30 };
+        Event::Camera { attempt, offer: takes.then_some(offer) }
+    }
+
+    fn camera(state: &State) -> &Cam {
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        &view.camera
+    }
+
+    #[test]
+    fn the_camera_is_off_until_the_person_turns_it_on_in_every_stream() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.apply(playing(1, true), 3.0);
+
+        // Nothing to switch before the PC said whether it takes one, which
+        // comes a moment after the stream.
+        state.switch_camera();
+        assert_eq!(camera(&state), &Cam::Unknown);
+
+        state.apply(camera_news(1, true), 3.5);
+        assert_eq!(camera(&state), &Cam::Off);
+        state.switch_camera();
+        assert_eq!(camera(&state), &Cam::On);
+        // Said twice, it does not turn off what the person turned on.
+        state.apply(camera_news(1, true), 3.6);
+        assert_eq!(camera(&state), &Cam::On);
+        state.switch_camera();
+        assert_eq!(camera(&state), &Cam::Off);
+
+        // Left on, it is off again in the next stream, and what the PC of
+        // the stream before says comes too late to matter.
+        state.switch_camera();
+        state.leave_stream();
+        state.play(&app(1, "Desktop"));
+        state.apply(playing(2, true), 9.0);
+        state.apply(camera_news(1, true), 9.1);
+        assert_eq!(camera(&state), &Cam::Unknown);
+        state.apply(camera_news(2, true), 9.5);
+        assert_eq!(camera(&state), &Cam::Off);
+    }
+
+    #[test]
+    fn a_pc_that_takes_no_camera_has_nothing_to_switch() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.apply(playing(1, true), 3.0);
+        state.apply(camera_news(1, false), 3.5);
+        state.switch_camera();
+        assert_eq!(camera(&state), &Cam::NotTaken);
+    }
+
+    #[test]
+    fn a_camera_that_cannot_be_sent_says_why_and_can_be_tried_again() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"));
+        state.apply(playing(1, true), 3.0);
+        state.apply(camera_news(1, true), 3.5);
+
+        // A failure nobody asked for a camera for changes nothing.
+        state.camera_failed("Too early.".into());
+        assert_eq!(camera(&state), &Cam::Off);
+
+        state.switch_camera();
+        state.camera_failed("This device has no camera.".into());
+        assert_eq!(camera(&state), &Cam::Failed("This device has no camera.".into()));
+        // The microphone is another matter.
+        assert_eq!(microphone(&state), &Mic::Off);
+
+        state.switch_camera();
+        assert_eq!(camera(&state), &Cam::On);
     }
 
     #[test]

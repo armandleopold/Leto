@@ -4,7 +4,8 @@
 //! Sunshine and Apollo do, so one setting moves the whole set. The offsets
 //! below match Apollo's sources (`nvhttp.h`, `confighttp.h`, `stream.h`,
 //! `rtsp.h`); the microphone offset comes from the microphone-enabled Apollo
-//! build (Apollo pull request 1428).
+//! build (Apollo pull request 1428). The offset after it is Leto's own: no
+//! project read for `docs/inventory.md` uses it.
 
 use std::fmt;
 
@@ -49,13 +50,19 @@ pub enum Service {
     /// Microphone stream, client to host. An extension: only hosts that
     /// advertise it listen on this port.
     Microphone,
+    /// Leto's own API, over TLS with the pairing certificates: what a client
+    /// asks the camera's way on. An extension.
+    LetoApi,
+    /// Camera stream, client to host. An extension, on the number of Leto's
+    /// API.
+    Camera,
     /// RTSP session setup.
     Rtsp,
 }
 
 impl Service {
     /// Every service, in ascending port order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Https,
         Self::Http,
         Self::WebUi,
@@ -63,6 +70,8 @@ impl Service {
         Self::Control,
         Self::Audio,
         Self::Microphone,
+        Self::LetoApi,
+        Self::Camera,
         Self::Rtsp,
     ];
 
@@ -76,6 +85,7 @@ impl Service {
             Self::Control => 10,
             Self::Audio => 11,
             Self::Microphone => 12,
+            Self::LetoApi | Self::Camera => 13,
             Self::Rtsp => 21,
         }
     }
@@ -83,15 +93,17 @@ impl Service {
     /// Transport protocol of this service.
     pub const fn transport(self) -> Transport {
         match self {
-            Self::Https | Self::Http | Self::WebUi | Self::Rtsp => Transport::Tcp,
-            Self::Video | Self::Control | Self::Audio | Self::Microphone => Transport::Udp,
+            Self::Https | Self::Http | Self::WebUi | Self::LetoApi | Self::Rtsp => Transport::Tcp,
+            Self::Video | Self::Control | Self::Audio | Self::Microphone | Self::Camera => {
+                Transport::Udp
+            }
         }
     }
 
     /// Whether the service is part of the baseline protocol every
     /// Moonlight-compatible host offers, as opposed to an extension.
     pub const fn is_baseline(self) -> bool {
-        !matches!(self, Self::Microphone)
+        !matches!(self, Self::Microphone | Self::LetoApi | Self::Camera)
     }
 
     /// Short human-readable name.
@@ -104,6 +116,8 @@ impl Service {
             Self::Control => "Control",
             Self::Audio => "Audio",
             Self::Microphone => "Microphone",
+            Self::LetoApi => "Leto API",
+            Self::Camera => "Camera",
             Self::Rtsp => "RTSP",
         }
     }
@@ -186,6 +200,9 @@ mod tests {
         assert_eq!(ports.port(Service::Audio), 48000);
         assert_eq!(ports.port(Service::Microphone), 48001);
         assert_eq!(ports.port(Service::Rtsp), 48010);
+        // Leto's own, where none of them listens.
+        assert_eq!(ports.port(Service::LetoApi), 48002);
+        assert_eq!(ports.port(Service::Camera), 48002);
     }
 
     #[test]
@@ -212,8 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn only_the_microphone_is_an_extension() {
+    fn what_goes_back_to_the_host_is_an_extension() {
         let extensions: Vec<_> = Service::ALL.into_iter().filter(|s| !s.is_baseline()).collect();
-        assert_eq!(extensions, [Service::Microphone]);
+        assert_eq!(extensions, [Service::Microphone, Service::LetoApi, Service::Camera]);
     }
 }

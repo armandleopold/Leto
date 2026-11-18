@@ -11,10 +11,14 @@
 //! follows `nvhttp.cpp` in Sunshine and Apollo, and the XML is written by hand
 //! the way those hosts write it, so a client's parsing is exercised too. Then
 //! `launch`, `resume` and `cancel`, and the stream itself, in [`stream`].
+//!
+//! It also does one thing no Sunshine or Apollo does: it takes the camera of
+//! a client, the way Leto's own host will. See [`camera`].
 
 // Test support: a failed assumption should stop the test loudly.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod camera;
 mod media;
 mod stream;
 
@@ -47,7 +51,8 @@ use rustls::{
     server::danger::{ClientCertVerified, ClientCertVerifier},
 };
 
-pub use stream::StreamReport;
+pub use camera::{CameraReport, Seen};
+pub use stream::{CLIENT_MISSED_WITHIN, StreamReport};
 
 /// A tiny valid PNG: one transparent pixel.
 pub const COVER_PNG: &[u8] = &[
@@ -135,6 +140,11 @@ pub struct Options {
     /// microphone fork and Foundation Sunshine do. Without it the host is
     /// like a stock Sunshine or Apollo, which knows nothing of microphones.
     pub microphone: bool,
+    /// Take the camera of a client, the way Leto's own host will: answer
+    /// Leto's API thirteen ports above `port`, and take pictures no larger
+    /// than this width and height. Without it the host is like every
+    /// Sunshine and Apollo, which know nothing of cameras.
+    pub camera: Option<(u32, u32)>,
 }
 
 impl Default for Options {
@@ -152,6 +162,7 @@ impl Default for Options {
             encrypt_rtsp: true,
             permissions: None,
             microphone: true,
+            camera: Some((1920, 1080)),
         }
     }
 }
@@ -189,6 +200,8 @@ struct Shared {
     options: Options,
     http_port: u16,
     https_port: u16,
+    /// Where the camera of a client arrives, when the host takes one.
+    cameras: Option<Arc<camera::Cameras>>,
     stop: AtomicBool,
 }
 
@@ -237,8 +250,9 @@ impl FakeHost {
     }
 
     pub fn start_with(options: Options) -> Self {
-        let http = TcpListener::bind((options.interface.as_str(), options.port)).unwrap();
+        let (http, cameras) = listen(&options);
         let https = TcpListener::bind((options.interface.as_str(), 0)).unwrap();
+        let (cameras, api) = cameras.unzip();
         let shared = Arc::new(Shared {
             identity: Mutex::new(new_identity()),
             typed_pin: Mutex::new(None),
@@ -249,11 +263,21 @@ impl FakeHost {
             options,
             http_port: http.local_addr().unwrap().port(),
             https_port: https.local_addr().unwrap().port(),
+            cameras,
             stop: AtomicBool::new(false),
         });
 
-        let threads =
-            vec![serve(http, Arc::clone(&shared), false), serve(https, Arc::clone(&shared), true)];
+        let mut threads = vec![
+            serve(http, Arc::clone(&shared), Service::Plain),
+            serve(https, Arc::clone(&shared), Service::Secure),
+        ];
+        if let (Some(cameras), Some(api)) = (&shared.cameras, api) {
+            threads.push(serve(api, Arc::clone(&shared), Service::LetoApi));
+            threads.push(thread::spawn({
+                let (cameras, shared) = (Arc::clone(cameras), Arc::clone(&shared));
+                move || cameras.receive(&shared.stop)
+            }));
+        }
         Self { shared, threads }
     }
 
@@ -333,6 +357,31 @@ impl FakeHost {
         self.shared.playing.lock().unwrap().end_stream(true);
     }
 
+    /// The port a client asks on to send its camera, when the host takes
+    /// one. See [`Options::camera`].
+    pub fn camera_port(&self) -> Option<u16> {
+        self.shared.cameras.as_ref().map(|cameras| cameras.port())
+    }
+
+    /// What the camera of a client did: the one that is sending, or the last
+    /// one that did.
+    pub fn camera_report(&self) -> CameraReport {
+        self.shared.cameras.as_ref().map(|cameras| cameras.report()).unwrap_or_default()
+    }
+
+    /// The last picture of the camera a client is sending.
+    pub fn seen(&self) -> Option<Arc<Seen>> {
+        self.shared.cameras.as_ref().and_then(|cameras| cameras.seen())
+    }
+
+    /// The host's owner stops letting devices send their camera, or lets
+    /// them again.
+    pub fn refuse_camera(&self, refused: bool) {
+        if let Some(cameras) = &self.shared.cameras {
+            cameras.refuse(refused);
+        }
+    }
+
     /// Something else now answers on this address with the same name and id
     /// but another certificate and key: an impostor, or a reinstalled host.
     pub fn become_impostor(&self) {
@@ -345,9 +394,44 @@ impl Drop for FakeHost {
         self.shared.stop.store(true, Ordering::SeqCst);
         self.shared.playing.lock().unwrap().end_stream(false);
         for thread in self.threads.drain(..) {
+            // The thread that takes the camera waits for a packet as long
+            // as it takes: it is sent one, and another should that be lost.
+            while !thread.is_finished() {
+                if let Some(cameras) = &self.shared.cameras {
+                    cameras.wake();
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
             let _ = thread.join();
         }
     }
+}
+
+/// Opens the host's own port and, for a host that takes a camera, the one of
+/// Leto's API, which clients look for thirteen ports above it.
+fn listen(options: &Options) -> (TcpListener, Option<(Arc<camera::Cameras>, TcpListener)>) {
+    let interface = options.interface.as_str();
+    loop {
+        let http = TcpListener::bind((interface, options.port)).unwrap();
+        let Some(largest) = options.camera else { return (http, None) };
+        let port = http.local_addr().unwrap().port();
+        match camera::Cameras::open(interface, port, largest) {
+            Ok(cameras) => return (http, Some(cameras)),
+            // A port that was asked for by number stays: when the one above
+            // it is taken, the host takes no camera.
+            Err(_) if options.port != 0 => return (http, None),
+            // Any port would do: another one, then.
+            Err(_) => {}
+        }
+    }
+}
+
+/// What a port of the host is for.
+#[derive(Clone, Copy)]
+enum Service {
+    Plain,
+    Secure,
+    LetoApi,
 }
 
 fn new_identity() -> HostIdentity {
@@ -416,7 +500,7 @@ impl ClientCertVerifier for AnyClient {
     }
 }
 
-fn serve(listener: TcpListener, shared: Arc<Shared>, secure: bool) -> thread::JoinHandle<()> {
+fn serve(listener: TcpListener, shared: Arc<Shared>, service: Service) -> thread::JoinHandle<()> {
     listener.set_nonblocking(true).unwrap();
     thread::spawn(move || {
         while !shared.stop.load(Ordering::SeqCst) {
@@ -426,10 +510,13 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, secure: bool) -> thread::Jo
                     thread::spawn(move || {
                         let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                        if secure {
-                            handle_secure(stream, &shared)
-                        } else {
-                            handle_plain(stream, &shared)
+                        match (service, &shared.cameras) {
+                            (Service::Plain, _) => handle_plain(stream, &shared),
+                            (Service::Secure, _) => handle_secure(stream, &shared),
+                            (Service::LetoApi, Some(cameras)) => {
+                                camera::handle(stream, &shared, cameras);
+                            }
+                            (Service::LetoApi, None) => {}
                         }
                     });
                 }
@@ -681,6 +768,7 @@ fn launch(
         encrypt_rtsp: shared.options.encrypt_rtsp
             && query.get("corever").and_then(|version| version.parse::<u32>().ok()) >= Some(1),
         microphone: shared.options.microphone,
+        camera: shared.cameras.clone(),
     };
 
     playing.end_stream(false);

@@ -37,7 +37,7 @@ use self::{
     screen::{Canvas, Screen, Shown},
     speaker::Speaker,
 };
-use super::{Door, Picture, Seen, Unavailable, decode_cover};
+use super::{Door, Filming, Picture, Seen, Unavailable, decode_cover};
 use crate::state::{Event, Request};
 
 /// Where the browser keeps the key its bridge gave it.
@@ -254,6 +254,12 @@ impl Backend {
             },
             Device::Refused(why) => Err(why),
         }
+    }
+
+    /// A browser's camera does not reach a PC yet, and the bridge says of
+    /// no PC that it takes one: nothing is ever on here.
+    pub fn film(&self, _on: bool) -> Result<Option<Filming>, String> {
+        Ok(None)
     }
 
     /// Captures the camera of this browser while `on`, for the person to
