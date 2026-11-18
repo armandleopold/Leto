@@ -34,7 +34,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use leto_core::{input::Input, model::Pin};
+use leto_core::{
+    engine::{Codec, Codecs},
+    input::Input,
+    model::Pin,
+};
 use moonlight_common::{
     crypto::rustcrypto::RustCryptoBackend,
     http::{
@@ -145,6 +149,10 @@ pub struct Options {
     /// than this width and height. Without it the host is like every
     /// Sunshine and Apollo, which know nothing of cameras.
     pub camera: Option<(u32, u32)>,
+    /// The codecs the host says it encodes, the way Sunshine and Apollo say
+    /// it. Whichever the client asks for, the pictures are H.264: enough to
+    /// see what a client chooses, as [`StreamReport::codec`] tells.
+    pub encodes: Codecs,
 }
 
 impl Default for Options {
@@ -163,6 +171,7 @@ impl Default for Options {
             permissions: None,
             microphone: true,
             camera: Some((1920, 1080)),
+            encodes: Codecs::of(Codec::H264),
         }
     }
 }
@@ -683,7 +692,7 @@ fn respond(
              <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
              <HttpsPort>{}</HttpsPort><ExternalPort>{}</ExternalPort>\
              <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>00:11:22:33:44:55</mac>\
-             <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>3</ServerCodecModeSupport>\
+             <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>{}</ServerCodecModeSupport>\
              <PairStatus>{}</PairStatus><currentgame>{}</currentgame>\
              <state>{}</state>{permission}",
                 stream::APP_VERSION,
@@ -691,6 +700,7 @@ fn respond(
                 shared.options.id,
                 shared.https_port,
                 shared.http_port,
+                codec_mode_support(shared.options.encodes),
                 u8::from(authorized),
                 running.unwrap_or(0),
                 if running.is_some() { "SUNSHINE_SERVER_BUSY" } else { "SUNSHINE_SERVER_FREE" },
@@ -789,6 +799,7 @@ fn launch(
             && query.get("corever").and_then(|version| version.parse::<u32>().ok()) >= Some(1),
         microphone: shared.options.microphone,
         camera: shared.cameras.clone(),
+        encodes: shared.options.encodes,
     };
 
     playing.screen_asked = Some(ScreenAsked {
@@ -809,6 +820,20 @@ fn launch(
     } else {
         xml(&format!("<sessionUrl0>{url}</sessionUrl0><gamesession>1</gamesession>"))
     }
+}
+
+/// The codecs a host encodes, as `serverinfo` says them: bits of
+/// `ServerCodecModeSupport`, 8-bit ones only.
+fn codec_mode_support(encodes: Codecs) -> u32 {
+    // H.264 as the stand-in has always said it.
+    let mut bits = 0b11;
+    if encodes.contains(Codec::H265) {
+        bits |= 1 << 8;
+    }
+    if encodes.contains(Codec::Av1) {
+        bits |= 1 << 16;
+    }
+    bits
 }
 
 /// The five pairing steps, as `nvhttp.cpp` does them.

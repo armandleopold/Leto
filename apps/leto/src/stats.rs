@@ -7,12 +7,18 @@
 
 use std::time::Duration;
 
+use leto_core::engine::Codec;
+
 /// What happened to the pictures of a stream since it started. Every number
 /// only grows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     /// What the PC said it sends: width, height, pictures per second.
     pub sent: Option<[u32; 3]>,
+    /// The codec of the pictures, and whether the graphics card decodes
+    /// them, where the backend knows.
+    pub codec: Option<Codec>,
+    pub on_graphics_card: Option<bool>,
     /// Pictures that arrived, and their size in bytes.
     pub received: u64,
     pub bytes: u64,

@@ -170,11 +170,132 @@ pub struct Choices {
     pub optimize_games: bool,
     /// The PC's own speakers keep playing. Otherwise only this device does.
     pub sound_on_pc: bool,
+    /// The codecs this device decodes well enough for a stream. The PC
+    /// picks the best of them it can encode: AV1, then H.265, then H.264.
+    pub codecs: Codecs,
 }
 
 impl Default for Choices {
     fn default() -> Self {
-        Self { bitrate_kbps: None, virtual_display: true, optimize_games: true, sound_on_pc: false }
+        Self {
+            bitrate_kbps: None,
+            virtual_display: true,
+            optimize_games: true,
+            sound_on_pc: false,
+            codecs: Codecs::default(),
+        }
+    }
+}
+
+/// A way pictures are compressed. H.264 by default, which every PC sends
+/// and every device decodes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Codec {
+    #[default]
+    H264,
+    H265,
+    Av1,
+}
+
+impl Codec {
+    /// Every codec, the one that compresses best first: at the same bit
+    /// rate, AV1 looks better than H.265, which looks better than H.264.
+    pub const BEST_FIRST: [Self; 3] = [Self::Av1, Self::H265, Self::H264];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::H265 => "H.265",
+            Self::Av1 => "AV1",
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::H264 => 1,
+            Self::H265 => 1 << 1,
+            Self::Av1 => 1 << 2,
+        }
+    }
+}
+
+/// Some codecs. By default H.264 alone, which every PC sends and every
+/// device decodes.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Vec<Codec>", into = "Vec<Codec>")]
+pub struct Codecs(u8);
+
+impl Codecs {
+    pub const NONE: Self = Self(0);
+
+    pub const fn of(codec: Codec) -> Self {
+        Self(codec.bit())
+    }
+
+    #[must_use]
+    pub const fn with(self, codec: Codec) -> Self {
+        Self(self.0 | codec.bit())
+    }
+
+    /// These codecs and those.
+    #[must_use]
+    pub const fn and(self, others: Self) -> Self {
+        Self(self.0 | others.0)
+    }
+
+    pub const fn contains(self, codec: Codec) -> bool {
+        self.0 & codec.bit() != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The codecs, the one that compresses best first.
+    pub fn best_first(self) -> impl Iterator<Item = Codec> {
+        Codec::BEST_FIRST.into_iter().filter(move |codec| self.contains(*codec))
+    }
+
+    /// The codec that compresses best, of these.
+    pub fn best(self) -> Option<Codec> {
+        self.best_first().next()
+    }
+}
+
+impl Default for Codecs {
+    fn default() -> Self {
+        Self::of(Codec::H264)
+    }
+}
+
+/// The codecs a device decodes: on its graphics card, and at all, on the
+/// graphics card or the processor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decodable {
+    pub hardware: Codecs,
+    pub any: Codecs,
+}
+
+impl Decodable {
+    /// H.264 on the processor, which every device decodes.
+    pub const SOFTWARE: Self = Self { hardware: Codecs::NONE, any: Codecs::of(Codec::H264) };
+}
+
+impl std::fmt::Debug for Codecs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_list().entries(self.best_first()).finish()
+    }
+}
+
+impl From<Vec<Codec>> for Codecs {
+    fn from(codecs: Vec<Codec>) -> Self {
+        codecs.into_iter().fold(Self::NONE, Self::with)
+    }
+}
+
+impl From<Codecs> for Vec<Codec> {
+    fn from(codecs: Codecs) -> Self {
+        codecs.best_first().collect()
     }
 }
 
@@ -346,6 +467,7 @@ mod tests {
                     virtual_display: false,
                     optimize_games: false,
                     sound_on_pc: true,
+                    codecs: Codecs::of(Codec::H265).with(Codec::H264),
                 },
             },
             Request::Leave,
@@ -370,6 +492,19 @@ mod tests {
                 choices: Choices::default()
             }
         );
+    }
+
+    #[test]
+    fn codecs_read_and_write_as_a_list_and_the_best_comes_first() {
+        let codecs = Codecs::of(Codec::H264).with(Codec::Av1);
+        assert_eq!(serde_json::to_string(&codecs).expect("codecs write"), r#"["Av1","H264"]"#);
+        let read: Codecs = serde_json::from_str(r#"["H264","H265"]"#).expect("codecs read");
+        assert_eq!(read.best(), Some(Codec::H265));
+        assert!(!read.contains(Codec::Av1));
+        assert_eq!(Codecs::NONE.best(), None);
+        // An older page says nothing of codecs: H.264, as before.
+        let choices: Choices = serde_json::from_str("{}").expect("no choice reads");
+        assert_eq!(choices.codecs, Codecs::of(Codec::H264));
     }
 
     #[test]

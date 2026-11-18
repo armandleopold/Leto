@@ -3,12 +3,12 @@
 //! counts from the next stream on, and is kept at once.
 
 use egui::{Align, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, vec2};
-use leto_core::engine::{BITRATES_KBPS, ScreenMode};
+use leto_core::engine::{BITRATES_KBPS, Codec, Decodable, ScreenMode};
 
 use super::widgets;
 use crate::{
     input::Shortcut,
-    settings::{Capture, FRAME_RATES, RESOLUTIONS, Settings},
+    settings::{CODECS, Capture, Decoder, FRAME_RATES, RESOLUTIONS, Settings, codec_name},
     theme,
 };
 
@@ -30,12 +30,13 @@ const SWITCH_WIDTH: f32 = 44.0;
 const DESKTOP: bool = cfg!(not(target_arch = "wasm32"));
 
 /// Draws the settings. `native` is the screen the window is on, when it
-/// knows, and `back_to` names where the back button leads. Returns whether
-/// the person asked to go back.
+/// knows, `decodable` what this device decodes, and `back_to` names where
+/// the back button leads. Returns whether the person asked to go back.
 pub fn show(
     ui: &mut Ui,
     settings: &mut Settings,
     native: Option<ScreenMode>,
+    decodable: Decodable,
     back_to: &str,
 ) -> bool {
     if widgets::back_button(ui, back_to).clicked() {
@@ -54,7 +55,7 @@ pub fn show(
         UiBuilder::new().max_rect(column).layout(Layout::top_down(Align::Min)),
         |ui| {
             picture_and_sound(ui, settings, native);
-            hands_and_more(ui, settings);
+            hands_and_more(ui, settings, decodable);
             ui.add_space(4.0);
             let changed = *settings != Settings::default();
             let reset =
@@ -192,7 +193,7 @@ fn picture_and_sound(ui: &mut Ui, settings: &mut Settings, native: Option<Screen
     });
 }
 
-fn hands_and_more(ui: &mut Ui, settings: &mut Settings) {
+fn hands_and_more(ui: &mut Ui, settings: &mut Settings, decodable: Decodable) {
     card(ui, "Keyboard and mouse", |ui| {
         if DESKTOP {
             let about = format!(
@@ -237,11 +238,64 @@ fn hands_and_more(ui: &mut Ui, settings: &mut Settings) {
     });
 
     card(ui, "Advanced", |ui| {
+        // A browser decodes as it sees fit, and gets H.264 from the bridge.
+        if DESKTOP {
+            decoding(ui, settings, decodable);
+        }
         let about = format!("{} shows or hides them during a stream.", Shortcut::Statistics.keys());
         row(ui, "Statistics from the start", &about, SWITCH_WIDTH, |ui| {
             widgets::switch(ui, &mut settings.statistics, "Statistics from the start");
         });
     });
+}
+
+/// Who decodes the pictures, and in which codec.
+fn decoding(ui: &mut Ui, settings: &mut Settings, decodable: Decodable) {
+    let about = "Automatic decodes on the graphics card when it can. Software leaves it to the \
+                 processor, which takes more of it.";
+    row(ui, "Video decoder", about, LIST_WIDTH, |ui| {
+        egui::ComboBox::from_id_salt("decoder")
+            .width(LIST_WIDTH)
+            .selected_text(settings.decoder.name())
+            .show_ui(ui, |ui| {
+                for decoder in Decoder::ALL {
+                    ui.selectable_value(&mut settings.decoder, decoder, decoder.name());
+                }
+            });
+    });
+    row(ui, "Video codec", &codec_about(decodable), LIST_WIDTH, |ui| {
+        egui::ComboBox::from_id_salt("codec")
+            .width(LIST_WIDTH)
+            .selected_text(codec_name(settings.codec))
+            .show_ui(ui, |ui| {
+                for codec in CODECS {
+                    let decodes = codec.is_none_or(|codec| decodable.any.contains(codec));
+                    let choice = ui.add_enabled_ui(decodes, |ui| {
+                        ui.selectable_value(&mut settings.codec, codec, codec_name(codec))
+                    });
+                    choice.inner.on_disabled_hover_text("This device does not decode it.");
+                }
+            });
+    });
+}
+
+/// What the automatic codec is on this device.
+fn codec_about(decodable: Decodable) -> String {
+    let better: Vec<_> = decodable
+        .hardware
+        .best_first()
+        .filter(|codec| *codec != Codec::H264)
+        .map(Codec::name)
+        .collect();
+    if better.is_empty() {
+        "Automatic is H.264: the graphics card here decodes neither AV1 nor H.265 for Leto."
+            .to_owned()
+    } else {
+        format!(
+            "Automatic asks the PC for {}, which the graphics card decodes, or else H.264.",
+            better.join(" or ")
+        )
+    }
 }
 
 /// A picture size as people know it.
@@ -327,6 +381,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_automatic_codec_is_said_as_it_is_here() {
+        use leto_core::engine::Codecs;
+        let card = Codecs::of(Codec::Av1).with(Codec::H265).with(Codec::H264);
+        let decodable = Decodable { hardware: card, any: card };
+        assert_eq!(
+            codec_about(decodable),
+            "Automatic asks the PC for AV1 or H.265, which the graphics card decodes, or else H.264."
+        );
+        assert!(codec_about(Decodable::SOFTWARE).starts_with("Automatic is H.264"));
+    }
+
+    #[test]
     fn sizes_and_rates_are_named_as_people_know_them() {
         assert_eq!(resolution_name(3840, 2160), "3840 × 2160 (4K)");
         assert_eq!(resolution_name(1920, 1200), "1920 × 1200");
@@ -349,7 +415,7 @@ mod tests {
             };
             let mut left = true;
             let mut output = ctx.run_ui(input, |ui| {
-                left = show(ui, &mut settings, native, "PCs");
+                left = show(ui, &mut settings, native, Decodable::SOFTWARE, "PCs");
             });
             // Nothing draws the frame: its textures go nowhere.
             output.textures_delta.clear();

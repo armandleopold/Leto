@@ -6,7 +6,10 @@ use egui::{
     Align, Align2, Color32, CursorIcon, FontId, Key, Layout, Rect, RichText, Sense, Stroke,
     StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
 };
-use leto_core::model::{AppSummary, HostId, Reachability};
+use leto_core::{
+    engine::Decodable,
+    model::{AppSummary, HostId, Reachability},
+};
 
 use super::{icons, widgets};
 use crate::{
@@ -67,6 +70,7 @@ pub fn show(
     view: &AppsView,
     covers: &Covers,
     settings: &Settings,
+    decodable: impl FnOnce() -> Decodable,
     now: f64,
 ) {
     let host = &view.host;
@@ -138,9 +142,9 @@ pub fn show(
             if quit {
                 state.quit_app();
             } else if let Some(app) = chosen {
-                // The stream is made for the screen the window is on, as
-                // the person chose.
-                let (screen, choices) = settings.stream(window::screen(ui.ctx()));
+                // The stream is made for the screen the window is on, and
+                // in a codec this device decodes, as the person chose.
+                let (screen, choices) = settings.stream(window::screen(ui.ctx()), decodable());
                 state.play(app, screen, choices);
             }
         }

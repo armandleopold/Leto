@@ -34,7 +34,7 @@ crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
-  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers, the microphone, the camera and its encoder. No networking
+  leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
   leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
@@ -42,6 +42,8 @@ crates/
 xtask/            Project automation, run with `cargo xtask`
 assets/brand/     Logo, icons and colours
 docs/             This documentation
+vendor/
+  moonlight-common/  moonlight-common-rust at one commit, with the change Leto needs (AV1). Not a workspace member
 ```
 
 Crates planned by the [roadmap](roadmap.md). Names can still change:
@@ -130,8 +132,8 @@ the PC, the PC's speakers playing too, no optimized game settings, the app
 closed on the PC when the stream is left, no full screen when it connects,
 V-Sync off, when the system's shortcuts go to the PC (always, in full screen
 only, never), the mouse buttons swapped, the wheel reversed, A and B and X
-and Y swapped on gamepads, Leto silent in the background, and the statistics
-from the start. What the PC must know travels with the request
+and Y swapped on gamepads, Leto silent in the background, the statistics
+from the start, decoding on the processor only, and a codec of their own. What the PC must know travels with the request
 (`Request::Play::choices`, `StreamSettings::chosen`); the rest stays in the
 app. The settings are kept as JSON: `settings.json` beside the paired PCs on
 the desktop, the page's local storage in a browser. A choice that is missing,
@@ -166,9 +168,31 @@ bare "Permission denied".
 
 What this first version does, and what it leaves for later:
 
-- Video is H.264, decoded in software by OpenH264 and converted to RGB on the
-  processor. It works on every desktop with nothing to install. Decoding on
-  the graphics card, H.265 and AV1 come later, behind the same sink.
+- Video is AV1, H.265 or H.264. The PC is offered the codecs this device
+  decodes on its graphics card, and H.264 always, which every PC makes; the
+  PC takes the best of them it encodes, AV1 first (`Settings::codecs`,
+  `Choices::codecs`, `StreamSettings::codecs`). Choosing AV1 needed a change
+  to moonlight-common-rust, which never chose it: Leto builds a copy of it
+  with that change (`vendor/moonlight-common`, see its README).
+- On Windows, the pictures are decoded by Windows' own Media Foundation
+  decoders, given a Direct3D 11 device so that the graphics card does the work
+  (`leto-media/src/video/windows.rs`). Windows has the H.264 one, and the
+  Store's video extensions bring H.265 and AV1. What this device decodes is
+  found once, in the background as Leto starts: each decoder is started at
+  1280 × 720, and the card has to name the codec among its decoder profiles to
+  count as decoding it. The decoded picture comes back from the card in NV12
+  and is turned into RGB on the processor (`convert.rs`).
+- H.264 is decoded by OpenH264 on the processor where the graphics card does
+  not decode it, on every other system, and from the moment Windows fails
+  three pictures in a row. It works on every desktop with nothing to install.
+  A browser decodes what it gets with WebCodecs, and the bridge asks PCs for
+  H.264 alone for it: it reads what H.264 pictures are made of to tell the
+  browser, and does not know how for the others yet.
+- The video decoder (automatic, or software only) and the codec (automatic,
+  or one of the three) are settings, and the statistics say which codec
+  arrived and who decodes it. A codec this device turns out not to decode at
+  the size the PC sends leaves the stream without pictures, and the screen
+  says why instead of waiting.
 - Leto asks the PC for BT.601 colours in limited range, in standard dynamic
   range. HDR comes with the decoders that can show it.
 - Sound is stereo Opus, decoded in Rust and played on the system's default
@@ -182,6 +206,9 @@ moving test card as H.264 and a melody as Opus, so the whole path is tested
 on every change without a gaming PC. The card is made to be judged at a
 glance: a sun passing behind a moon shows stutter, a marker crossing the top
 edge once a second shows dropped pictures, and colour bars show wrong colours.
+It can also say it encodes H.265 and AV1, the way Sunshine and Apollo say it,
+and reports which codec the client asked for, though its pictures stay H.264:
+that is how the choice of codec is tested.
 
 ## Keyboard, mouse and gamepads
 
@@ -567,4 +594,6 @@ with a comment that says why it does not apply and when to remove it.
 operating system directly (capture, codecs, virtual devices) opts back in with
 `#![allow(unsafe_code)]` at its top, and keeps that code in as few modules as
 possible. `leto-system` is one: its `unsafe` is in the modules for Windows,
-each call with the reason it is sound.
+each call with the reason it is sound. `leto-media` opts in for one module
+only, its Windows video decoder (`video/windows.rs`), which calls Media
+Foundation and Direct3D 11.

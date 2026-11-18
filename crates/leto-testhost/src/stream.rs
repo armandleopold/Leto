@@ -22,8 +22,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use leto_core::input::{
-    GamepadButtons, GamepadKind, GamepadState, Input, Key, Modifiers, MouseButton,
+use leto_core::{
+    engine::{Codec, Codecs},
+    input::{GamepadButtons, GamepadKind, GamepadState, Input, Key, Modifiers, MouseButton},
 };
 use moonlight_common::{
     ServerVersion,
@@ -106,6 +107,8 @@ pub(crate) struct Launch {
     /// Where the camera of a client arrives, when the host takes one: the
     /// test card shows what it sees.
     pub camera: Option<Arc<Cameras>>,
+    /// The codecs the host says it encodes.
+    pub encodes: Codecs,
 }
 
 /// How long the host may take to say that a client left
@@ -146,6 +149,9 @@ pub struct StreamReport {
     pub microphone: bool,
     /// Packets of the client's microphone that arrived and decoded.
     pub microphone_packets: u64,
+    /// The codec the client asked for. The pictures are H.264 whatever it
+    /// is.
+    pub codec: Codec,
 }
 
 /// What the client settled in its `ANNOUNCE`.
@@ -159,6 +165,7 @@ struct Negotiated {
     bitrate_kbps: u32,
     min_fec_packets: usize,
     encryption: u32,
+    codec: Codec,
 }
 
 struct Inner {
@@ -282,6 +289,7 @@ impl Session {
             audio_packets_sent: inner.audio_packets_sent.load(Ordering::SeqCst),
             microphone: inner.listens(encryption),
             microphone_packets: inner.microphone_packets.load(Ordering::SeqCst),
+            codec: negotiated.map_or(Codec::H264, |negotiated| negotiated.codec),
         }
     }
 
@@ -462,12 +470,22 @@ fn answer_rtsp(inner: &Arc<Inner>, request: &RtspRequest) -> RtspResponse {
                      a=fmtp:96 minptime=10;useinbandfec=1\n"
                 );
             }
+            // The codecs beyond H.264, written as Sunshine writes them: H.265
+            // as the start of a parameter set, on a line of its own.
+            let mut codecs = String::new();
+            if inner.launch.encodes.contains(Codec::H265) {
+                codecs.push_str("sprop-parameter-sets=AAAAAU\n");
+            }
+            if inner.launch.encodes.contains(Codec::Av1) {
+                codecs.push_str("a=rtpmap:98 AV1/90000\n");
+            }
             // Stereo twice (normal and high quality), then the surround
             // layouts, written the way Sunshine writes them.
             response.payload = format!(
                 "a=x-ss-general.featureFlags:0\n\
                  a=x-ss-general.encryptionSupported:{supported}\n\
                  a=x-ss-general.encryptionRequested:{requested}\n\
+                 {codecs}\
                  {microphone}\
                  a=fmtp:97 surround-params=21101\n\
                  a=fmtp:97 surround-params=21101\n\
@@ -532,6 +550,12 @@ fn parse_announce(payload: &str) -> Option<Negotiated> {
             .unwrap_or(10_000),
         min_fec_packets: number("x-nv-vqos[0].fec.minRequiredFecPackets").unwrap_or(2) as usize,
         encryption: number("x-ss-general.encryptionEnabled").unwrap_or(0),
+        // Written for H.265 and AV1 only.
+        codec: match number("x-nv-vqos[0].bitStreamFormat") {
+            Some(1) => Codec::H265,
+            Some(2) => Codec::Av1,
+            _ => Codec::H264,
+        },
     })
 }
 

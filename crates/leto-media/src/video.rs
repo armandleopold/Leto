@@ -1,5 +1,11 @@
-//! H.264 to pixels, in software.
+//! Pictures from what a PC sends.
+//!
+//! H.264 is decoded everywhere on the processor, by OpenH264. On Windows,
+//! Windows' own decoders also take H.265 and AV1, and decode on the
+//! graphics card when it can: that is what makes those codecs worth having,
+//! as the processor alone is too slow for them at the sizes of a stream.
 
+use leto_core::engine::{Codec, Decodable};
 use openh264::{
     OpenH264API,
     decoder::{Decoder, DecoderConfig, Flush},
@@ -7,6 +13,11 @@ use openh264::{
 };
 
 use crate::Error;
+
+// Media Foundation and Direct3D are reached through their C interfaces.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows;
 
 /// A decoded picture: rows of pixels, four bytes each (red, green, blue and
 /// an opacity that is always full).
@@ -17,13 +28,184 @@ pub struct Picture {
     pub rgba: Vec<u8>,
 }
 
+/// The codecs this device decodes. Found out once, which takes a moment on
+/// Windows: best asked before a stream starts, away from the window.
+pub fn decodable() -> Decodable {
+    #[cfg(windows)]
+    let found = windows::decodable();
+    #[cfg(not(windows))]
+    let found = Decodable {
+        hardware: leto_core::engine::Codecs::NONE,
+        any: leto_core::engine::Codecs::NONE,
+    };
+    Decodable { hardware: found.hardware, any: found.any.and(Decodable::SOFTWARE.any) }
+}
+
+/// How many pictures in a row Windows may fail to decode before H.264 goes
+/// to OpenH264 instead, for the rest of the stream.
+#[cfg(windows)]
+const FAILURES_BEFORE_SOFTWARE: u32 = 3;
+
 /// Decodes the pictures of one stream, in order.
 pub struct VideoDecoder {
-    decoder: Decoder,
+    codec: Codec,
+    by: By,
+    /// Pictures in a row that did not decode.
+    failures: u32,
+}
+
+/// Who decodes.
+enum By {
+    OpenH264(Software),
+    #[cfg(windows)]
+    Windows(windows::Decoder),
 }
 
 impl VideoDecoder {
+    /// An H.264 decoder on the processor, which works everywhere.
     pub fn new() -> Result<Self, Error> {
+        Ok(Self { codec: Codec::H264, by: By::OpenH264(Software::new()?), failures: 0 })
+    }
+
+    /// A decoder for a stream in `codec`, `width` by `height` at `fps`. On
+    /// the graphics card when `hardware` and it can, otherwise on the
+    /// processor.
+    ///
+    /// H.264 always has a decoder, OpenH264 when nothing better works. The
+    /// other codecs only have one where [`decodable`] says so.
+    pub fn for_stream(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        hardware: bool,
+    ) -> Result<Self, Error> {
+        let decoder = Self::system(codec, width, height, fps, hardware).or_else(|error| {
+            if codec == Codec::H264 {
+                if let Some(error) = error {
+                    log::info!("H.264 is decoded by OpenH264: {error}");
+                }
+                Self::new()
+            } else {
+                Err(error
+                    .unwrap_or_else(|| Error::Video(format!("no {} decoder here", codec.name()))))
+            }
+        })?;
+        log::info!(
+            "{} is decoded on the {}",
+            codec.name(),
+            if decoder.on_graphics_card() { "graphics card" } else { "processor" }
+        );
+        Ok(decoder)
+    }
+
+    /// Windows' own decoder, when it is worth having: for H.264 only on the
+    /// graphics card, as OpenH264 does as well on the processor. `None` for
+    /// an error when there is no reason to try.
+    #[cfg(windows)]
+    fn system(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        hardware: bool,
+    ) -> Result<Self, Option<Error>> {
+        let found = windows::decodable();
+        let worth = if codec == Codec::H264 {
+            hardware && found.hardware.contains(codec)
+        } else {
+            found.any.contains(codec)
+        };
+        if !worth {
+            return Err(None);
+        }
+        let decoder = windows::Decoder::new(codec, width, height, fps, hardware).map_err(Some)?;
+        Ok(Self { codec, by: By::Windows(decoder), failures: 0 })
+    }
+
+    #[cfg(not(windows))]
+    fn system(
+        _codec: Codec,
+        _width: u32,
+        _height: u32,
+        _fps: u32,
+        _hardware: bool,
+    ) -> Result<Self, Option<Error>> {
+        Err(None)
+    }
+
+    pub const fn codec(&self) -> Codec {
+        self.codec
+    }
+
+    /// The pictures are decoded on the graphics card.
+    pub fn on_graphics_card(&self) -> bool {
+        match &self.by {
+            By::OpenH264(_) => false,
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.on_graphics_card(),
+        }
+    }
+
+    /// Decodes one picture (an access unit, with start codes for H.264 and
+    /// H.265) into `picture`, reusing its memory.
+    ///
+    /// Returns `false` when the data held no picture to show. After an error
+    /// the following pictures are unreliable until a keyframe arrives.
+    ///
+    /// Colours are converted as BT.601 in limited range, which is what Leto
+    /// asks hosts to send.
+    pub fn decode(&mut self, data: &[u8], picture: &mut Picture) -> Result<bool, Error> {
+        let decoded = match &mut self.by {
+            By::OpenH264(decoder) => decoder.decode(data, Some(picture)),
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.decode(data, Some(picture)),
+        };
+        self.count(decoded)
+    }
+
+    /// Decodes one picture without turning it into pixels: for a picture
+    /// nobody will see, which the next ones build on. Turning a picture into
+    /// pixels costs about as much as decoding it.
+    ///
+    /// Returns `false` when the data held no picture.
+    pub fn decode_unseen(&mut self, data: &[u8]) -> Result<bool, Error> {
+        let decoded = match &mut self.by {
+            By::OpenH264(decoder) => decoder.decode(data, None),
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.decode(data, None),
+        };
+        self.count(decoded)
+    }
+
+    /// Keeps count of the failures, and gives H.264 to OpenH264 when
+    /// Windows fails it too often.
+    fn count(&mut self, decoded: Result<bool, Error>) -> Result<bool, Error> {
+        if decoded.is_ok() {
+            self.failures = 0;
+            return decoded;
+        }
+        self.failures += 1;
+        #[cfg(windows)]
+        if self.codec == Codec::H264
+            && matches!(self.by, By::Windows(_))
+            && self.failures >= FAILURES_BEFORE_SOFTWARE
+        {
+            log::warn!("Windows fails to decode H.264, so OpenH264 does from the next keyframe");
+            self.by = By::OpenH264(Software::new()?);
+            self.failures = 0;
+        }
+        decoded
+    }
+}
+
+/// H.264 by OpenH264, on the processor.
+struct Software {
+    decoder: Decoder,
+}
+
+impl Software {
+    fn new() -> Result<Self, Error> {
         // A host sends pictures in the order they are shown, so each one can
         // come out as soon as it went in. Damage is not hidden: an error is
         // the cue to ask the host for a fresh keyframe.
@@ -33,33 +215,17 @@ impl VideoDecoder {
         Ok(Self { decoder })
     }
 
-    /// Decodes one picture (an H.264 access unit with start codes) into
-    /// `picture`, reusing its memory.
-    ///
-    /// Returns `false` when the data held no picture to show. After an error
-    /// the following pictures are unreliable until a keyframe arrives.
-    ///
-    /// Colours are converted as BT.601 in limited range, which is what Leto
-    /// asks hosts to send.
-    pub fn decode(&mut self, data: &[u8], picture: &mut Picture) -> Result<bool, Error> {
+    fn decode(&mut self, data: &[u8], picture: Option<&mut Picture>) -> Result<bool, Error> {
         let decoded = self.decoder.decode(data).map_err(|error| Error::Video(error.to_string()))?;
         let Some(decoded) = decoded else { return Ok(false) };
-        let (width, height) = decoded.dimensions();
-        picture.width = width;
-        picture.height = height;
-        picture.rgba.resize(width * height * 4, 0);
-        decoded.write_rgba8(&mut picture.rgba);
+        if let Some(picture) = picture {
+            let (width, height) = decoded.dimensions();
+            picture.width = width;
+            picture.height = height;
+            picture.rgba.resize(width * height * 4, 0);
+            decoded.write_rgba8(&mut picture.rgba);
+        }
         Ok(true)
-    }
-
-    /// Decodes one picture without turning it into pixels: for a picture
-    /// nobody will see, which the next ones build on. Turning a picture into
-    /// pixels costs about as much as decoding it.
-    ///
-    /// Returns `false` when the data held no picture.
-    pub fn decode_unseen(&mut self, data: &[u8]) -> Result<bool, Error> {
-        let decoded = self.decoder.decode(data).map_err(|error| Error::Video(error.to_string()))?;
-        Ok(decoded.is_some())
     }
 }
 

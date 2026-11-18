@@ -2184,6 +2184,7 @@ dependencies = [
  "opus-decoder",
  "opus-rs",
  "thiserror 2.0.21",
+ "windows",
 ]
 
 [[package]]
@@ -2394,7 +2395,6 @@ dependencies = [
 [[package]]
 name = "moonlight-common"
 version = "0.1.0"
-source = "git+https://github.com/MrCreativ3001/moonlight-common-rust.git?rev=5a3aa1f57bf70bb6a06c40bc435a18b2be44a252#5a3aa1f57bf70bb6a06c40bc435a18b2be44a252"
 dependencies = [
  "aes",
  "aes-gcm",

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["apps/*", "crates/*", "xtask"]
+# Code of others, built as it is: Leto's lints and tests are not for it.
+exclude = ["vendor/moonlight-common"]
 
 [workspace.package]
 version = "0.0.1"
@@ -38,8 +40,9 @@ egui = { version = "0.37", default-features = false }
 egui_extras = { version = "0.37", default-features = false, features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
-# The Moonlight protocol, client side. Not on crates.io, so pinned to a commit.
-moonlight-common = { git = "https://github.com/MrCreativ3001/moonlight-common-rust.git", rev = "5a3aa1f57bf70bb6a06c40bc435a18b2be44a252", default-features = false, features = [
+# The Moonlight protocol, client side. Not on crates.io: a copy of one commit,
+# with the changes Leto needs (vendor/moonlight-common/README.md).
+moonlight-common = { path = "vendor/moonlight-common", default-features = false, features = [
     "rustcrypto",
     "std",
 ] }

@@ -178,7 +178,9 @@ inventory): moonlight-common-rust.
 - Gaps compared with moonlight-common-c: no AV1, no reference frame
   invalidation, no long-term reference frames, no Nvidia GameStream hosts.
 - Not published on crates.io at the time of reading. moonlight-web-stream uses
-  it as a git dependency pinned to a revision, and Leto will do the same.
+  it as a git dependency pinned to a revision. Leto did the same, then copied
+  that revision into `vendor/moonlight-common` to choose AV1, which it never
+  chose (see that folder's README).
 
 Decision: Leto's client core is built on moonlight-common-rust instead of
 porting moonlight-common-c a second time. Gaps that matter (AV1 first) are

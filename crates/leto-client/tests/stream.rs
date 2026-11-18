@@ -16,6 +16,7 @@ use std::{
 
 use leto_client::{
     Client, Counter, Ended, Error, HostKind, HostSummary, Permission, StreamSettings, Tally,
+    engine::{Codec, Codecs},
 };
 use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, Options, permission};
 
@@ -28,6 +29,7 @@ const SMALL: StreamSettings = StreamSettings {
     virtual_display: None,
     optimize_games: true,
     sound_on_pc: false,
+    codecs: Codecs::of(Codec::H264),
 };
 
 /// A fresh settings folder per test.
@@ -112,6 +114,37 @@ fn a_stream_delivers_pictures_and_sound() {
     assert!(!session.is_over());
     session.stop();
     wait_for("the stream to wind down", || counter.tally().stopped);
+}
+
+#[test]
+fn the_best_codec_both_sides_have_is_chosen_av1_first() {
+    let every = Codecs::of(Codec::Av1).with(Codec::H265).with(Codec::H264);
+    let h265 = Codecs::of(Codec::H265).with(Codec::H264);
+    let h264 = Codecs::of(Codec::H264);
+    // What the PC encodes, what this device decodes, and what they settle on.
+    for (encodes, decodes, chosen) in [
+        (every, every, Codec::Av1),
+        (every, h265, Codec::H265),
+        (every, h264, Codec::H264),
+        (h265, every, Codec::H265),
+        (h264, every, Codec::H264),
+    ] {
+        let settings = Settings::new();
+        let host = FakeHost::start_with(Options { encodes, ..Options::default() });
+        let client = settings.open();
+        let paired = pair(&client, &host);
+        let counter = Counter::default();
+        let asked = StreamSettings { codecs: decodes, ..SMALL };
+        let session =
+            client.play(&paired.id, 1, asked, counter.video(), counter.audio(), |_| {}).unwrap();
+        wait_for("the video to be set up", || counter.tally().setup.is_some());
+
+        let told = counter.tally().setup.unwrap().codec;
+        assert_eq!(told, chosen, "{encodes:?} encoded, {decodes:?} decoded");
+        assert_eq!(host.stream_report().unwrap().codec, chosen, "what the PC was asked");
+        session.stop();
+        wait_for("the stream to wind down", || counter.tally().stopped);
+    }
 }
 
 #[test]

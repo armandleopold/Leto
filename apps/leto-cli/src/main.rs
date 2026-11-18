@@ -10,9 +10,13 @@ mod stream;
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use leto_client::{Client, Pin, StreamSettings, VirtualDisplay};
-use leto_core::{brand, platform::Platform};
+use leto_core::{
+    brand,
+    engine::{Codec, Codecs, Decodable},
+    platform::Platform,
+};
 use leto_protocol::ports::{DEFAULT_BASE_PORT, PortMap, Service, Transport};
 use serde::Serialize;
 
@@ -102,6 +106,14 @@ enum Command {
         /// LETO_CAMERA=card in the environment, a test card instead.
         #[arg(long)]
         camera: bool,
+        /// The codec to ask for. Automatic is the best one this device's
+        /// graphics card decodes, AV1 then H.265, or else H.264. H.264 is
+        /// offered too in any case: every PC sends it.
+        #[arg(long, value_enum, default_value_t = CodecChoice::Automatic)]
+        codec: CodecChoice,
+        /// Decode on the processor, never on the graphics card.
+        #[arg(long)]
+        software: bool,
     },
     /// Close the app running on a PC.
     Quit {
@@ -187,7 +199,10 @@ fn run(cli: &Cli) -> Result<String, String> {
             virtual_display,
             microphone,
             camera,
+            codec,
+            software,
         } => {
+            let codecs = codec.offered(leto_media::decodable(), !*software);
             let settings = StreamSettings {
                 width: *width,
                 height: *height,
@@ -195,12 +210,15 @@ fn run(cli: &Cli) -> Result<String, String> {
                 bitrate_kbps: *bitrate,
                 virtual_display: virtual_display
                     .map(|scale_percent| VirtualDisplay { scale_percent }),
+                codecs,
                 ..StreamSettings::default()
             };
             let card = std::env::var_os("LETO_CAMERA").is_some_and(|camera| camera == "card");
             let which = if card { stream::WhichCamera::Card } else { stream::WhichCamera::System };
             let back = stream::Back { microphone: *microphone, camera: camera.then_some(which) };
-            stream::play(&Arc::new(client(cli)?), pc, app, *seconds, settings, back, json)
+            let client = Arc::new(client(cli)?);
+            let asked = stream::Asked { settings, hardware: !*software };
+            stream::play(&client, pc, app, *seconds, asked, back, json)
         }
         Command::Quit { pc } => stream::quit(&client(cli)?, pc, json),
         Command::Bridge { port, web, local, forget_browsers } => {
@@ -218,6 +236,32 @@ fn run(cli: &Cli) -> Result<String, String> {
 }
 
 /// Where Leto's settings are, as the person asked.
+/// The codec a stream is asked in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CodecChoice {
+    Automatic,
+    Av1,
+    H265,
+    H264,
+}
+
+impl CodecChoice {
+    /// The codecs the PC is offered by a device that decodes `decodable`,
+    /// on its graphics card when `hardware`.
+    fn offered(self, decodable: Decodable, hardware: bool) -> Codecs {
+        let chosen = match self {
+            Self::Automatic if hardware => decodable.hardware,
+            Self::Automatic => Codecs::NONE,
+            // Asked for by name, it is offered whether it decodes or not:
+            // the report says what came of it.
+            Self::Av1 => Codecs::of(Codec::Av1),
+            Self::H265 => Codecs::of(Codec::H265),
+            Self::H264 => Codecs::NONE,
+        };
+        chosen.with(Codec::H264)
+    }
+}
+
 fn settings_folder(cli: &Cli) -> Result<PathBuf, String> {
     match &cli.settings {
         Some(folder) => Ok(folder.clone()),

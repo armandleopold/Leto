@@ -36,6 +36,8 @@ pub struct Outlet {
     pace: Mutex<Pace>,
     /// The sound is decoded and not played.
     muted: AtomicBool,
+    /// Why the stream has no pictures, when it has none.
+    picture_problem: Mutex<Option<String>>,
 }
 
 impl Outlet {
@@ -81,6 +83,15 @@ impl Outlet {
         log::warn!("the stream plays without sound: {problem}");
         *self.sound_problem.lock().unwrap_or_else(PoisonError::into_inner) = Some(problem);
     }
+
+    pub fn picture_problem(&self) -> Option<String> {
+        self.picture_problem.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn set_picture_problem(&self, problem: String) {
+        log::warn!("the stream has no pictures: {problem}");
+        *self.picture_problem.lock().unwrap_or_else(PoisonError::into_inner) = Some(problem);
+    }
 }
 
 /// Decodes the pictures of a stream and leaves the latest in the outlet.
@@ -92,8 +103,13 @@ impl Outlet {
 /// nothing is decoded at all, and the PC is asked for a keyframe once it is
 /// back. What the PC sends stays the same: nothing in the protocol slows a
 /// PC down during a stream.
+///
+/// The decoder is made once the PC said what it sends, in which codec: on
+/// the graphics card when the person lets it and the card can.
 pub struct Screen {
-    decoder: VideoDecoder,
+    decoder: Option<VideoDecoder>,
+    /// The pictures may be decoded on the graphics card.
+    hardware: bool,
     picture: Picture,
     outlet: Arc<Outlet>,
     ctx: egui::Context,
@@ -106,23 +122,52 @@ pub struct Screen {
 }
 
 impl Screen {
-    pub fn new(outlet: &Arc<Outlet>, ctx: &egui::Context) -> Result<Self, leto_media::Error> {
-        Ok(Self {
-            decoder: VideoDecoder::new()?,
+    pub fn new(outlet: &Arc<Outlet>, ctx: &egui::Context, hardware: bool) -> Self {
+        Self {
+            decoder: None,
+            hardware,
             picture: Picture::default(),
             outlet: Arc::clone(outlet),
             ctx: ctx.clone(),
             last: None,
             left: None,
             stale: false,
-        })
+        }
+    }
+
+    /// Says in the counts who decodes the pictures, which can change during
+    /// a stream: a graphics card that fails H.264 hands it to the processor.
+    fn count_decoder(&self) {
+        let decoder = self.decoder.as_ref();
+        let (codec, card) =
+            (decoder.map(VideoDecoder::codec), decoder.map(VideoDecoder::on_graphics_card));
+        self.outlet.count(|counts| {
+            counts.codec = codec.or(counts.codec);
+            counts.on_graphics_card = card;
+        });
     }
 }
 
 impl VideoSink for Screen {
     fn setup(&mut self, setup: VideoSetup) {
-        log::info!("the stream is {} by {} at {} fps", setup.width, setup.height, setup.fps);
-        self.outlet.count(|counts| counts.sent = Some([setup.width, setup.height, setup.fps]));
+        let VideoSetup { codec, width, height, fps } = setup;
+        log::info!("the stream is {width} by {height} at {fps} fps, in {}", codec.name());
+        self.outlet.count(|counts| {
+            counts.sent = Some([width, height, fps]);
+            counts.codec = Some(codec);
+        });
+        self.decoder = match VideoDecoder::for_stream(codec, width, height, fps, self.hardware) {
+            Ok(decoder) => Some(decoder),
+            Err(error) => {
+                let problem = format!(
+                    "{} H.264 can be chosen in the settings, under Advanced.",
+                    sentence(&error.to_string())
+                );
+                self.outlet.set_picture_problem(problem);
+                None
+            }
+        };
+        self.count_decoder();
     }
 
     fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
@@ -144,12 +189,14 @@ impl VideoSink for Screen {
             }
             self.stale = false;
         }
+        // Without a decoder there is nothing to do, and nothing to ask for.
+        let Some(decoder) = &mut self.decoder else { return Decoded::Ok };
         let seen = pace == Pace::Full || self.left.is_none_or(|left| left.elapsed() >= GLANCE);
         let start = Instant::now();
         let decoded = if seen {
-            self.decoder.decode(frame.data, &mut self.picture)
+            decoder.decode(frame.data, &mut self.picture)
         } else {
-            self.decoder.decode_unseen(frame.data)
+            decoder.decode_unseen(frame.data)
         };
         let took = start.elapsed();
         match decoded {
@@ -171,6 +218,7 @@ impl VideoSink for Screen {
             Ok(false) => Decoded::Ok,
             Err(error) => {
                 log::debug!("picture {} is lost: {error}", frame.number);
+                self.count_decoder();
                 Decoded::NeedsKeyframe
             }
         }
@@ -232,7 +280,10 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use leto_client::{Client, Counter, StreamSettings};
+    use leto_client::{
+        Client, Counter, StreamSettings,
+        engine::{Codec, Codecs},
+    };
     use leto_testhost::FakeHost;
 
     use super::*;
@@ -252,7 +303,7 @@ mod tests {
         let paired = client.pair(&added.id, pin).unwrap();
 
         let outlet = Arc::new(Outlet::default());
-        let screen = Screen::new(&outlet, &egui::Context::default()).unwrap();
+        let screen = Screen::new(&outlet, &egui::Context::default(), true);
         // The sound is counted, not played: tests should be quiet.
         let sound = Counter::default();
         let settings = StreamSettings {
@@ -263,6 +314,7 @@ mod tests {
             virtual_display: None,
             optimize_games: true,
             sound_on_pc: false,
+            codecs: Codecs::of(Codec::H264),
         };
         let session = client.play(&paired.id, 1, settings, screen, sound.audio(), |_| {}).unwrap();
 
@@ -324,7 +376,7 @@ mod tests {
         let paired = client.pair(&added.id, pin).unwrap();
 
         let outlet = Arc::new(Outlet::default());
-        let screen = Screen::new(&outlet, &egui::Context::default()).unwrap();
+        let screen = Screen::new(&outlet, &egui::Context::default(), true);
         let sound = Counter::default();
         let settings = StreamSettings {
             width: 320,
@@ -334,6 +386,7 @@ mod tests {
             virtual_display: None,
             optimize_games: true,
             sound_on_pc: false,
+            codecs: Codecs::of(Codec::H264),
         };
         let session = client.play(&paired.id, 1, settings, screen, sound.audio(), |_| {}).unwrap();
         assert!(next_picture(&outlet, Duration::from_secs(10)).is_some(), "no picture arrived");

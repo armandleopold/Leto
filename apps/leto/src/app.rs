@@ -166,10 +166,12 @@ impl eframe::App for LetoApp {
                 });
                 self.backend.pace(pace);
                 self.backend.mute(self.settings.mute_in_background && pace != Pace::Full);
+                self.backend.allow_graphics_card(self.settings.decoder.hardware());
                 if let Some(picture) = self.backend.take_picture() {
                     self.player.picture(ui.ctx(), picture);
                 }
                 let sound_problem = self.backend.sound_problem();
+                let picture_problem = self.backend.picture_problem();
                 // The microphone captures while its switch is on, and not a
                 // moment longer.
                 let listening = view.connected && view.microphone == Mic::On;
@@ -190,6 +192,7 @@ impl eframe::App for LetoApp {
                     .show(ui, |ui| {
                         let status = Status {
                             sound_problem: sound_problem.as_deref(),
+                            picture_problem: picture_problem.as_deref(),
                             voice,
                             film,
                             counts: self.backend.counts(),
@@ -233,7 +236,9 @@ impl eframe::App for LetoApp {
                             _ if self.settings_open => {
                                 let native = crate::window::screen(ui.ctx());
                                 let back_to = back_to(&self.state.screen);
-                                if ui::settings::show(ui, &mut self.settings, native, back_to) {
+                                let decodable = self.backend.decodable();
+                                let settings = &mut self.settings;
+                                if ui::settings::show(ui, settings, native, decodable, back_to) {
                                     self.settings_open = false;
                                 }
                             }
@@ -266,7 +271,16 @@ impl eframe::App for LetoApp {
                             }
                             (Door::Open, Screen::Apps(view)) => {
                                 let (covers, settings) = (&self.covers, &self.settings);
-                                ui::apps::show(ui, &mut self.state, &view, covers, settings, now);
+                                let decodable = || self.backend.decodable();
+                                ui::apps::show(
+                                    ui,
+                                    &mut self.state,
+                                    &view,
+                                    covers,
+                                    settings,
+                                    decodable,
+                                    now,
+                                );
                             }
                             // Handled above.
                             (Door::Open, Screen::Stream(_)) => {}
