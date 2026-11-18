@@ -131,6 +131,9 @@ builds and tests it for real.
   a paired PC that skips that check.
 - **A browser has to be known to the bridge.** Never add a way to ask the
   bridge for anything, or to send it input, that skips its gate.
+- **A log tells no secret.** People send their logs to whoever helps them.
+  Never log a PIN, a key, a bridge code, or the query of a request (during
+  pairing it carries the challenges). See `leto_client::logs`.
 - **Code ported from another project** says so in a comment at the top of the
   module: which project, which file, which commit.
 - Write code, comments, documentation and commit messages in English.

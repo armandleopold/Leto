@@ -74,6 +74,10 @@ Open the address in the browser. It warns that the certificate is the
 bridge's own: go on. Then type the code the bridge printed. The browser is
 asked once.
 
+Something went wrong? `leto-cli about` prints the folder of Leto's logs. Send
+that folder, which holds no secret, and never the folder around it, which
+holds this device's key.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md): how the code is organised.
