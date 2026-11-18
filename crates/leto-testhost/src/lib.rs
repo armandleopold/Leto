@@ -52,7 +52,7 @@ use rustls::{
 };
 
 pub use camera::{CameraReport, Seen};
-pub use stream::StreamReport;
+pub use stream::{CLIENT_MISSED_WITHIN, StreamReport};
 
 /// A tiny valid PNG: one transparent pixel.
 pub const COVER_PNG: &[u8] = &[

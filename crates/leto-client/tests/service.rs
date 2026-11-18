@@ -19,7 +19,7 @@ use leto_client::{
     engine::{CameraOffer, Event, Request, StreamEnd},
     input::{Input, InputAllowed, Key, Modifiers},
 };
-use leto_testhost::{FakeHost, Options, permission, quiet_voice};
+use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, Options, permission, quiet_voice};
 
 /// How long any step may take before the test gives up.
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -459,10 +459,12 @@ fn a_service_that_goes_away_leaves_its_stream() {
     }
     assert!(host.stream_report().is_some_and(|report| !report.client_left));
 
+    // Nobody tells the host: it has to miss the client, which takes it
+    // seconds at best.
     drop(desk);
     let start = Instant::now();
     while !host.stream_report().is_some_and(|report| report.client_left) {
-        assert!(start.elapsed() < PATIENCE, "the stream was never left");
+        assert!(start.elapsed() < CLIENT_MISSED_WITHIN, "the stream was never left");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
