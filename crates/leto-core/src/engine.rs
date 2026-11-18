@@ -144,6 +144,65 @@ pub struct CameraOffer {
     pub max_fps: u32,
 }
 
+/// What 1280 by 720 at thirty pictures a second gets, in kilobits a second.
+/// Other sizes and paces get as much per pixel.
+const CAMERA_BITRATE: u64 = 2500;
+
+/// No camera is sent with less, or with more, in kilobits a second.
+const CAMERA_BITRATE_RANGE: (u64, u64) = (300, 8000);
+
+/// The smallest picture worth sending, each way.
+pub const SMALLEST_PICTURE: usize = 32;
+
+/// How often a picture may be halved to fit. A camera sixteen times too
+/// large each way does not exist.
+pub const HALVINGS: u32 = 4;
+
+/// The size of a picture halved `halvings` times, even each way: what an
+/// H.264 encoder takes.
+pub fn halved(width: usize, height: usize, halvings: u32) -> (usize, usize) {
+    ((width >> halvings) & !1, (height >> halvings) & !1)
+}
+
+impl CameraOffer {
+    /// How pictures of `width` by `height`, taken `fps` times a second, are
+    /// sent to the PC that made this offer. They are halved until they fit,
+    /// and an odd size loses its last row or column. `None` for a picture
+    /// that is too small to send, or that halving does not bring down to
+    /// what the PC takes.
+    ///
+    /// Every client sends by this rule, whatever encodes its pictures.
+    pub fn fit(&self, width: usize, height: usize, fps: u32) -> Option<CameraSettings> {
+        let halvings = (0..=HALVINGS).find(|halvings| {
+            (width >> halvings) <= self.max_width as usize
+                && (height >> halvings) <= self.max_height as usize
+        })?;
+        let (width, height) = halved(width, height, halvings);
+        let fps = fps.min(self.max_fps);
+        if width < SMALLEST_PICTURE || height < SMALLEST_PICTURE || fps == 0 {
+            return None;
+        }
+        let pixels = (width * height) as u64 * u64::from(fps);
+        let bitrate = CAMERA_BITRATE * pixels / (1280 * 720 * 30);
+        Some(CameraSettings {
+            width: width as u32,
+            height: height as u32,
+            fps,
+            bitrate_kbps: bitrate.clamp(CAMERA_BITRATE_RANGE.0, CAMERA_BITRATE_RANGE.1) as u32,
+        })
+    }
+}
+
+/// What a device says it will send of its camera.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CameraSettings {
+    pub width: u32,
+    pub height: u32,
+    /// Pictures a second.
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+}
+
 /// Why a stream ended on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StreamEnd {
@@ -209,6 +268,37 @@ mod tests {
         for request in requests {
             assert_eq!(there_and_back(&request), request);
         }
+    }
+
+    #[test]
+    fn a_camera_is_sent_as_large_and_as_fast_as_the_pc_takes() {
+        let fit = |width, height, fps, largest: (u32, u32), fastest| {
+            CameraOffer { max_width: largest.0, max_height: largest.1, max_fps: fastest }
+                .fit(width, height, fps)
+                .map(|sending| (sending.width, sending.height, sending.fps, sending.bitrate_kbps))
+        };
+        let full_hd = (1920, 1080);
+        // What Leto captures at when the camera has it.
+        assert_eq!(fit(1280, 720, 30, full_hd, 30), Some((1280, 720, 30, 2500)));
+        assert_eq!(fit(640, 480, 30, full_hd, 30), Some((640, 480, 30, 833)));
+        assert_eq!(fit(1920, 1080, 30, full_hd, 30), Some((1920, 1080, 30, 5625)));
+        // A PC that takes less gets less.
+        assert_eq!(fit(1920, 1080, 30, (1280, 720), 30), Some((960, 540, 30, 1406)));
+        assert_eq!(fit(3840, 2160, 60, (1280, 720), 30), Some((960, 540, 30, 1406)));
+        assert_eq!(fit(1280, 720, 30, full_hd, 15), Some((1280, 720, 15, 1250)));
+        // An odd size loses its last row and column.
+        assert_eq!(fit(161, 91, 30, full_hd, 30), Some((160, 90, 30, 300)));
+        // The bit rate stays within what a camera is worth.
+        assert_eq!(fit(160, 120, 10, full_hd, 30), Some((160, 120, 10, 300)));
+        assert_eq!(fit(3840, 2160, 60, (3840, 2160), 60), Some((3840, 2160, 60, 8000)));
+        // Nothing to send: no picture, no pace, or one that no halving
+        // brings down to what the PC takes.
+        assert_eq!(fit(0, 0, 30, full_hd, 30), None);
+        assert_eq!(fit(40, 30, 30, full_hd, 30), None);
+        assert_eq!(fit(1280, 720, 0, full_hd, 30), None);
+        assert_eq!(fit(1280, 720, 30, full_hd, 0), None);
+        assert_eq!(fit(1280, 720, 30, (16, 16), 30), None);
+        assert_eq!(fit(100_000, 100_000, 30, (1280, 720), 30), None);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! home connection and for the host, and with a key frame every two seconds,
 //! since nothing that is lost on the way is sent again.
 
+use leto_core::engine::{CameraOffer, HALVINGS, SMALLEST_PICTURE as SMALLEST, halved};
 use openh264::{
     OpenH264API,
     encoder::{
@@ -18,20 +19,6 @@ use crate::{Error, Picture};
 /// A key frame this often, in seconds. A host that lost a picture shows the
 /// camera again that soon.
 const KEY_FRAME_EVERY: u32 = 2;
-
-/// What 1280 by 720 at thirty pictures a second gets, in kilobits a second.
-/// Other sizes and paces get as much per pixel.
-const BITRATE: u64 = 2500;
-
-/// No camera is sent with less, or with more, in kilobits a second.
-const BITRATE_RANGE: (u64, u64) = (300, 8000);
-
-/// The smallest picture worth sending, each way.
-const SMALLEST: usize = 32;
-
-/// How often a picture may be halved to fit. A camera sixteen times too
-/// large each way does not exist.
-const HALVINGS: u32 = 4;
 
 /// How the pictures of a camera are sent: their size, their pace and how
 /// much the encoder may spend on them.
@@ -57,28 +44,16 @@ impl Sending {
         largest: (u32, u32),
         fastest: u32,
     ) -> Option<Self> {
-        let halvings = (0..=HALVINGS).find(|halvings| {
-            (width >> halvings) <= largest.0 as usize && (height >> halvings) <= largest.1 as usize
-        })?;
-        let (width, height) = halved(width, height, halvings);
-        let fps = fps.min(fastest);
-        if width < SMALLEST || height < SMALLEST || fps == 0 {
-            return None;
-        }
-        let pixels = (width * height) as u64 * u64::from(fps);
-        let bitrate = BITRATE * pixels / (1280 * 720 * 30);
+        // The rule is the same for every client: see `leto_core`.
+        let offer = CameraOffer { max_width: largest.0, max_height: largest.1, max_fps: fastest };
+        let fitted = offer.fit(width, height, fps)?;
         Some(Self {
-            width: width as u32,
-            height: height as u32,
-            fps,
-            bitrate_kbps: bitrate.clamp(BITRATE_RANGE.0, BITRATE_RANGE.1) as u32,
+            width: fitted.width,
+            height: fitted.height,
+            fps: fitted.fps,
+            bitrate_kbps: fitted.bitrate_kbps,
         })
     }
-}
-
-/// The size of a picture halved `halvings` times, even each way.
-fn halved(width: usize, height: usize, halvings: u32) -> (usize, usize) {
-    ((width >> halvings) & !1, (height >> halvings) & !1)
 }
 
 /// One encoded picture.

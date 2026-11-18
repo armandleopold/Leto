@@ -17,6 +17,8 @@ workspace = true
 cpal = "0.18"
 # Cameras that compress their pictures send them as JPEG.
 image = { workspace = true, features = ["jpeg"] }
+# How a camera is sent to a PC is a rule every client follows.
+leto-core = { workspace = true }
 log = { workspace = true }
 openh264 = { workspace = true }
 # Opus in plain Rust: nothing to install, nothing unsafe. One crate decodes

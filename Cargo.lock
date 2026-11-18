@@ -2175,6 +2175,7 @@ version = "0.0.1"
 dependencies = [
  "cpal",
  "image",
+ "leto-core",
  "log",
  "nokhwa",
  "openh264",
