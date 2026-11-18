@@ -145,7 +145,9 @@ mod tests {
         open("leto", &path).unwrap().write_all(b"second run\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "first run\nsecond run\n");
 
-        open("leto", &path).unwrap().set_len(LIMIT).unwrap();
+        // Grown through a handle that may write anywhere: Windows does not
+        // let one that only appends change the length.
+        File::options().write(true).open(&path).unwrap().set_len(LIMIT).unwrap();
         open("leto", &path).unwrap().write_all(b"after\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "after\n");
         let before = folder(&settings).join("leto.previous.txt");
