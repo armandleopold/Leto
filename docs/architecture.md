@@ -197,12 +197,21 @@ passes them on.
 - **On Windows the system's own shortcuts are the PC's too**: the Windows
   key, Alt+Tab, Alt+F4. Windows acts on them before any window hears of them,
   so while a stream has the keyboard `leto-system` listens to the keyboard
-  ahead of Windows with a low-level hook, on a thread of its own, and keeps
-  every key from going further while Leto's window is in front. Keys are
+  ahead of Windows with a low-level hook, and keeps every key from going
+  further while Leto's window is in front. Windows waits for the hook's
+  answer only so long, then hands the key on anyway, so the hook has a
+  thread of its own at a high priority and only decides: another thread
+  tells the window. Windows asks the hook set last first, so Leto sets it
+  each time its window comes in front, and again when a key gets past it to
+  the window; the log then counts the keys and how long they waited, never
+  which. Keys are
   named by their scan code, the numeric keypad included. A key goes back to
   whoever got it go down, so nothing stays held on either side, and the Ctrl
   that AltGr makes up is dropped: the PC makes up its own. Ctrl+Alt+Del and
-  Windows+L stay with Windows, which no program can take.
+  Windows+L stay with Windows, which no program can take. Leto's own
+  shortcuts are found by the letter the layout prints on the key, which
+  Windows tells even when Ctrl and Alt held together, AltGr on a French
+  layout, change what the key types.
 - eframe would turn Ctrl+C, Ctrl+X and Ctrl+V into clipboard events and keep
   those keys from the PC, so that is turned off, and `clipboard.rs` does it
   for Leto's own text fields when no stream has the keyboard.

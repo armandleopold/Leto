@@ -31,7 +31,9 @@ pub struct Stroke {
 /// them back to the system. Returns whether this system lets Leto have them:
 /// where it does not, the stream has what its window gets.
 ///
-/// Cheap to call every frame: only a change does anything.
+/// Ask for them only while the window is in front: each time it comes back,
+/// Leto takes them again ahead of any program that started listening
+/// meanwhile. Cheap to call every frame: only a change does anything.
 pub fn capture(on: bool) -> bool {
     #[cfg(windows)]
     return windows::capture(on);
@@ -41,6 +43,47 @@ pub fn capture(on: bool) -> bool {
         false
     }
 }
+
+/// Tells that a key reached the window while the stream had the keyboard,
+/// which it should not have: something got in the way. Where the system lets
+/// Leto have the keys, Leto takes them again, ahead of whatever did.
+pub fn slipped() {
+    #[cfg(windows)]
+    windows::slipped();
+}
+
+/// The letter this device's layout prints on the key that sits where
+/// `place` sits on a US keyboard, where the system tells. A window hears of
+/// a letter through what it types, which Ctrl and Alt held together change
+/// on a layout with AltGr: Leto's own shortcuts need the letter on the key.
+pub fn letter_at(place: Key) -> Option<char> {
+    #[cfg(windows)]
+    return windows::letter_at(scan_of(place)?);
+    #[cfg(not(windows))]
+    {
+        let _ = place;
+        None
+    }
+}
+
+/// The scan code of the key that sits where the letter `place` sits on a US
+/// keyboard: what [`key_at`] does for letters, the other way round.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn scan_of(place: Key) -> Option<u16> {
+    let wanted = u8::try_from(place.0).ok().filter(u8::is_ascii_uppercase)?;
+    [(TOP_ROW, 0x10), (MIDDLE_ROW, 0x1E), (BOTTOM_ROW, 0x2C)].into_iter().find_map(
+        |(row, first)| {
+            let at = row.iter().position(|letter| *letter == wanted)?;
+            Some(first + u16::try_from(at).ok()?)
+        },
+    )
+}
+
+/// The letters of a US keyboard, row by row, and the scan code of the first
+/// of each row.
+const TOP_ROW: &[u8] = b"QWERTYUIOP";
+const MIDDLE_ROW: &[u8] = b"ASDFGHJKL";
+const BOTTOM_ROW: &[u8] = b"ZXCVBNM";
 
 /// What the stream got since the last call, in order.
 pub fn take() -> Vec<Stroke> {
@@ -211,9 +254,6 @@ const fn made_up(raw: Raw) -> bool {
 /// the PC's Num Lock decides. Every other key is named by what it does,
 /// which no layout changes.
 pub fn key_at(scan: u16, extended: bool, virtual_key: u16) -> Option<Key> {
-    const TOP_ROW: &[u8] = b"QWERTYUIOP";
-    const MIDDLE_ROW: &[u8] = b"ASDFGHJKL";
-    const BOTTOM_ROW: &[u8] = b"ZXCVBNM";
     let letter = |row: &[u8], first: u16| Key::letter(char::from(row[usize::from(scan - first)]));
     let placed = match (scan, extended) {
         (0x02..=0x0A, false) => Key::digit((scan - 0x01) as u8),
@@ -293,6 +333,16 @@ mod tests {
         assert_eq!(key_at(0x0C, false, 0xDB), Some(Key::MINUS));
         // The key left of Z on a European keyboard.
         assert_eq!(key_at(0x56, false, 0xE2), Some(Key::EXTRA));
+    }
+
+    #[test]
+    fn a_letter_is_found_by_where_it_sits() {
+        for place in 'A'..='Z' {
+            let scan = scan_of(letter(place)).expect("every letter sits somewhere");
+            assert_eq!(key_at(scan, false, 0), Some(letter(place)), "{place}");
+        }
+        assert_eq!(scan_of(Key::digit(1).expect("1 is a key")), None);
+        assert_eq!(scan_of(Key::TAB), None);
     }
 
     #[test]

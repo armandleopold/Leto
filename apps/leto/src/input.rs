@@ -208,7 +208,16 @@ impl Controls {
         place: Option<egui::Key>,
         down: bool,
     ) -> Option<Shortcut> {
-        self.stroke(key(place.unwrap_or(printed)), letter(printed), down)
+        // egui says what a key types, which Ctrl and Alt held together
+        // change on a layout with AltGr: it then names the key by its place,
+        // and the system tells what the key prints.
+        let letter = match place {
+            Some(place) if place == printed => {
+                key(place).and_then(crate::window::printed_letter).or_else(|| letter(printed))
+            }
+            _ => letter(printed),
+        };
+        self.stroke(key(place.unwrap_or(printed)), letter, down)
     }
 
     /// A key went down or came up: `key` by where it sits, when the PC has

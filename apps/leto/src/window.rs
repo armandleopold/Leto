@@ -17,7 +17,7 @@ pub use page::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod desktop {
     use egui::{Context, CursorGrab, ViewportCommand};
-    use leto_core::engine::ScreenMode;
+    use leto_core::{engine::ScreenMode, input::Key};
     use leto_system::{display, keyboard};
 
     use super::Stroke;
@@ -63,10 +63,22 @@ mod desktop {
         keyboard::capture(keep);
     }
 
+    /// A key reached the window although the system was to keep it for the
+    /// stream: the system is asked again.
+    pub fn slipped() {
+        keyboard::slipped();
+    }
+
     /// The keys the system gave the stream since the last call, in order.
     /// They never reach the window.
     pub fn keys() -> Vec<Stroke> {
         keyboard::take()
+    }
+
+    /// The letter this device's layout prints on the key at `place`, named
+    /// by where it sits on a US keyboard, where the system tells.
+    pub fn printed_letter(place: Key) -> Option<char> {
+        keyboard::letter_at(place)
     }
 
     /// The screen the window is on: its pixels and its pace as the system
@@ -272,10 +284,18 @@ mod page {
         KEYBOARD_KEPT.set(keep);
     }
 
+    /// A page gets every key from its browser, which keeps none from it.
+    pub fn slipped() {}
+
     /// Keys taken from the system: a page gets every key it gets from its
     /// browser.
     pub fn keys() -> Vec<super::Stroke> {
         Vec::new()
+    }
+
+    /// A browser tells what a key types, and nothing of its layout.
+    pub fn printed_letter(_place: leto_core::input::Key) -> Option<char> {
+        None
     }
 
     /// The screen of this device, lying down: a PC makes a screen for a

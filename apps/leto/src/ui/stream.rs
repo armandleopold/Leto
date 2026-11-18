@@ -112,6 +112,11 @@ pub struct Player {
     /// The keyboard and the mouse are this device's again: the PC hears
     /// nothing of them until the person gives them back.
     released: bool,
+    /// Every key was the stream's in the last frame, the system's
+    /// shortcuts included where the system lets go of them.
+    keyboard_kept: bool,
+    /// A key pressed reached the window meanwhile all the same.
+    slipped: bool,
     /// Pictures the window was given to show so far.
     shown: u64,
     /// The statistics over the picture, while they show.
@@ -183,7 +188,8 @@ impl Player {
     /// there, not here.
     pub fn take_keyboard(&mut self, raw: &mut egui::RawInput) {
         raw.events.retain(|event| match event {
-            Event::Key { key, physical_key, pressed, .. } => {
+            Event::Key { key, physical_key, pressed, repeat, .. } => {
+                self.slipped |= self.keyboard_kept && *pressed && !*repeat;
                 self.strokes.push(KeyStroke::Window {
                     printed: *key,
                     place: *physical_key,
@@ -248,8 +254,14 @@ pub fn show(
     let fills_screen = window::fills_screen(ui.ctx());
     let mut asked = Asked::default();
     // Once connected, every key is the PC's, the system's shortcuts too
-    // where the system lets go of them, until the person takes them back.
-    window::keep_keyboard(view.connected && !player.released);
+    // where the system lets go of them, while the window is in front and
+    // until the person takes them back.
+    let keep = view.connected && !player.released && focused;
+    if std::mem::take(&mut player.slipped) && keep {
+        window::slipped();
+    }
+    window::keep_keyboard(keep);
+    player.keyboard_kept = keep;
     player.strokes.extend(window::keys().into_iter().map(KeyStroke::System));
 
     player.hole = None;
@@ -1068,6 +1080,36 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn a_key_pressed_that_reaches_the_window_while_the_stream_keeps_them_slipped_past() {
+        let press = |pressed, repeat| Event::Key {
+            key: egui::Key::A,
+            physical_key: Some(egui::Key::Q),
+            pressed,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut player = Player::default();
+        let mut raw = egui::RawInput { events: vec![press(true, false)], ..Default::default() };
+        player.take_keyboard(&mut raw);
+        assert!(!player.slipped, "the stream did not keep the keys");
+
+        player.keyboard_kept = true;
+        // What was held before, and comes up or repeats here, is no news.
+        let mut raw = egui::RawInput {
+            events: vec![press(true, true), press(false, false)],
+            ..Default::default()
+        };
+        player.take_keyboard(&mut raw);
+        assert!(!player.slipped);
+        let mut raw = egui::RawInput { events: vec![press(true, false)], ..Default::default() };
+        player.take_keyboard(&mut raw);
+        assert!(player.slipped);
+        // Every key still goes on to the PC.
+        assert_eq!(player.strokes.len(), 4);
+        assert!(raw.events.is_empty());
+    }
 
     #[test]
     fn a_picture_of_the_windows_shape_fills_it() {
