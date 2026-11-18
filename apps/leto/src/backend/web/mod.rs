@@ -8,6 +8,7 @@
 //! own decoders turn them into something to see and hear.
 
 mod codecs;
+mod gamepad;
 mod screen;
 mod speaker;
 
@@ -26,6 +27,7 @@ use wasm_bindgen::{JsCast as _, closure::Closure};
 use web_sys::{AudioContext, BinaryType, MessageEvent, WebSocket};
 
 use self::{
+    gamepad::Gamepads,
     screen::{Canvas, Screen, Shown},
     speaker::Speaker,
 };
@@ -93,6 +95,8 @@ struct Stream {
     silent: Option<String>,
     /// The size of the pictures, as the app last heard it.
     told: Option<[usize; 2]>,
+    /// The gamepads, from the moment the PC takes input.
+    gamepads: Option<Gamepads>,
 }
 
 /// What is left to do once the page's state is let go of.
@@ -220,8 +224,14 @@ impl Inner {
         if let Some(speakers) = &self.speakers {
             speaker::wake(speakers);
         }
-        self.stream =
-            Some(Stream { attempt, screen: None, speaker: None, silent: None, told: None });
+        self.stream = Some(Stream {
+            attempt,
+            screen: None,
+            speaker: None,
+            silent: None,
+            told: None,
+            gamepads: None,
+        });
     }
 
     fn end_stream(&mut self) {
@@ -402,6 +412,18 @@ impl Page {
                 {
                     inner.end_stream();
                 }
+                if let engine::Event::Playing { attempt, .. } = &event
+                    && let Some(stream) = &mut inner.stream
+                    && stream.attempt == *attempt
+                {
+                    // The PC takes input from now on.
+                    let page = self.this.clone();
+                    stream.gamepads = Some(Gamepads::watch(move || {
+                        if let Some(page) = page.upgrade() {
+                            page.gamepads();
+                        }
+                    }));
+                }
                 inner.events.push(event.with_covers(|file| decode_cover(&file.0)));
             }
             Down::Pictures(format) => {
@@ -432,6 +454,21 @@ impl Page {
         }
         self.ctx.request_repaint();
         Then::Nothing
+    }
+
+    /// Looks at the gamepads and tells the PC what they did.
+    fn gamepads(&self) {
+        let inputs = {
+            let mut inner = self.inner.borrow_mut();
+            let Some(gamepads) = inner.stream.as_mut().and_then(|stream| stream.gamepads.as_mut())
+            else {
+                return;
+            };
+            gamepads.look()
+        };
+        if !inputs.is_empty() {
+            self.say(&Up::Input(inputs));
+        }
     }
 
     /// The bridge handed over a piece of the stream.
