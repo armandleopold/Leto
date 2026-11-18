@@ -101,12 +101,28 @@ struct Gate {
     passed_down: [bool; 256],
     /// Keys the stream got go down and has not yet seen come up.
     taken_down: [bool; 256],
+    /// What became of the keys pressed since the stream took the keyboard.
+    tally: Tally,
+}
+
+/// How many keys went down for the stream since it took the keyboard, and
+/// how many for another window in front. Which keys, the logs never say.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct Tally {
+    taken: u32,
+    elsewhere: u32,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
 impl Gate {
     const fn new() -> Self {
-        Self { capturing: false, passed_down: [false; 256], taken_down: [false; 256] }
+        Self {
+            capturing: false,
+            passed_down: [false; 256],
+            taken_down: [false; 256],
+            tally: Tally { taken: 0, elsewhere: 0 },
+        }
     }
 
     /// Starts taking keys. `held` says which keys are down at this moment.
@@ -137,7 +153,9 @@ impl Gate {
             if in_front {
                 return match self.take(raw) {
                     Some(verdict) => {
-                        self.taken_down[code] |= matches!(verdict, Verdict::Take(_));
+                        let taken = matches!(verdict, Verdict::Take(_));
+                        self.taken_down[code] |= taken;
+                        self.tally.taken = self.tally.taken.saturating_add(u32::from(taken));
                         verdict
                     }
                     None => {
@@ -147,6 +165,7 @@ impl Gate {
                 };
             }
             self.passed_down[code] = true;
+            self.tally.elsewhere = self.tally.elsewhere.saturating_add(1);
             return Verdict::PassOn;
         }
         if std::mem::take(&mut self.passed_down[code]) {
@@ -394,6 +413,10 @@ mod tests {
         assert!(matches!(gate.decide(a, true), Verdict::Take(_)));
         let up = Stroke { key: letter('A'), letter: Some('A'), down: false };
         assert_eq!(gate.decide(Raw { down: false, ..a }, false), Verdict::Take(up));
+        // The logs say how many went where, and nothing of which.
+        assert_eq!(gate.tally, Tally { taken: 1, elsewhere: 1 });
+        gate.disarm();
+        assert_eq!(gate.tally, Tally::default());
     }
 
     #[test]

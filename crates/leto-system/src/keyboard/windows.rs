@@ -136,14 +136,25 @@ fn listen(ready: &mpsc::Sender<u32>) {
                 // What is down now came down before the hook heard of it.
                 // SAFETY: `GetAsyncKeyState` takes any number.
                 shared().gate.arm(|code| unsafe { GetAsyncKeyState(i32::from(code)) } < 0);
-                log::debug!("the stream has the keyboard");
+                let front = if in_front() { "in front" } else { "behind another window" };
+                log::info!("the stream has the keyboard, with Leto {front}");
             }
             DISARM if !hook.is_null() => {
                 // SAFETY: the hook set above, removed once.
                 unsafe { UnhookWindowsHookEx(hook) };
                 hook = ptr::null_mut();
-                shared().gate.disarm();
-                log::debug!("the keyboard is the system's again");
+                let tally = {
+                    let mut shared = shared();
+                    let tally = shared.gate.tally;
+                    shared.gate.disarm();
+                    tally
+                };
+                log::info!(
+                    "the keyboard is the system's again, after {} keys for the stream and {} \
+                     for another window in front",
+                    tally.taken,
+                    tally.elsewhere
+                );
             }
             _ => {}
         }
