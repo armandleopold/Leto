@@ -1,5 +1,6 @@
 //! The rules that keep a stream flowing in a browser: when each piece of
-//! sound plays, and which pictures a decoder may be given.
+//! sound plays, which pictures a decoder may be given, and which pictures
+//! of the camera leave for the PC.
 //!
 //! No browser is needed to state them, so they are tested with the rest of
 //! the app, on the desktop.
@@ -24,6 +25,14 @@ const CATCHING_UP: f64 = 0.5;
 /// With this many pictures waiting, a decoder shows what happened more than
 /// a second ago, and nobody waits to see whether it catches up.
 const TOO_MANY_PICTURES: u32 = 90;
+
+/// Milliseconds between two pictures of the camera that decode on their
+/// own, as in the desktop app: how long a PC that lost one shows nothing
+/// new, at most.
+const KEYFRAME_EVERY: f64 = 2_000.0;
+
+/// Pictures of the camera an encoder that keeps up may have waiting.
+const FEW_TO_ENCODE: u32 = 2;
 
 /// Decides when each piece of sound plays.
 ///
@@ -137,6 +146,74 @@ impl Pictures {
     }
 }
 
+/// A picture of the camera to take.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Taken {
+    /// When, in milliseconds since the first one.
+    pub at: f64,
+    /// It has to decode on its own.
+    pub keyframe: bool,
+}
+
+/// Decides which pictures of the camera are encoded for the PC, and which
+/// of them decode on their own.
+///
+/// The camera is looked at some thirty times a second. A picture is left
+/// out before it is encoded when it would only wait: what the PC shows is
+/// then a moment old, not late for good. One left out afterwards breaks the
+/// chain the following ones build on, and the next has to start a new one.
+#[derive(Debug, Default)]
+pub struct Shutter {
+    /// When the first picture was taken, on the page's clock.
+    first: Option<f64>,
+    /// When the last picture that decodes on its own was.
+    keyframe: Option<f64>,
+    /// A picture went missing after the encoder made it.
+    broken: bool,
+}
+
+impl Shutter {
+    /// Whether a picture is taken at `now`, in milliseconds, with `waiting`
+    /// pictures the encoder has not started on, and `room` or none on the
+    /// way to the bridge.
+    pub fn take(&mut self, now: f64, waiting: u32, room: bool) -> Option<Taken> {
+        if waiting > FEW_TO_ENCODE || !room {
+            return None;
+        }
+        let first = *self.first.get_or_insert(now);
+        let keyframe = self.broken || self.keyframe.is_none_or(|last| now - last >= KEYFRAME_EVERY);
+        if keyframe {
+            (self.keyframe, self.broken) = (Some(now), false);
+        }
+        Some(Taken { at: (now - first).max(0.0), keyframe })
+    }
+
+    /// An encoded picture did not leave.
+    pub fn lose(&mut self) {
+        self.broken = true;
+    }
+}
+
+/// The name browsers know H.264 by, for pictures of this size and this many
+/// a second: the constrained baseline profile, which every decoder reads
+/// and which is what the desktop app sends, at the lowest of three levels
+/// that allows them.
+pub fn camera_codec(width: u32, height: u32, fps: u32) -> &'static str {
+    // Levels count in blocks of sixteen pixels a side.
+    let blocks = u64::from(width.div_ceil(16)) * u64::from(height.div_ceil(16));
+    let a_second = blocks * u64::from(fps);
+    if blocks <= 3_600 && a_second <= 108_000 {
+        // Level 3.1: up to 1280 by 720, thirty times a second.
+        "avc1.42E01F"
+    } else if blocks <= 8_192 && a_second <= 245_760 {
+        // Level 4: up to 1920 by 1080, thirty times a second.
+        "avc1.42E028"
+    } else {
+        // Level 5.1: up to 3840 by 2160.
+        "avc1.42E033"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +318,53 @@ mod tests {
         // With more than a second waiting, there is nothing to wait for.
         let mut pictures = Pictures::new();
         assert!(pictures.behind(TOO_MANY_PICTURES + 1, 10.0));
+    }
+
+    #[test]
+    fn the_camera_starts_with_a_picture_that_decodes_on_its_own_and_repeats_one() {
+        let mut shutter = Shutter::default();
+        // The page's clock does not start at nought: the pictures do.
+        assert_eq!(shutter.take(5_000.0, 0, true), Some(Taken { at: 0.0, keyframe: true }));
+        assert_eq!(shutter.take(5_033.0, 0, true), Some(Taken { at: 33.0, keyframe: false }));
+        assert_eq!(shutter.take(6_999.0, 1, true), Some(Taken { at: 1_999.0, keyframe: false }));
+        assert_eq!(shutter.take(7_000.0, 2, true), Some(Taken { at: 2_000.0, keyframe: true }));
+        assert_eq!(shutter.take(7_033.0, 0, true), Some(Taken { at: 2_033.0, keyframe: false }));
+        assert_eq!(shutter.take(9_100.0, 0, true), Some(Taken { at: 4_100.0, keyframe: true }));
+    }
+
+    #[test]
+    fn a_picture_that_would_only_wait_is_not_taken() {
+        let mut shutter = Shutter::default();
+        // Not even the first: the pictures start with the first one taken.
+        assert_eq!(shutter.take(100.0, 0, false), None);
+        assert_eq!(shutter.take(133.0, 0, true), Some(Taken { at: 0.0, keyframe: true }));
+
+        // An encoder that is behind, or a line to the bridge that is full.
+        assert_eq!(shutter.take(166.0, 3, true), None);
+        assert_eq!(shutter.take(200.0, 0, false), None);
+        // Nothing was encoded meanwhile: the next builds on the last.
+        assert_eq!(shutter.take(233.0, 0, true), Some(Taken { at: 100.0, keyframe: false }));
+    }
+
+    #[test]
+    fn a_picture_lost_after_encoding_is_followed_by_one_that_decodes_on_its_own() {
+        let mut shutter = Shutter::default();
+        assert!(shutter.take(0.0, 0, true).is_some_and(|taken| taken.keyframe));
+        assert_eq!(shutter.take(33.0, 0, true), Some(Taken { at: 33.0, keyframe: false }));
+        shutter.lose();
+        assert_eq!(shutter.take(66.0, 0, true), Some(Taken { at: 66.0, keyframe: true }));
+        assert_eq!(shutter.take(100.0, 0, true), Some(Taken { at: 100.0, keyframe: false }));
+        // Two seconds are counted from that one.
+        assert_eq!(shutter.take(2_033.0, 0, true), Some(Taken { at: 2_033.0, keyframe: false }));
+        assert_eq!(shutter.take(2_066.0, 0, true), Some(Taken { at: 2_066.0, keyframe: true }));
+    }
+
+    #[test]
+    fn the_codec_is_named_for_the_size_of_the_camera() {
+        assert_eq!(camera_codec(640, 360, 30), "avc1.42E01F");
+        assert_eq!(camera_codec(1280, 720, 30), "avc1.42E01F");
+        assert_eq!(camera_codec(1280, 720, 60), "avc1.42E028");
+        assert_eq!(camera_codec(1920, 1080, 30), "avc1.42E028");
+        assert_eq!(camera_codec(3840, 2160, 30), "avc1.42E033");
     }
 }

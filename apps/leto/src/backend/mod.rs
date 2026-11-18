@@ -78,8 +78,6 @@ pub struct Seen {
 
 /// How the camera of this device is doing on its way to a PC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// A browser's camera does not reach a PC yet: the web build makes neither.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub enum Filming {
     /// The camera is opening, or the PC is being asked: nothing leaves yet.
     Opening,

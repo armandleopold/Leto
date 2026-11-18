@@ -1,8 +1,8 @@
-//! The camera of a browser, for the person to look at.
+//! The camera of a browser, for the person to look at or for a PC.
 //!
-//! The browser plays what the camera sees in a `<video>` that nobody sees,
-//! and Leto copies it into its own window through a canvas, some thirty
-//! times a second.
+//! The browser plays what the camera sees in a `<video>` that nobody sees.
+//! For the person, Leto copies it into its own window through a canvas,
+//! some thirty times a second. For a PC, `film` encodes what it plays.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -21,7 +21,7 @@ use crate::backend::Seen;
 /// What Leto would like from a camera. The browser gives what is closest.
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
-const RATE: u32 = 30;
+pub const RATE: u32 = 30;
 
 /// The longest side of the pictures handed to the window: more than it
 /// shows them at, and little enough to copy many times a second.
@@ -31,7 +31,7 @@ const LONGEST: u32 = 960;
 const BETWEEN: f64 = 30.0;
 
 /// What a `<video>` says once it has a picture to show.
-const HAS_A_PICTURE: u16 = 2;
+pub const HAS_A_PICTURE: u16 = 2;
 
 /// Captures the browser's camera.
 ///
@@ -141,6 +141,17 @@ impl Camera {
     /// stopped on its own.
     pub fn stopped(&self) -> Option<&'static str> {
         self.stopped.get()
+    }
+
+    /// What plays the camera: its pictures can be taken from there.
+    pub fn video(&self) -> &HtmlVideoElement {
+        &self.video
+    }
+
+    /// The size the camera captures at, once it gave a picture.
+    pub fn size(&self) -> Option<(u32, u32)> {
+        let size = (self.video.video_width(), self.video.video_height());
+        (size.0 > 0 && size.1 > 0).then_some(size)
     }
 }
 
