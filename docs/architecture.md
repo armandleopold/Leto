@@ -31,8 +31,10 @@ apps/
   leto/           The graphical app (egui): desktop, and the browser through WebAssembly
   leto-cli/       The command line: the same engine, for scripts and diagnostics
 crates/
-  leto-core/      Shared types: brand, platforms. No platform code
+  leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
+  leto-client/    The client engine: find a PC, pair, list its apps. Built on moonlight-common-rust
+  leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
 xtask/            Project automation, run with `cargo xtask`
 assets/brand/     Logo, icons and colours
 docs/             This documentation
@@ -42,10 +44,9 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 
 | Crate | Purpose | Step |
 |---|---|---|
-| `leto-client` | A streaming session seen from the client: discovery, pairing, connect, built on moonlight-common-rust | 2 |
 | `leto-media` | Decoding and encoding behind one interface per platform, Opus | 2 |
 | `leto-return` | The return channel: capture of microphone and camera, their packets, the Leto API | 2 |
-| `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 2 |
+| `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 4 |
 | `apps/leto-android` | The Android app, started from Super Artemis | 3 |
 | `leto-host` | The host, ported from Apollo | 4 |
 
@@ -57,7 +58,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 | Web | Yes | No | Built in the pipeline, and by hand |
 | Android | Yes | No | Compile check for now, and by hand once the app exists |
 | Linux | Yes | Yes | Tests run on Linux in the pipeline |
-| macOS | Yes | Yes | Compile check on every change, tests on `main` |
+| macOS | Yes | Yes | Compile check on every change (with zig as the C compiler), tests on `main` |
 | iOS | Yes | No | Compile check only |
 
 The code asks `leto_core::platform::Platform` what the current platform can do
@@ -70,12 +71,33 @@ draws the native window and, compiled to WebAssembly, the web client
 (`cargo xtask web` builds it into `dist/web`). The look is fixed: the "Braise"
 palette from `leto_core::brand`, dark, whatever the system theme.
 
+It is made of three parts that do not reach into each other:
+
+- `state.rs` decides what is on screen and what happens next. It draws
+  nothing and opens no connection, so it is tested like any other logic.
+- `backend/` does the work. On the desktop it runs `leto-client` on worker
+  threads and reports back with events. A browser page cannot open sockets, so
+  the web build has a backend that only explains what is missing, until the
+  bridge of step 2 exists.
+- `ui/` draws the screens from the state and tells the state what the person
+  did.
+
+## Trust between a client and a PC
+
+Pairing gives each side the other's certificate. From then on the client only
+talks to a PC that presents exactly that certificate, and the PC only answers
+a client it knows. `leto-client` has its own HTTPS transport for this, because
+the ones shipped with moonlight-common-rust accept any certificate. A PC that
+was reinstalled therefore has to be paired again, and something else on the
+network cannot pass for it.
+
 ## Dependencies and licences
 
 Leto is GPL-3.0-only because the host is a port of Apollo, which is
 GPL-3.0-only (see [inventory.md](inventory.md)). `deny.toml` lists the licences
 accepted for dependencies and the pipeline rejects anything else, along with
-known security advisories.
+known security advisories. An advisory can only be accepted in `deny.toml`
+with a comment that says why it does not apply and when to remove it.
 
 ## Unsafe code
 

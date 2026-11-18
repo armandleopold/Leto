@@ -1,61 +1,119 @@
-//! The app's single window.
+//! The app's single window: a top bar and one screen at a time.
 
-use egui::{Align, Layout, RichText};
+use egui::{Align, Layout, RichText, Sense, Vec2};
 use leto_core::{brand, platform::Platform};
 
-use crate::theme;
+use crate::{
+    backend::{Backend, Unavailable},
+    state::{Event, Screen, State},
+    theme,
+    ui::{self, apps::Covers, icons, widgets},
+};
 
-/// Displayed width of the logo, in points. The image is four times larger so
-/// it stays sharp on high-density screens.
-const LOGO_WIDTH: f32 = 301.0;
-const LOGO_HEIGHT: f32 = 86.0;
-
-/// Space kept free on each side of the logo, in points.
-const SIDE_MARGIN: f32 = 24.0;
+/// Displayed size of the logo in the top bar, in points. The image is larger,
+/// so it stays sharp on high-density screens.
+const LOGO: Vec2 = Vec2::new(98.0, 28.0);
 
 /// State of the Leto window.
-pub struct LetoApp;
+pub struct LetoApp {
+    backend: Backend,
+    state: State,
+    covers: Covers,
+}
 
 impl LetoApp {
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
-        Self
+        Self { backend: Backend::new(&cc.egui_ctx), state: State::new(), covers: Covers::default() }
     }
 }
 
 impl eframe::App for LetoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                ui.add_space(16.0);
-                ui.label(RichText::new(build_line()).color(theme::color(brand::MOON_DIM)).small());
+        let now = ui.input(|input| input.time);
+        let unavailable = self.backend.unavailable();
 
-                ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                    // Shrink the logo on narrow screens instead of clipping it.
-                    let scale = ((ui.available_width() - 2.0 * SIDE_MARGIN) / LOGO_WIDTH).min(1.0);
-                    let logo = egui::vec2(LOGO_WIDTH, LOGO_HEIGHT) * scale.max(0.25);
+        for event in self.backend.events() {
+            match event {
+                Event::Cover { host, app, image } => {
+                    self.covers.insert(ui.ctx(), host, app, image);
+                }
+                other => self.state.apply(other, now),
+            }
+        }
+        if unavailable.is_none() {
+            self.state.tick(now);
+        }
 
-                    let free = ui.available_height() - logo.y - 96.0;
-                    ui.add_space((free / 2.0).max(16.0));
-                    ui.add(
-                        egui::Image::new(egui::include_image!(
-                            "../../../assets/brand/png/leto-logo.png"
-                        ))
-                        .fit_to_exact_size(logo),
-                    );
-                    ui.add_space(24.0);
-                    ui.label(RichText::new(brand::TAGLINE).size(18.0));
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("Foundation build. Streaming arrives in the next steps.")
-                            .color(theme::color(brand::MOON_DIM)),
-                    );
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::GROUND)).show(
+            ui,
+            |ui| {
+                top_bar(ui);
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    widgets::page(ui, |ui| match (&unavailable, self.state.screen.clone()) {
+                        (Some(problem), _) => out_of_order(ui, problem),
+                        (None, Screen::Pcs) => {
+                            ui::pcs::show(ui, &mut self.state, now);
+                            ui.add_space(24.0);
+                            ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
+                        }
+                        (None, Screen::Pairing(pairing)) => {
+                            ui::pairing::show(ui, &mut self.state, &pairing, now);
+                        }
+                        (None, Screen::Apps(view)) => {
+                            ui::apps::show(ui, &mut self.state, &view, &self.covers, now);
+                        }
+                    });
                 });
-            });
-        });
+            },
+        );
+
+        // Covers are only kept for the PC whose apps are on screen.
+        let shown = match &self.state.screen {
+            Screen::Apps(view) => Some(&view.host.id),
+            _ => None,
+        };
+        self.covers.keep_only(shown);
+
+        for request in self.state.take_requests() {
+            self.backend.send(request);
+        }
+        if unavailable.is_none() && self.state.screen == Screen::Pcs {
+            // Wake up for the next search even if nobody touches the app.
+            ui.ctx().request_repaint_after_secs(1.0);
+        }
     }
+}
+
+fn top_bar(ui: &mut egui::Ui) {
+    let size = egui::vec2(ui.available_width(), 60.0);
+    ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+        ui.add_space(if size.x < 560.0 { 16.0 } else { 32.0 });
+        ui.add(
+            egui::Image::new(egui::include_image!("../../../assets/brand/png/leto-logo.png"))
+                .fit_to_exact_size(LOGO),
+        );
+    });
+}
+
+/// Shown instead of every screen when the backend cannot work at all.
+fn out_of_order(ui: &mut egui::Ui, problem: &Unavailable) {
+    ui.add_space((ui.available_height() * 0.16).clamp(16.0, 120.0));
+    ui.vertical_centered(|ui| {
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+        icons::monitor(ui.painter(), rect, theme::LINE);
+        ui.add_space(6.0);
+        ui.label(RichText::new(problem.title).size(20.0));
+        ui.scope(|ui| {
+            ui.set_max_width(460.0_f32.min(ui.available_width()));
+            let text = widgets::dim(problem.explanation.as_str());
+            ui.add(egui::Label::new(text).wrap().halign(Align::Center));
+        });
+        ui.add_space(18.0);
+        ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
+    });
 }
 
 /// The small line at the bottom: version, platform and role.

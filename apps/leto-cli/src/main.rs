@@ -4,9 +4,12 @@
 //! scripts and agents can drive Leto without the graphical app. Each command
 //! prints plain text by default and JSON with `--json`.
 
-use std::process::ExitCode;
+mod pcs;
+
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
+use leto_client::{Client, Pin};
 use leto_core::{brand, platform::Platform};
 use leto_protocol::ports::{DEFAULT_BASE_PORT, PortMap, Service, Transport};
 use serde::Serialize;
@@ -17,6 +20,10 @@ struct Cli {
     /// Print JSON instead of plain text.
     #[arg(long, global = true)]
     json: bool,
+
+    /// Keep Leto's settings in this folder instead of the usual one.
+    #[arg(long, global = true, value_name = "FOLDER")]
+    settings: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -31,6 +38,35 @@ enum Command {
         /// Base port every other port is derived from.
         #[arg(long, default_value_t = DEFAULT_BASE_PORT)]
         base: u16,
+    },
+    /// List the PCs Leto knows and the ones it finds on the network.
+    Pcs {
+        /// Seconds to listen for PCs announcing themselves.
+        #[arg(long, default_value_t = 2, value_name = "SECONDS")]
+        wait: u64,
+    },
+    /// Add a PC by address, for one the search does not find.
+    Add {
+        /// IP address or name, with `:port` if the PC does not use 47989.
+        address: String,
+    },
+    /// Pair this device with a PC. Shows a PIN to type on the PC.
+    Pair {
+        /// Name, address or id of the PC.
+        pc: String,
+        /// Use this PIN instead of a random one.
+        #[arg(long)]
+        pin: Option<Pin>,
+    },
+    /// List the apps a paired PC offers.
+    Apps {
+        /// Name, address or id of the PC.
+        pc: String,
+    },
+    /// Forget a PC, and ask it to forget this device.
+    Forget {
+        /// Name, address or id of the PC.
+        pc: String,
     },
 }
 
@@ -66,10 +102,25 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<String, String> {
-    match cli.command {
-        Command::About => about(cli.json),
-        Command::Ports { base } => ports(base, cli.json),
+    let json = cli.json;
+    match &cli.command {
+        Command::About => about(json),
+        Command::Ports { base } => ports(*base, json),
+        Command::Pcs { wait } => pcs::list(&client(cli)?, *wait, json),
+        Command::Add { address } => pcs::add(&client(cli)?, address, json),
+        Command::Pair { pc, pin } => pcs::pair(&client(cli)?, pc, *pin, json),
+        Command::Apps { pc } => pcs::apps(&client(cli)?, pc, json),
+        Command::Forget { pc } => pcs::forget(&client(cli)?, pc, json),
     }
+}
+
+/// Opens the client engine with the settings the person asked for.
+fn client(cli: &Cli) -> Result<Client, String> {
+    match &cli.settings {
+        Some(folder) => Client::open(folder),
+        None => Client::open_default(),
+    }
+    .map_err(|error| error.to_string())
 }
 
 fn about(json: bool) -> Result<String, String> {

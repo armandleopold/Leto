@@ -14,8 +14,17 @@ targets = [
 
 [advisories]
 version = 2
-# No exceptions. Add an advisory id here only with a comment saying why.
-ignore = []
+# Add an advisory id here only with a comment saying why.
+ignore = [
+    # Timing side channel in `rsa` 0.9 ("Marvin attack"), fixed in 0.10.
+    # moonlight-common-rust still asks for 0.9. Recovering a key takes many
+    # timed private-key operations, and Leto does one per pairing, which a
+    # person starts by hand: it signs once with this device's key. Creating
+    # the key happens offline, and every TLS handshake is signed by `ring`,
+    # not by this crate. Remove this line when moonlight-common-rust moves to
+    # `rsa` 0.10.
+    { id = "RUSTSEC-2023-0071", reason = "one signature per manual pairing; see the comment above" },
+]
 
 [licenses]
 version = 2
@@ -27,10 +36,12 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "GPL-3.0-only",
-    # For moonlight-common-rust, the client protocol core added in the next step.
+    # moonlight-common-rust, the client protocol core.
     "GPL-3.0-or-later",
     "ISC",
     "MIT",
+    # File-level copyleft, compatible with the GPL. Used by `directories`.
+    "MPL-2.0",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
@@ -50,4 +61,8 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 # Git dependencies must be listed here one by one.
-allow-git = []
+allow-git = [
+    # The client protocol core. Not on crates.io, pinned to a commit in the
+    # workspace Cargo.toml.
+    "https://github.com/MrCreativ3001/moonlight-common-rust.git",
+]

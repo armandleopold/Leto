@@ -4,9 +4,9 @@
 //! `cargo xtask ci` locally means a green pipeline.
 
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Path, PathBuf},
-    process::{Command, ExitCode},
+    process::{Command, ExitCode, Stdio},
 };
 
 /// A target Leto must keep compiling for, and the packages checked on it.
@@ -14,6 +14,8 @@ struct Target {
     triple: &'static str,
     /// Packages to check, or an empty slice for the whole workspace.
     packages: &'static [&'static str],
+    /// Name zig gives this target, when the check has C code to compile.
+    zig: Option<&'static str>,
 }
 
 /// The target of the web client.
@@ -24,15 +26,32 @@ const PORTABLE: &[&str] = &["leto-core", "leto-protocol"];
 
 /// Every non-native target checked by `cargo xtask targets`.
 ///
+/// `cargo check` needs no linker or SDK, so these run from any machine. The
+/// one thing it does need is a C compiler for the target, because the TLS
+/// code under `leto-client` (the `ring` crate) is partly written in C. zig
+/// provides one for macOS. Windows has no such shortcut, so its build is
+/// covered by the Windows job of the pipeline instead.
+///
 /// The graphical app joins the Android and iOS lists when their app shells
-/// land. `cargo check` needs no linker or SDK, so all of these run from Linux.
+/// land.
 const TARGETS: &[Target] = &[
-    Target { triple: "x86_64-pc-windows-msvc", packages: &[] },
-    Target { triple: "aarch64-apple-darwin", packages: &[] },
-    Target { triple: WEB_TARGET, packages: &["leto", "leto-core", "leto-protocol"] },
-    Target { triple: "aarch64-linux-android", packages: PORTABLE },
-    Target { triple: "aarch64-apple-ios", packages: PORTABLE },
+    Target { triple: "aarch64-apple-darwin", packages: &[], zig: Some("aarch64-macos") },
+    Target { triple: WEB_TARGET, packages: &["leto", "leto-core", "leto-protocol"], zig: None },
+    Target { triple: "aarch64-linux-android", packages: PORTABLE, zig: None },
+    Target { triple: "aarch64-apple-ios", packages: PORTABLE, zig: None },
 ];
+
+/// A copy of this program under a name starting with one of these acts as a C
+/// compiler or an archiver that hands the work to zig. See [`cross_tool`].
+const ZIG_CC: &str = "leto-zig-cc-";
+const ZIG_AR: &str = "leto-zig-ar";
+
+/// The ways zig may be installed: on its own, or as the `ziglang` Python
+/// package, which is how the pipeline gets it.
+const ZIG_COMMANDS: &[&[&str]] =
+    &[&["zig"], &["python-zig"], &["python3", "-m", "ziglang"], &["python", "-m", "ziglang"]];
+
+const ZIG_HELP: &str = "install zig with `pipx install ziglang`, or from https://ziglang.org";
 
 const USAGE: &str = "\
 Usage: cargo xtask <command>
@@ -47,6 +66,9 @@ Commands:
 ";
 
 fn main() -> ExitCode {
+    if let Some(code) = cross_tool() {
+        return code;
+    }
     let command = env::args().nth(1).unwrap_or_default();
     let result = match command.as_str() {
         "ci" => fmt().and_then(|()| clippy()).and_then(|()| test()).and_then(|()| targets()),
@@ -90,9 +112,96 @@ fn targets() -> Result<(), String> {
         for package in target.packages {
             args.extend(["--package", package]);
         }
-        cargo(&args)?;
+        // A Mac compiles for macOS with its own compiler.
+        let zig = target.zig.filter(|_| !cfg!(target_os = "macos"));
+        let Some(zig) = zig else {
+            cargo(&args)?;
+            continue;
+        };
+        if zig_command().is_none() {
+            // The pipeline must not skip a check. A developer machine may.
+            if env::var_os("CI").is_some() {
+                return Err(format!("the {} check needs zig: {ZIG_HELP}", target.triple));
+            }
+            eprintln!("xtask: skipping {}: {ZIG_HELP}", target.triple);
+            continue;
+        }
+        cargo_with(&args, &cross_tools(target.triple, zig)?)?;
     }
     Ok(())
+}
+
+/// Prepares the C compiler and the archiver for `triple`, and returns the
+/// environment variables that make the `cc` crate use them.
+///
+/// Both are copies of this program under another name: see [`cross_tool`].
+fn cross_tools(triple: &str, zig: &str) -> Result<Vec<(String, PathBuf)>, String> {
+    let exe = env::current_exe().map_err(|e| format!("finding xtask itself: {e}"))?;
+    let dir = workspace_root().join("target/xtask");
+    fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    let install = |name: String| {
+        let tool = dir.join(name).with_extension(env::consts::EXE_EXTENSION);
+        fs::copy(&exe, &tool).map_err(|e| format!("creating {}: {e}", tool.display()))?;
+        Ok::<_, String>(tool)
+    };
+    let suffix = triple.replace('-', "_");
+    Ok(vec![
+        (format!("CC_{suffix}"), install(format!("{ZIG_CC}{zig}"))?),
+        (format!("AR_{suffix}"), install(ZIG_AR.to_owned())?),
+    ])
+}
+
+/// When this program runs under one of the tool names, does that tool's job
+/// and returns its exit code.
+///
+/// The `cc` crate takes a compiler as one path, with no room for arguments,
+/// so the zig target is part of the file name.
+fn cross_tool() -> Option<ExitCode> {
+    let exe = env::current_exe().ok()?;
+    let name = exe.file_stem()?.to_str()?;
+    let mut args = vec![];
+    if let Some(target) = name.strip_prefix(ZIG_CC) {
+        args.extend(["cc".to_owned(), "-target".to_owned(), target.to_owned()]);
+        // Flags the `cc` crate adds for Apple's own compiler. zig takes the
+        // target from `-target` and rejects these.
+        let mut given = env::args().skip(1);
+        while let Some(arg) = given.next() {
+            if arg == "-arch" {
+                given.next();
+            } else if !arg.starts_with("--target=") {
+                args.push(arg);
+            }
+        }
+    } else if name == ZIG_AR {
+        args.push("ar".to_owned());
+        args.extend(env::args().skip(1));
+    } else {
+        return None;
+    }
+    let status = zig_command()
+        .ok_or_else(|| io::Error::other(ZIG_HELP))
+        .and_then(|zig| Command::new(zig[0]).args(&zig[1..]).args(&args).status());
+    Some(match status {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("{name}: {e}");
+            ExitCode::FAILURE
+        }
+    })
+}
+
+/// The command that starts zig on this machine, if it is installed.
+fn zig_command() -> Option<&'static [&'static str]> {
+    ZIG_COMMANDS.iter().copied().find(|zig| {
+        Command::new(zig[0])
+            .args(&zig[1..])
+            .arg("version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
 }
 
 /// Builds the web client: the app compiled to WebAssembly, its JavaScript
@@ -185,9 +294,18 @@ fn copy_files(from: &Path, to: &Path) -> Result<(), String> {
 
 /// Runs `cargo` with `args`, returning the command line on failure.
 fn cargo(args: &[&str]) -> Result<(), String> {
+    cargo_with(args, &[])
+}
+
+/// Runs `cargo` with `args` and extra environment variables.
+fn cargo_with(args: &[&str], variables: &[(String, PathBuf)]) -> Result<(), String> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let line = format!("cargo {}", args.join(" "));
     eprintln!("xtask: {line}");
-    let status = Command::new(cargo).args(args).status().map_err(|e| format!("{line}: {e}"))?;
+    let status = Command::new(cargo)
+        .args(args)
+        .envs(variables.iter().map(|(name, value)| (name, value)))
+        .status()
+        .map_err(|e| format!("{line}: {e}"))?;
     if status.success() { Ok(()) } else { Err(line) }
 }

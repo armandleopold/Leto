@@ -1,0 +1,248 @@
+//! The backend of the desktop app: the client engine on worker threads.
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
+
+use leto_client::{Client, Error, HostId};
+
+use super::Unavailable;
+use crate::state::{AppsProblem, Event, Request};
+
+/// How long a search listens for PCs announcing themselves.
+const LISTEN_TIME: Duration = Duration::from_secs(2);
+
+/// Covers are shown small: anything wider is scaled down to this.
+const COVER_WIDTH: u32 = 360;
+
+pub struct Backend {
+    /// The engine, or why it could not start.
+    client: Result<Arc<Client>, String>,
+    reporter: Reporter,
+    events: mpsc::Receiver<Event>,
+    /// Counts the app lists asked for. A worker loading the covers of a list
+    /// nobody looks at any more notices and stops.
+    apps_asked: Arc<AtomicU64>,
+}
+
+/// Sends events to the interface and wakes it up.
+#[derive(Clone)]
+struct Reporter {
+    events: mpsc::Sender<Event>,
+    ctx: egui::Context,
+}
+
+impl Reporter {
+    fn send(&self, event: Event) {
+        // The interface is gone when the app is closing.
+        let _ = self.events.send(event);
+        self.ctx.request_repaint();
+    }
+}
+
+impl Backend {
+    pub fn new(ctx: &egui::Context) -> Self {
+        let (sender, events) = mpsc::channel();
+        let client = Client::open_default().map(Arc::new).map_err(|error| explain(&error));
+        if let Err(error) = &client {
+            log::error!("the client engine did not start: {error}");
+        }
+        Self {
+            client,
+            reporter: Reporter { events: sender, ctx: ctx.clone() },
+            events,
+            apps_asked: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn unavailable(&self) -> Option<Unavailable> {
+        let explanation = self.client.as_ref().err()?.clone();
+        Some(Unavailable { title: "Leto could not start", explanation })
+    }
+
+    /// The news that arrived since the last call.
+    pub fn events(&self) -> Vec<Event> {
+        self.events.try_iter().collect()
+    }
+
+    /// Starts `request` on a worker thread. The outcome arrives as events.
+    pub fn send(&self, request: Request) {
+        let Ok(client) = &self.client else { return };
+        let client = Arc::clone(client);
+        let report = self.reporter.clone();
+        let apps_asked = Arc::clone(&self.apps_asked);
+        if matches!(request, Request::Apps(_)) {
+            apps_asked.fetch_add(1, Ordering::SeqCst);
+        }
+        let name = format!("leto: {request:?}");
+        let spawned = thread::Builder::new().name(name).spawn(move || match request {
+            Request::Search => search(&client, &report),
+            Request::Add(address) => {
+                let added = client.add(&address).map_err(|error| explain(&error));
+                report.send(Event::Hosts(client.hosts()));
+                report.send(Event::Added(added));
+            }
+            Request::Pair { host, attempt } => pair(&client, &report, &host, attempt),
+            Request::Apps(host) => apps(&client, &report, &host, &apps_asked),
+            Request::Forget(host) => {
+                if let Err(error) = client.forget(&host) {
+                    report.send(Event::Notice(explain(&error)));
+                }
+                report.send(Event::Hosts(client.hosts()));
+            }
+        });
+        if let Err(error) = spawned {
+            log::error!("could not start a worker thread: {error}");
+        }
+    }
+}
+
+fn search(client: &Client, report: &Reporter) {
+    // Listen on the network while the saved PCs are being checked.
+    let listened = thread::scope(|scope| {
+        let listening = scope.spawn(|| client.discover(LISTEN_TIME));
+        client.refresh();
+        report.send(Event::Hosts(client.hosts()));
+        listening.join()
+    });
+    let network_searched = match listened {
+        Ok(Ok(_)) => true,
+        Ok(Err(error)) => {
+            log::warn!("could not search the network: {error}");
+            false
+        }
+        Err(_) => false,
+    };
+    report.send(Event::Hosts(client.hosts()));
+    report.send(Event::SearchFinished { network_searched });
+}
+
+fn pair(client: &Client, report: &Reporter, host: &HostId, attempt: u64) {
+    let result = client.new_pin().and_then(|pin| {
+        report.send(Event::PinChosen { attempt, pin });
+        client.pair(host, pin)
+    });
+    report.send(Event::Hosts(client.hosts()));
+    report.send(Event::PairingEnded { attempt, result: result.map_err(|error| explain(&error)) });
+}
+
+fn apps(client: &Client, report: &Reporter, host: &HostId, apps_asked: &AtomicU64) {
+    let mine = apps_asked.load(Ordering::SeqCst);
+    let apps = match client.apps(host) {
+        Ok(apps) => apps,
+        Err(error) => {
+            let needs_pairing = matches!(error, Error::NotPaired);
+            if needs_pairing {
+                // The list of PCs should say so too.
+                client.refresh();
+                report.send(Event::Hosts(client.hosts()));
+            }
+            let problem = AppsProblem { message: explain(&error), needs_pairing };
+            report.send(Event::Apps { host: host.clone(), result: Err(problem) });
+            return;
+        }
+    };
+    report.send(Event::Apps { host: host.clone(), result: Ok(apps.clone()) });
+
+    for app in apps {
+        if apps_asked.load(Ordering::SeqCst) != mine {
+            return;
+        }
+        let image = match client.app_image(host, app.id) {
+            Ok(bytes) => decode_cover(&bytes),
+            Err(error) => {
+                log::debug!("no cover for {}: {error}", app.title);
+                None
+            }
+        };
+        report.send(Event::Cover { host: host.clone(), app: app.id, image });
+    }
+}
+
+/// Turns the bytes of an image file into pixels, scaled down for the grid.
+fn decode_cover(bytes: &[u8]) -> Option<egui::ColorImage> {
+    let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let image = if image.width() > COVER_WIDTH {
+        let height = u64::from(image.height()) * u64::from(COVER_WIDTH) / u64::from(image.width());
+        let height = u32::try_from(height).ok()?.max(1);
+        image::imageops::resize(&image, COVER_WIDTH, height, image::imageops::FilterType::Triangle)
+    } else {
+        image
+    };
+    let size = [usize::try_from(image.width()).ok()?, usize::try_from(image.height()).ok()?];
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()))
+}
+
+/// Says what went wrong and what to do about it, for the person.
+fn explain(error: &Error) -> String {
+    match error {
+        Error::BadAddress(address) => {
+            format!("\"{address}\" does not look like an address. Try something like 192.168.1.20.")
+        }
+        Error::Offline => "The PC did not answer. Check that it is on, that Apollo or Sunshine \
+                           is running on it, and that the address is right."
+            .to_owned(),
+        Error::WrongPin => "The code did not match. Try again with a new code.".to_owned(),
+        Error::PinTimeout => "Nobody typed the code on the PC in time.".to_owned(),
+        Error::PairingBusy => {
+            "Another device is pairing with this PC right now. Try again in a moment.".to_owned()
+        }
+        Error::PairingFailed => "The PC refused the pairing.".to_owned(),
+        Error::NotPaired => {
+            "This PC no longer knows this device. Pair again to continue.".to_owned()
+        }
+        Error::UnknownHost => "Leto no longer knows this PC.".to_owned(),
+        Error::Storage(error) => format!("Leto could not read or write its settings: {error}"),
+        Error::Discovery(_) | Error::Protocol(_) => {
+            let text = error.to_string();
+            let mut letters = text.chars();
+            let first = letters.next().map(|letter| letter.to_uppercase().to_string());
+            format!("{}{}.", first.unwrap_or_default(), letters.as_str())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explanations_are_full_sentences() {
+        let errors = [
+            Error::BadAddress("my pc".into()),
+            Error::Offline,
+            Error::WrongPin,
+            Error::PinTimeout,
+            Error::PairingBusy,
+            Error::PairingFailed,
+            Error::NotPaired,
+            Error::UnknownHost,
+            Error::Discovery("no network interface".into()),
+            Error::Protocol("unexpected answer".into()),
+        ];
+        for error in errors {
+            let text = explain(&error);
+            assert!(text.starts_with(|letter: char| letter.is_uppercase() || letter == '"'));
+            assert!(text.ends_with('.'), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_wide_cover_is_scaled_down_and_a_broken_one_is_dropped() {
+        let wide = image::RgbaImage::from_pixel(720, 1080, image::Rgba([255, 107, 53, 255]));
+        let mut file = std::io::Cursor::new(Vec::new());
+        wide.write_to(&mut file, image::ImageFormat::Png).expect("a PNG can be written to memory");
+
+        let cover = decode_cover(file.get_ref()).expect("a valid PNG decodes");
+        assert_eq!(cover.size, [360, 540]);
+        assert_eq!(cover.pixels[0], egui::Color32::from_rgb(255, 107, 53));
+
+        assert!(decode_cover(b"not an image").is_none());
+    }
+}
