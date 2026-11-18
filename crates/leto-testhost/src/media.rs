@@ -146,7 +146,10 @@ impl TestCard {
         // colours, stays far below any bit rate asked for.
         //
         // The two last settings save bits by leaving alone what looks
-        // unchanged, which leaves a faint trace behind the sun.
+        // unchanged, which leaves a trace behind the sun. Without them the
+        // brightness of the ground is exact again once the sun has passed. A
+        // tint of a few levels can remain: that is this encoder, not the
+        // client showing the card.
         let config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(bitrate_kbps.clamp(500, 20_000) * 1000))
             .max_frame_rate(FrameRate::from_hz(fps as f32))

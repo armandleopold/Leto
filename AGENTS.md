@@ -34,7 +34,7 @@ cargo run -p leto-testhost --example serve -- --port 47989 --announce
 ```
 
 To check a stream without the window, `leto-cli play` streams an app for a few
-seconds and reports what arrived, and `leto-cli quit` closes it:
+seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 
 ```sh
 cargo run -p leto-cli -- play Salon Desktop --seconds 10

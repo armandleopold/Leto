@@ -16,6 +16,8 @@ workspace = true
 clap = { workspace = true }
 leto-client = { workspace = true }
 leto-core = { workspace = true }
+# `play` decodes what it receives, to tell whether Leto can show it.
+leto-media = { workspace = true }
 leto-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

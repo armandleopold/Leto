@@ -1,14 +1,18 @@
 //! The commands about streams: play an app and say what arrived, close it.
 //!
 //! `play` shows nothing and plays nothing: it measures. It tells whether a
-//! PC streams to Leto at all, and how well, without the graphical app.
+//! PC streams to Leto at all, whether Leto can decode its pictures, and how
+//! well they arrive, without the graphical app.
 
 use std::{
-    sync::mpsc,
+    sync::{Arc, Mutex, PoisonError, mpsc},
     time::{Duration, Instant},
 };
 
-use leto_client::{AppSummary, Client, Counter, Ended, StreamSettings};
+use leto_client::{
+    AppSummary, Client, Counter, Decoded, Ended, StreamSettings, VideoFrame, VideoSetup, VideoSink,
+};
+use leto_media::{Picture, VideoDecoder};
 use serde::Serialize;
 
 use crate::{pcs::find, to_json};
@@ -30,6 +34,12 @@ struct Report {
     keyframes: u64,
     /// Pictures the PC made that never arrived.
     pictures_missing: u64,
+    /// Pictures Leto decoded, and their size.
+    pictures_decoded: u64,
+    decoded_width: usize,
+    decoded_height: usize,
+    /// Pictures that arrived and could not be decoded.
+    pictures_undecodable: u64,
     video_kbps: u64,
     sound_packets: u64,
     sound_kbps: u64,
@@ -50,10 +60,17 @@ pub fn play(
     let app = pick_app(&apps, app)?;
 
     let counter = Counter::default();
+    let decoding = Arc::new(Mutex::new(Decoding::default()));
+    let video = Decoder {
+        counter: counter.video(),
+        decoder: VideoDecoder::new().map_err(|error| error.to_string())?,
+        picture: Picture::default(),
+        decoding: Arc::clone(&decoding),
+    };
     let (ended, endings) = mpsc::channel();
     let asked = Instant::now();
     let session = client
-        .play(&host.id, app.id, settings, counter.video(), counter.audio(), move |reason| {
+        .play(&host.id, app.id, settings, video, counter.audio(), move |reason| {
             let _ = ended.send(reason);
         })
         .map_err(|error| error.to_string())?;
@@ -64,6 +81,7 @@ pub fn play(
     let ended = endings.recv_timeout(Duration::from_secs(seconds)).ok();
     let watched = connected.elapsed().as_secs_f64();
     let tally = counter.tally();
+    let decoding = *decoding.lock().unwrap_or_else(PoisonError::into_inner);
     session.stop();
 
     let kbps = |bytes: u64| (bytes as f64 * 8.0 / 1000.0 / watched.max(0.001)).round() as u64;
@@ -78,6 +96,10 @@ pub fn play(
         pictures: tally.frames,
         keyframes: tally.keyframes,
         pictures_missing: tally.frames_missing,
+        pictures_decoded: decoding.decoded,
+        decoded_width: decoding.width,
+        decoded_height: decoding.height,
+        pictures_undecodable: decoding.failed,
         video_kbps: kbps(tally.video_bytes),
         sound_packets: tally.audio_packets,
         sound_kbps: kbps(tally.audio_bytes),
@@ -108,6 +130,13 @@ pub fn play(
             report.pictures_missing,
             report.video_kbps
         ),
+        format!(
+            "       decoded {} of them as {}x{}, could not decode {}",
+            report.pictures_decoded,
+            report.decoded_width,
+            report.decoded_height,
+            report.pictures_undecodable
+        ),
         format!("Sound  {} packets, {} kbit/s", report.sound_packets, report.sound_kbps),
     ];
     lines.push(match &report.ended {
@@ -127,6 +156,53 @@ pub fn quit(client: &Client, pc: &str, json: bool) -> Result<String, String> {
         return to_json(&host);
     }
     Ok(format!("No app is running on {} now.", host.name))
+}
+
+/// How decoding went.
+#[derive(Debug, Default, Clone, Copy)]
+struct Decoding {
+    decoded: u64,
+    failed: u64,
+    width: usize,
+    height: usize,
+}
+
+/// Counts the pictures that arrive and decodes them as the app would,
+/// asking for a keyframe when one cannot be decoded.
+struct Decoder<V> {
+    counter: V,
+    decoder: VideoDecoder,
+    picture: Picture,
+    decoding: Arc<Mutex<Decoding>>,
+}
+
+impl<V: VideoSink> VideoSink for Decoder<V> {
+    fn setup(&mut self, setup: VideoSetup) {
+        self.counter.setup(setup);
+    }
+
+    fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
+        let outcome = self.decoder.decode(frame.data, &mut self.picture);
+        self.counter.frame(frame);
+        let mut decoding = self.decoding.lock().unwrap_or_else(PoisonError::into_inner);
+        match outcome {
+            Ok(true) => {
+                decoding.decoded += 1;
+                decoding.width = self.picture.width;
+                decoding.height = self.picture.height;
+                Decoded::Ok
+            }
+            Ok(false) => Decoded::Ok,
+            Err(_) => {
+                decoding.failed += 1;
+                Decoded::NeedsKeyframe
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        self.counter.stop();
+    }
 }
 
 /// Finds the app a person means by its title or its id.
@@ -172,6 +248,12 @@ mod tests {
         assert_eq!(report["app"], "Desktop");
         assert!(report["pictures"].as_u64().unwrap() >= 30, "{json}");
         assert!(report["keyframes"].as_u64().unwrap() >= 1, "{json}");
+        assert_eq!(report["pictures_decoded"], report["pictures"], "{json}");
+        assert_eq!(report["pictures_undecodable"], 0, "{json}");
+        assert_eq!(
+            (&report["decoded_width"], &report["decoded_height"]),
+            (&320.into(), &180.into())
+        );
         assert!(report["sound_packets"].as_u64().unwrap() >= 200, "{json}");
         assert_eq!(report["ended"], serde_json::Value::Null);
         assert_eq!(host.running_app(), Some(1));

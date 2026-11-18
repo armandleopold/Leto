@@ -1800,6 +1800,7 @@ dependencies = [
  "clap",
  "leto-client",
  "leto-core",
+ "leto-media",
  "leto-protocol",
  "leto-testhost",
  "serde",
