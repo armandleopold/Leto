@@ -71,6 +71,14 @@ strip = "debuginfo"
 [profile.dev.package."*"]
 opt-level = 2
 
+# `leto-media` is Leto's own, and has loops that run once per pixel of every
+# picture of a camera (`camera/pixels.rs`, `encode.rs`). Unoptimised, one
+# picture of 640 by 360 takes 28 ms of the 33 ms a camera leaves between two:
+# the camera stutters in a debug build, and on a busy computer most of its
+# pictures come too late to be sent. Overflow checks stay on.
+[profile.dev.package.leto-media]
+opt-level = 2
+
 # opus-decoder 0.1.1 keeps one bit per block of a frame in eight bits, and
 # some frames of twenty milliseconds have sixteen blocks (`celt/vq.rs`,
 # `extract_collapse_mask`). The shift that goes past the eighth bit wraps
