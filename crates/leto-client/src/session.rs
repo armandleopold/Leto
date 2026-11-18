@@ -13,16 +13,28 @@ use std::{
     time::{Duration, Instant},
 };
 
-use moonlight_common::stream::{
-    EncryptionFlags, MoonlightStreamSettings, StreamingConfig,
-    audio::{AudioConfig, AudioDecoder, AudioFrame, OpusMultistreamConfig},
-    connection::ConnectionListener,
-    control::ActiveGamepads,
-    proto::control::packet::{ControlPacket, TerminationReason},
-    std::MoonlightStream,
-    video::{
-        ColorRange, ColorSpace, DecodeResult, FrameType, VideoDecodeUnit, VideoDecoder,
-        VideoFormats, VideoSetup as ProtocolVideoSetup,
+use leto_core::input::{GamepadButtons, GamepadKind, Input, MouseButton};
+use moonlight_common::{
+    error::Error as ProtocolError,
+    http::server_info::ApolloPermissions,
+    stream::{
+        EncryptionFlags, MoonlightStreamSettings, StreamingConfig,
+        audio::{AudioConfig, AudioDecoder, AudioFrame, OpusMultistreamConfig},
+        connection::ConnectionListener,
+        control::{
+            ActiveGamepads, ControllerButtons, ControllerCapabilities, ControllerType, KeyAction,
+            KeyCode, KeyFlags, KeyModifiers, MouseButton as ProtocolMouseButton, MouseButtonAction,
+            PacketSendError,
+        },
+        proto::control::{
+            input_batcher::ClientInputEvent,
+            packet::{ControlPacket, TerminationReason},
+        },
+        std::MoonlightStream,
+        video::{
+            ColorRange, ColorSpace, DecodeResult, FrameType, VideoDecodeUnit, VideoDecoder,
+            VideoFormats, VideoSetup as ProtocolVideoSetup,
+        },
     },
 };
 
@@ -151,11 +163,47 @@ pub enum Ended {
     HostError(u32),
 }
 
+/// Why the PC did not get something the person did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InputError {
+    /// The owner of the PC did not allow this device that kind of input.
+    /// Apollo decides it device by device.
+    #[error("the PC does not accept this kind of input from this device")]
+    NotAllowed,
+    #[error("the stream is not connected")]
+    NotConnected,
+}
+
+/// The kinds of input the owner of the PC lets this device send. All of them
+/// on every host but Apollo, where a newly paired device starts with none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputAllowed {
+    pub keyboard: bool,
+    pub mouse: bool,
+    pub gamepad: bool,
+}
+
+impl InputAllowed {
+    pub const ALL: Self = Self { keyboard: true, mouse: true, gamepad: true };
+
+    fn from_apollo(permissions: Option<&ApolloPermissions>) -> Self {
+        permissions.map_or(Self::ALL, |granted| Self {
+            keyboard: granted.contains(ApolloPermissions::INPUT_KEYBOARD),
+            mouse: granted.contains(ApolloPermissions::INPUT_MOUSE),
+            gamepad: granted.contains(ApolloPermissions::INPUT_CONTROLLER),
+        })
+    }
+}
+
 /// A running stream. Dropping it leaves the stream. The app keeps running on
 /// the PC either way, and can be resumed.
 pub struct Session {
     stream: Arc<MoonlightStream>,
     leaving: Arc<AtomicBool>,
+    input_allowed: InputAllowed,
+    /// The host knows a wheel that turns sideways: Sunshine and its
+    /// descendants do, Nvidia's old service does not.
+    sideways_wheel: bool,
 }
 
 impl Session {
@@ -169,6 +217,8 @@ impl Session {
     ) -> Result<Self, moonlight_common::error::Error> {
         let control = Arc::new(Control::default());
         let leaving = Arc::new(AtomicBool::new(false));
+        let input_allowed = InputAllowed::from_apollo(config.apollo_permissions.as_ref());
+        let sideways_wheel = config.version.is_sunshine_like();
 
         let stream = MoonlightStream::connect(
             config,
@@ -189,7 +239,7 @@ impl Session {
         if control.keyframe_wanted_early.swap(false, Ordering::SeqCst) {
             control.request_keyframe();
         }
-        Ok(Self { stream, leaving })
+        Ok(Self { stream, leaving, input_allowed, sideways_wheel })
     }
 
     /// Whether the stream has ended, by either side.
@@ -201,6 +251,66 @@ impl Session {
     pub fn stop(self) {
         // Dropping does it.
     }
+
+    /// What the owner of the PC lets this device do with keyboard, mouse and
+    /// gamepads, as it was when the stream started.
+    pub fn input_allowed(&self) -> InputAllowed {
+        self.input_allowed
+    }
+
+    /// Passes on something the person did with the keyboard, the mouse or a
+    /// gamepad. Does not wait, and the PC gets everything in the order it was
+    /// sent: a click never overtakes the movement before it.
+    ///
+    /// Nothing is gathered on the way, so add up the mouse movements that
+    /// come together before sending them. A gamepad must have arrived before
+    /// its state is sent. The PC repeats a held key by itself, so a key that
+    /// is already down is not sent again.
+    pub fn send(&self, input: Input) -> Result<(), InputError> {
+        match input {
+            Input::MouseMove { dx, dy } => {
+                self.send_mouse(ControlPacket::MouseMoveRelative { delta_x: dx, delta_y: dy })
+            }
+            Input::MousePosition { x, y, width, height } => {
+                if width <= 0 || height <= 0 {
+                    return Ok(());
+                }
+                self.send_mouse(ControlPacket::MouseMoveAbsolute {
+                    x,
+                    y,
+                    unused: 0,
+                    reference_width: width,
+                    reference_height: height,
+                })
+            }
+            Input::Scroll { horizontal, vertical } => {
+                if vertical != 0 {
+                    self.send_mouse(ControlPacket::MouseScroll {
+                        scroll_amount_1: vertical,
+                        scroll_amount_2: vertical,
+                        zero: 0,
+                    })?;
+                }
+                if horizontal != 0 && self.sideways_wheel {
+                    self.send_mouse(ControlPacket::MouseHorizontalScroll {
+                        scroll_amount: horizontal,
+                    })?;
+                }
+                Ok(())
+            }
+            other => self.stream.send_input(protocol_event(other)).map_err(refusal),
+        }
+    }
+
+    /// Mouse movements and the wheel go out directly. The protocol library
+    /// would hold them back for a millisecond to gather them, and let a
+    /// click sent meanwhile arrive first.
+    fn send_mouse(&self, packet: ControlPacket) -> Result<(), InputError> {
+        if !self.input_allowed.mouse {
+            return Err(InputError::NotAllowed);
+        }
+        self.stream.send_input_raw(packet).map_err(refusal)
+    }
 }
 
 impl Drop for Session {
@@ -209,6 +319,113 @@ impl Drop for Session {
         self.leaving.store(true, Ordering::SeqCst);
         self.stream.stop();
     }
+}
+
+fn refusal(error: ProtocolError) -> InputError {
+    match error {
+        ProtocolError::PacketSend(PacketSendError::ApolloPermissionDenied) => {
+            InputError::NotAllowed
+        }
+        other => {
+            log::debug!("an input did not leave: {other}");
+            InputError::NotConnected
+        }
+    }
+}
+
+/// `input` in the protocol's terms, for everything but the movements of the
+/// mouse and its wheel.
+fn protocol_event(input: Input) -> ClientInputEvent {
+    match input {
+        Input::Key { key, down, modifiers } => {
+            let mut held = KeyModifiers::empty();
+            held.set(KeyModifiers::SHIFT, modifiers.shift);
+            held.set(KeyModifiers::CTRL, modifiers.ctrl);
+            held.set(KeyModifiers::ALT, modifiers.alt);
+            held.set(KeyModifiers::META, modifiers.meta);
+            ClientInputEvent::Keyboard {
+                action: if down { KeyAction::Down } else { KeyAction::Up },
+                // The code names a place on a US keyboard, and the host
+                // applies its own layout: what Moonlight calls normalized.
+                flags: KeyFlags::empty(),
+                key_code: KeyCode(key.0 as i16),
+                modifiers: held,
+            }
+        }
+        // These three never come here: `Session::send` sends them itself.
+        Input::MouseMove { dx, dy } => {
+            ClientInputEvent::MouseMoveRelative { delta_x: dx, delta_y: dy }
+        }
+        Input::MousePosition { x, y, width, height } => ClientInputEvent::MouseMoveAbsolute {
+            x,
+            y,
+            reference_width: width,
+            reference_height: height,
+        },
+        Input::Scroll { vertical, .. } => {
+            ClientInputEvent::MouseScrollVertical { scroll_y: vertical }
+        }
+        Input::MouseButton { button, down } => ClientInputEvent::MouseButton {
+            action: if down { MouseButtonAction::Press } else { MouseButtonAction::Release },
+            button: match button {
+                MouseButton::Left => ProtocolMouseButton::Left,
+                MouseButton::Middle => ProtocolMouseButton::Middle,
+                MouseButton::Right => ProtocolMouseButton::Right,
+                MouseButton::Back => ProtocolMouseButton::X1,
+                MouseButton::Forward => ProtocolMouseButton::X2,
+            },
+        },
+        Input::GamepadArrived { number, kind } => ClientInputEvent::ControllerConnect {
+            controller_number: number,
+            ty: match kind {
+                GamepadKind::Unknown => ControllerType::Unknown,
+                GamepadKind::Xbox => ControllerType::Xbox,
+                GamepadKind::PlayStation => ControllerType::PlayStation,
+                GamepadKind::Nintendo => ControllerType::Nintendo,
+            },
+            capabilities: ControllerCapabilities::ANALOG_TRIGGERS,
+            supported_buttons: protocol_buttons(
+                GamepadButtons::EACH.into_iter().fold(GamepadButtons::NONE, GamepadButtons::with),
+            ),
+        },
+        Input::Gamepad { number, state } => ClientInputEvent::ControllerState {
+            controller_number: number,
+            pressed_buttons: protocol_buttons(state.buttons),
+            left_trigger: state.left_trigger,
+            right_trigger: state.right_trigger,
+            left_stick_x: state.left_stick[0],
+            left_stick_y: state.left_stick[1],
+            right_stick_x: state.right_stick[0],
+            right_stick_y: state.right_stick[1],
+        },
+        Input::GamepadLeft { number } => {
+            ClientInputEvent::ControllerDisconnect { controller_number: number }
+        }
+    }
+}
+
+fn protocol_buttons(buttons: GamepadButtons) -> ControllerButtons {
+    let mut held = ControllerButtons::empty();
+    for (ours, theirs) in [
+        (GamepadButtons::A, ControllerButtons::A),
+        (GamepadButtons::B, ControllerButtons::B),
+        (GamepadButtons::X, ControllerButtons::X),
+        (GamepadButtons::Y, ControllerButtons::Y),
+        (GamepadButtons::UP, ControllerButtons::UP),
+        (GamepadButtons::DOWN, ControllerButtons::DOWN),
+        (GamepadButtons::LEFT, ControllerButtons::LEFT),
+        (GamepadButtons::RIGHT, ControllerButtons::RIGHT),
+        (GamepadButtons::LEFT_SHOULDER, ControllerButtons::LB),
+        (GamepadButtons::RIGHT_SHOULDER, ControllerButtons::RB),
+        (GamepadButtons::START, ControllerButtons::PLAY),
+        (GamepadButtons::BACK, ControllerButtons::BACK),
+        (GamepadButtons::LEFT_STICK, ControllerButtons::LS_CLK),
+        (GamepadButtons::RIGHT_STICK, ControllerButtons::RS_CLK),
+        (GamepadButtons::GUIDE, ControllerButtons::SPECIAL),
+    ] {
+        held.set(theirs, buttons.contains(ours));
+    }
+    held
 }
 
 /// The way from the video side back to the host, once the stream is up.

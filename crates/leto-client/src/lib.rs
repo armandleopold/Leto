@@ -25,8 +25,11 @@ use std::{
     time::Duration,
 };
 
-pub use leto_core::model::{
-    AppSummary, HostId, HostKind, HostSummary, Pin, Reachability, join_address, parse_address,
+pub use leto_core::{
+    input,
+    model::{
+        AppSummary, HostId, HostKind, HostSummary, Pin, Reachability, join_address, parse_address,
+    },
 };
 use moonlight_common::{
     AppId, ServerState, ServerType,
@@ -40,8 +43,8 @@ use moonlight_common::{
     stream::{AesIv, AesKey, std::MoonlightStream},
 };
 pub use session::{
-    AudioSetup, AudioSink, Counter, Decoded, Ended, Session, StreamSettings, Tally, VideoFrame,
-    VideoSetup, VideoSink,
+    AudioSetup, AudioSink, Counter, Decoded, Ended, InputAllowed, InputError, Session,
+    StreamSettings, Tally, VideoFrame, VideoSetup, VideoSink,
 };
 use store::{Identity, Saved, SavedHost, Store};
 use transport::Transport;

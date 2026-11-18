@@ -5,7 +5,11 @@
 //! second, so dropped frames show, and the eight classic colour bars, so
 //! swapped or washed-out colours show. The melody repeats every two seconds,
 //! so a gap or a crackle is easy to hear.
+//!
+//! The card also shows what the client does: a pointer where its mouse is, a
+//! square for every key held, and a dial for the first gamepad.
 
+use leto_core::input::{GamepadButtons, Input};
 use openh264::{
     OpenH264API,
     encoder::{BitRate, Encoder, EncoderConfig, FrameRate, FrameType, RateControlMode},
@@ -116,6 +120,57 @@ impl YUVSource for Planes {
     }
 }
 
+/// What the person at the client is doing, as far as the card shows it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Hands {
+    /// Where the pointer is, from 0 to 1 across and down the picture. None
+    /// until the mouse was used.
+    pub pointer: Option<(f32, f32)>,
+    pub mouse_buttons_held: u32,
+    pub keys_held: u32,
+    /// The left stick of the first gamepad, when one is plugged in.
+    pub stick: Option<[f32; 2]>,
+    pub gamepad_button_held: bool,
+}
+
+impl Hands {
+    /// Takes `input` into account, on a picture `width` by `height`.
+    pub fn follow(&mut self, input: Input, width: u32, height: u32) {
+        match input {
+            Input::Key { down: true, .. } => self.keys_held += 1,
+            Input::Key { down: false, .. } => self.keys_held = self.keys_held.saturating_sub(1),
+            Input::MouseMove { dx, dy } => {
+                let (x, y) = self.pointer.unwrap_or((0.5, 0.5));
+                self.pointer = Some((
+                    (x + f32::from(dx) / width.max(1) as f32).clamp(0.0, 1.0),
+                    (y + f32::from(dy) / height.max(1) as f32).clamp(0.0, 1.0),
+                ));
+            }
+            Input::MousePosition { x, y, width, height } => {
+                self.pointer = Some((
+                    (f32::from(x) / f32::from(width.max(1))).clamp(0.0, 1.0),
+                    (f32::from(y) / f32::from(height.max(1))).clamp(0.0, 1.0),
+                ));
+            }
+            Input::MouseButton { down: true, .. } => self.mouse_buttons_held += 1,
+            Input::MouseButton { down: false, .. } => {
+                self.mouse_buttons_held = self.mouse_buttons_held.saturating_sub(1);
+            }
+            Input::Scroll { .. } => {}
+            Input::GamepadArrived { number: 0, .. } => self.stick = Some([0.0, 0.0]),
+            Input::Gamepad { number: 0, state } => {
+                self.stick = Some(state.left_stick);
+                self.gamepad_button_held = state.buttons != GamepadButtons::NONE;
+            }
+            Input::GamepadLeft { number: 0 } => {
+                self.stick = None;
+                self.gamepad_button_held = false;
+            }
+            Input::GamepadArrived { .. } | Input::Gamepad { .. } | Input::GamepadLeft { .. } => {}
+        }
+    }
+}
+
 /// One encoded picture.
 pub(crate) struct EncodedFrame<'a> {
     pub keyframe: bool,
@@ -197,9 +252,9 @@ impl TestCard {
         })
     }
 
-    /// Draws and encodes the next picture. `keyframe` asks for one that can
-    /// be decoded on its own.
-    pub fn next(&mut self, keyframe: bool) -> Option<EncodedFrame<'_>> {
+    /// Draws and encodes the next picture, with what the client's `hands` are
+    /// doing. `keyframe` asks for a picture that can be decoded on its own.
+    pub fn next(&mut self, keyframe: bool, hands: Hands) -> Option<EncodedFrame<'_>> {
         let (width, height) = (self.canvas.width as f32, self.canvas.height as f32);
         let seconds = self.number as f32 / self.fps as f32;
         self.canvas.copy_from(&self.background);
@@ -222,6 +277,7 @@ impl TestCard {
             (self.canvas.height / 40).max(2),
             Yuv::from_rgb(0xF2, 0xED, 0xE4),
         );
+        self.draw_hands(hands);
 
         if keyframe {
             self.encoder.force_intra_frame();
@@ -238,6 +294,41 @@ impl TestCard {
             keyframe: matches!(kind, FrameType::IDR | FrameType::I),
             data: &self.data,
         })
+    }
+}
+
+impl TestCard {
+    fn draw_hands(&mut self, hands: Hands) {
+        let (width, height) = (self.canvas.width as f32, self.canvas.height as f32);
+        let moon = Yuv::from_rgb(0xF2, 0xED, 0xE4);
+        let sun = Yuv::from_rgb(0xFF, 0x6B, 0x35);
+        let shade = Yuv::from_rgb(0x3A, 0x35, 0x32);
+        let unit = (self.canvas.height / 30).max(4);
+
+        // A square for every key held, in a row under the top left corner.
+        for index in 0..hands.keys_held.min(12) as usize {
+            self.canvas.rectangle(unit + index * unit * 3 / 2, unit * 2, unit, unit, moon);
+        }
+
+        // The gamepad's dial, above the colour bars on the left: the dot
+        // follows the left stick and lights up while a button is held.
+        if let Some([x, y]) = hands.stick {
+            let radius = height / 12.0;
+            let centre = (radius * 1.5, height * 0.9 - radius * 1.5);
+            self.canvas.disc(centre.0, centre.1, radius, shade);
+            let dot = (centre.0 + x * radius * 0.6, centre.1 - y * radius * 0.6);
+            let colour = if hands.gamepad_button_held { sun } else { moon };
+            self.canvas.disc(dot.0, dot.1, radius * 0.3, colour);
+        }
+
+        // The pointer, over everything else. It lights up while a mouse
+        // button is held.
+        if let Some((x, y)) = hands.pointer {
+            let radius = (height / 60.0).max(3.0);
+            let colour = if hands.mouse_buttons_held > 0 { sun } else { moon };
+            self.canvas.disc(x * width, y * height, radius + 2.0, shade);
+            self.canvas.disc(x * width, y * height, radius, colour);
+        }
     }
 }
 
@@ -299,9 +390,10 @@ mod tests {
     #[test]
     fn the_card_starts_with_a_keyframe_and_makes_one_on_request() {
         let mut card = TestCard::new(320, 180, 30, 2000).expect("the encoder starts");
-        assert!(card.next(false).expect("a first picture").keyframe);
-        assert!(!card.next(false).expect("a second picture").keyframe);
-        assert!(card.next(true).expect("a requested picture").keyframe);
+        let hands = Hands::default();
+        assert!(card.next(false, hands).expect("a first picture").keyframe);
+        assert!(!card.next(false, hands).expect("a second picture").keyframe);
+        assert!(card.next(true, hands).expect("a requested picture").keyframe);
     }
 
     #[test]
@@ -316,7 +408,7 @@ mod tests {
         // Three quarters of the sun's way round.
         let last = 6 * 30 - 1;
         for number in 0..=last {
-            let data = card.next(false).expect("a picture").data.to_vec();
+            let data = card.next(false, Hands::default()).expect("a picture").data.to_vec();
             let decoded = decoder.decode(&data).expect("it decodes").expect("a picture comes out");
             if number < last {
                 continue;
