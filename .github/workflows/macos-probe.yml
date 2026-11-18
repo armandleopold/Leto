@@ -1,0 +1,19 @@
+# Temporary: runs every test on macOS with the fix. Not to be merged.
+name: macOS probe
+on:
+  push:
+    branches: [macos-probe-workspace]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Every test of the workspace, without stopping at a failure
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Processors
+        run: sysctl -n hw.ncpu machdep.cpu.brand_string
