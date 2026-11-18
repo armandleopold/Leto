@@ -2057,6 +2057,7 @@ name = "leto-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "leto-bridge",
  "leto-client",
  "leto-core",
  "leto-media",

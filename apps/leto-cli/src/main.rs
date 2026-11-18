@@ -4,6 +4,7 @@
 //! scripts and agents can drive Leto without the graphical app. Each command
 //! prints plain text by default and JSON with `--json`.
 
+mod bridge;
 mod pcs;
 mod stream;
 
@@ -96,6 +97,22 @@ enum Command {
         /// Name, address or id of the PC.
         pc: String,
     },
+    /// Serve the web client to browsers and reach the PCs for them, until
+    /// stopped. Shows the address to open and the code a new browser needs.
+    Bridge {
+        /// The port browsers open.
+        #[arg(long, default_value_t = leto_bridge::DEFAULT_PORT)]
+        port: u16,
+        /// The folder `cargo xtask web` built the web client into.
+        #[arg(long, default_value = "dist/web", value_name = "FOLDER")]
+        web: PathBuf,
+        /// Only for browsers on this computer.
+        #[arg(long)]
+        local: bool,
+        /// Forget every browser: each one needs the code again.
+        #[arg(long)]
+        forget_browsers: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -149,6 +166,25 @@ fn run(cli: &Cli) -> Result<String, String> {
             stream::play(&client(cli)?, pc, app, *seconds, settings, json)
         }
         Command::Quit { pc } => stream::quit(&client(cli)?, pc, json),
+        Command::Bridge { port, web, local, forget_browsers } => {
+            let asked = bridge::Asked {
+                port: *port,
+                web,
+                local: *local,
+                forget_browsers: *forget_browsers,
+            };
+            // The bridge's own files go next to the engine's.
+            let folder = settings_folder(cli)?.join("bridge");
+            bridge::run(client(cli)?, folder, &asked, json)
+        }
+    }
+}
+
+/// Where Leto's settings are, as the person asked.
+fn settings_folder(cli: &Cli) -> Result<PathBuf, String> {
+    match &cli.settings {
+        Some(folder) => Ok(folder.clone()),
+        None => leto_client::default_directory().map_err(|error| error.to_string()),
     }
 }
 
