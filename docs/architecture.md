@@ -33,7 +33,8 @@ apps/
 crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
-  leto-client/    The client engine: find a PC, pair, list its apps. Built on moonlight-common-rust
+  leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
+  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers. No networking
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
 xtask/            Project automation, run with `cargo xtask`
 assets/brand/     Logo, icons and colours
@@ -44,7 +45,6 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 
 | Crate | Purpose | Step |
 |---|---|---|
-| `leto-media` | Decoding and encoding behind one interface per platform, Opus | 2 |
 | `leto-return` | The return channel: capture of microphone and camera, their packets, the Leto API | 2 |
 | `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 4 |
 | `apps/leto-android` | The Android app, started from Super Artemis | 3 |
@@ -58,7 +58,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 | Web | Yes | No | Built in the pipeline, and by hand |
 | Android | Yes | No | Compile check for now, and by hand once the app exists |
 | Linux | Yes | Yes | Tests run on Linux in the pipeline |
-| macOS | Yes | Yes | Compile check on every change (with zig as the C compiler), tests on `main` |
+| macOS | Yes | Yes | Compile check on every change (with zig as the C and C++ compiler), tests on `main` |
 | iOS | Yes | No | Compile check only |
 
 The code asks `leto_core::platform::Platform` what the current platform can do
@@ -81,6 +81,45 @@ It is made of three parts that do not reach into each other:
   bridge of step 2 exists.
 - `ui/` draws the screens from the state and tells the state what the person
   did.
+
+## A stream
+
+Starting an app goes through the same three parts, and through two crates
+that know nothing of each other:
+
+1. `leto-client` asks the PC to start the app, or to go back to it when it is
+   already running, and connects the stream (`Client::play`). The video,
+   the sound and the control messages are encrypted with a key made for
+   that stream. What arrives is handed over still encoded, to a `VideoSink`
+   and an `AudioSink`, on threads that belong to the stream.
+2. The app's backend gives it two sinks built on `leto-media`. The video sink
+   decodes each picture and keeps only the latest one for the window. The
+   audio sink decodes each packet and queues it for the speakers.
+3. The window picks the latest picture up when it redraws and shows it as
+   large as fits, undistorted.
+
+Leaving a stream keeps the app running on the PC, like closing Moonlight. The
+apps screen then offers to resume it or to close it.
+
+What this first version does, and what it leaves for later:
+
+- Video is H.264, decoded in software by OpenH264 and converted to RGB on the
+  processor. It works on every desktop with nothing to install. Decoding on
+  the graphics card, H.265 and AV1 come later, behind the same sink.
+- Leto asks the PC for BT.601 colours in limited range, in standard dynamic
+  range. HDR comes with the decoders that can show it.
+- Sound is stereo Opus, decoded in Rust and played on the system's default
+  output. Between the network and the speakers sits a queue of a few tens of
+  milliseconds: it waits for a small cushion before playing, fills up again
+  after running dry, and skips ahead when sound piles up, so that sound never
+  drifts behind the picture.
+- Keyboard, mouse and gamepad are not sent yet.
+
+The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
+moving test card as H.264 and a melody as Opus, so the whole path is tested
+on every change without a gaming PC. The card is made to be judged at a
+glance: a sun passing behind a moon shows stutter, a marker crossing the top
+edge once a second shows dropped pictures, and colour bars show wrong colours.
 
 ## Trust between a client and a PC
 

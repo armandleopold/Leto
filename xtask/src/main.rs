@@ -14,7 +14,8 @@ struct Target {
     triple: &'static str,
     /// Packages to check, or an empty slice for the whole workspace.
     packages: &'static [&'static str],
-    /// Name zig gives this target, when the check has C code to compile.
+    /// Name zig gives this target, when the check has C or C++ code to
+    /// compile.
     zig: Option<&'static str>,
 }
 
@@ -27,10 +28,11 @@ const PORTABLE: &[&str] = &["leto-core", "leto-protocol"];
 /// Every non-native target checked by `cargo xtask targets`.
 ///
 /// `cargo check` needs no linker or SDK, so these run from any machine. The
-/// one thing it does need is a C compiler for the target, because the TLS
-/// code under `leto-client` (the `ring` crate) is partly written in C. zig
-/// provides one for macOS. Windows has no such shortcut, so its build is
-/// covered by the Windows job of the pipeline instead.
+/// one thing it does need is a C and a C++ compiler for the target: the TLS
+/// code under `leto-client` (the `ring` crate) is partly written in C, and
+/// the H.264 codec under `leto-media` (OpenH264) in C++. zig provides both
+/// for macOS. Windows has no such shortcut, so its build is covered by the
+/// Windows job of the pipeline instead.
 ///
 /// The graphical app joins the Android and iOS lists when their app shells
 /// land.
@@ -42,8 +44,10 @@ const TARGETS: &[Target] = &[
 ];
 
 /// A copy of this program under a name starting with one of these acts as a C
-/// compiler or an archiver that hands the work to zig. See [`cross_tool`].
+/// compiler, a C++ compiler or an archiver that hands the work to zig. See
+/// [`cross_tool`].
 const ZIG_CC: &str = "leto-zig-cc-";
+const ZIG_CXX: &str = "leto-zig-cxx-";
 const ZIG_AR: &str = "leto-zig-ar";
 
 /// The ways zig may be installed: on its own, or as the `ziglang` Python
@@ -131,7 +135,7 @@ fn targets() -> Result<(), String> {
     Ok(())
 }
 
-/// Prepares the C compiler and the archiver for `triple`, and returns the
+/// Prepares the compilers and the archiver for `triple`, and returns the
 /// environment variables that make the `cc` crate use them.
 ///
 /// Both are copies of this program under another name: see [`cross_tool`].
@@ -147,6 +151,7 @@ fn cross_tools(triple: &str, zig: &str) -> Result<Vec<(String, PathBuf)>, String
     let suffix = triple.replace('-', "_");
     Ok(vec![
         (format!("CC_{suffix}"), install(format!("{ZIG_CC}{zig}"))?),
+        (format!("CXX_{suffix}"), install(format!("{ZIG_CXX}{zig}"))?),
         (format!("AR_{suffix}"), install(ZIG_AR.to_owned())?),
     ])
 }
@@ -160,8 +165,11 @@ fn cross_tool() -> Option<ExitCode> {
     let exe = env::current_exe().ok()?;
     let name = exe.file_stem()?.to_str()?;
     let mut args = vec![];
-    if let Some(target) = name.strip_prefix(ZIG_CC) {
-        args.extend(["cc".to_owned(), "-target".to_owned(), target.to_owned()]);
+    let compiler = [(ZIG_CC, "cc"), (ZIG_CXX, "c++")]
+        .into_iter()
+        .find_map(|(prefix, language)| Some((language, name.strip_prefix(prefix)?)));
+    if let Some((language, target)) = compiler {
+        args.extend([language.to_owned(), "-target".to_owned(), target.to_owned()]);
         // Flags the `cc` crate adds for Apple's own compiler. zig takes the
         // target from `-target` and rejects these.
         let mut given = env::args().skip(1);

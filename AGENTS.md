@@ -18,11 +18,26 @@ cargo xtask ci             # everything the pipeline checks
 cargo xtask web            # the web client, into dist/web
 ```
 
+Building needs a C++ compiler, for the H.264 codec (OpenH264, built from
+source). With [NASM](https://www.nasm.us) on the `PATH` the codec is built
+with its fast assembly routines; without it the build still works and
+decoding is several times slower. On Linux, sound needs the ALSA headers
+(`libasound2-dev` on Debian and Ubuntu).
+
 No gaming PC at hand? This keeps a stand-in host running on this machine. The
-app finds it, and you type the PIN the app shows into its terminal:
+app finds it, and you type the PIN the app shows into its terminal. It streams
+a test card and a melody. Type `close` to close the running app as its owner
+would, or `drop` to break the stream:
 
 ```sh
 cargo run -p leto-testhost --example serve -- --port 47989 --announce
+```
+
+To check a stream without the window, `leto-cli play` streams an app for a few
+seconds and reports what arrived, and `leto-cli quit` closes it:
+
+```sh
+cargo run -p leto-cli -- play Salon Desktop --seconds 10
 ```
 
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
@@ -36,8 +51,8 @@ each, and say how to install it when it is missing:
 
 - `cargo xtask web` needs `wasm-bindgen`.
 - The macOS part of `cargo xtask targets` needs zig (`pipx install ziglang`),
-  as the C compiler for the TLS code. Without zig that part is skipped on your
-  machine. The pipeline always runs it.
+  as the C and C++ compiler for the TLS code and the H.264 codec. Without zig
+  that part is skipped on your machine. The pipeline always runs it.
 
 The Windows build is not part of `targets`: the Windows job of the pipeline
 builds and tests it for real.
@@ -49,6 +64,8 @@ builds and tests it for real.
   shell would need, move that logic into a crate.
 - In `apps/leto`, what the app does goes in `state.rs` with a test, the work
   goes in `backend/`, and `ui/` only draws. See `docs/architecture.md`.
+- `leto-client` hands a stream over still encoded and `leto-media` decodes
+  it. Neither depends on the other: the app's backend joins them.
 - `xtask/`: automation. Add a command there instead of a shell script.
 - `docs/`: decisions and designs. Update them in the same pull request as the
   code they describe.

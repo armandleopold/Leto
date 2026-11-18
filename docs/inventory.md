@@ -163,6 +163,22 @@ Decision: Leto's client core is built on moonlight-common-rust instead of
 porting moonlight-common-c a second time. Gaps that matter (AV1 first) are
 contributed upstream where possible.
 
+Found while building on it, at commit `5a3aa1f`. None of these is reported
+upstream yet:
+
+- Its ready-made HTTPS clients accept any certificate. Leto has its own
+  transport that only accepts the certificate from pairing (see
+  [architecture.md](architecture.md)).
+- The client queues the end of the control connection ahead of the host's
+  goodbye message, so the reason a host gives for ending a stream never
+  reaches the application: every ending looks like a lost connection.
+  `leto-client` asks the host over HTTPS which app it is running to tell a
+  closed app from a broken stream.
+- On the host side, the audio payloader panics when audio is encrypted and
+  recovery packets are on (the recovery buffers are 16 bytes longer than the
+  data they protect). Only the stand-in host uses that code. It sends no audio
+  recovery packets when audio is encrypted.
+
 ## The web client: moonlight-web-stream
 
 A browser cannot open the UDP and TCP sockets the protocol needs, so a web
