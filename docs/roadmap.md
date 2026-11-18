@@ -35,7 +35,11 @@ Progress:
   that takes one (the microphone build of Apollo, Foundation Sunshine). One
   switch in the bar over the picture, off at the start of every stream. See
   [architecture.md](architecture.md#the-microphone).
-- Next: capture of the camera, and its preview.
+- Done: the camera of this device captured and shown to the person, in the
+  desktop app (Windows and Linux) and in the browser, on a screen that also
+  shows whether the microphone hears. Nothing of the camera is sent yet. See
+  [architecture.md](architecture.md#the-camera).
+- Next: the camera on its way to a PC, over the return channel.
 - Later in this step: decoding on the graphics card, H.265, HDR, surround
   sound, and the settings of Advanced mode (size, pictures per second, bit
   rate).

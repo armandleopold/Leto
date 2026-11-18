@@ -34,7 +34,7 @@ crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
-  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers, the microphone. No networking
+  leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers, the microphone, the camera. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
 xtask/            Project automation, run with `cargo xtask`
@@ -233,6 +233,45 @@ Opus is encoded by `opus-rs` and decoded by `opus-decoder`, both in plain
 Rust. Three seconds of the encoder's frames, a quiet room with sudden bursts,
 were given to libopus 1.4 as a referee: it decodes them all, to the same
 samples as `opus-decoder`.
+
+## The camera
+
+The camera of the device that watches is meant to appear on the PC as a
+webcam: see [return-channel.md](return-channel.md). What exists is the first
+half, capturing it and showing it to the person. Nothing of it is sent yet.
+
+- **A screen of its own.** "Camera and microphone", reached from the list of
+  PCs, shows what the camera sees and how loud the microphone is, with no PC
+  involved. Both are off at every visit, each has its switch, and leaving the
+  screen lets go of both. While one captures, its icon is lit and a line
+  under it says so.
+- **On the desktop**, `leto-media` reads the camera (`Camera`) through
+  nokhwa: Media Foundation on Windows, V4L2 on Linux, nothing on macOS yet.
+  It opens the first camera that has colour, because laptops that recognise a
+  face list a second one that sees in grey. Among the formats it can read
+  (YUYV, NV12, Motion JPEG, grey) it takes the one closest to 1280 by 720 at
+  thirty pictures a second, a smooth one before a large one
+  (`camera/format.rs`). It turns the pictures into pixels itself
+  (`camera/pixels.rs`), as BT.601 in limited range, tolerating rows that a
+  system padded and a compressed picture that arrives cut short.
+- **One thread for every camera.** Opening a camera takes a moment and
+  reading it waits for each picture, so neither happens where the window is
+  drawn, and Windows wants its cameras used from the thread that first asked
+  about them. One thread opens and reads them, one after the other. The
+  window takes the latest picture when it draws, and a camera that was let
+  go of before its turn is never opened.
+- **In a browser**, the page asks for the camera, plays it in a `<video>`
+  that nobody sees and copies it through a canvas into the window, at most
+  thirty times a second and no larger than 960 pixels. The preview is then
+  drawn by the same code as on the desktop. The microphone of that screen is
+  captured exactly as for a PC, encoder included, so that what works there
+  works in a stream.
+- **Shown as in a mirror,** which is how people expect to see themselves.
+  What a PC gets later is not mirrored.
+
+There is no choice of camera yet: the first one that fits is used. On Linux a
+camera that stops answering without an error holds the thread, and with it
+every later camera, until the app is restarted.
 
 ## The web client and its bridge
 

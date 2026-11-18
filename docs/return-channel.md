@@ -2,9 +2,11 @@
 
 Status: **design draft**, except the client side of the microphone, which the
 desktop app and the web client have (see
-[architecture.md](architecture.md#the-microphone)). The microphone part
-follows an existing protocol; the camera part is new and marked as such.
-Nothing of the host side exists yet.
+[architecture.md](architecture.md#the-microphone)), and the capture of the
+camera, which they have too without sending it yet (see
+[architecture.md](architecture.md#the-camera)). The microphone part follows
+an existing protocol; the camera part is new and marked as such. Nothing of
+the host side exists yet.
 
 ## Goal
 
