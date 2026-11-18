@@ -35,6 +35,7 @@ crates/
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: H.264 and Opus decoders, the speakers. No networking
+  leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
 xtask/            Project automation, run with `cargo xtask`
 assets/brand/     Logo, icons and colours
@@ -55,7 +56,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 | Platform | Client | Host | How it is verified |
 |---|---|---|---|
 | Windows | Yes | Yes | Tests run on Windows in the pipeline, and by hand |
-| Web | Yes | No | Built in the pipeline, and by hand |
+| Web | Yes, through the bridge | No | Built in the pipeline, and by hand |
 | Android | Yes | No | Compile check for now, and by hand once the app exists |
 | Linux | Yes | Yes | Tests run on Linux in the pipeline |
 | macOS | Yes | Yes | Compile check on every change (with zig as the C and C++ compiler), tests on `main` |
@@ -75,17 +76,23 @@ It is made of three parts that do not reach into each other:
 
 - `state.rs` decides what is on screen and what happens next. It draws
   nothing and opens no connection, so it is tested like any other logic.
-- `backend/` does the work. On the desktop it runs `leto-client` on worker
-  threads and reports back with events. A browser page cannot open sockets, so
-  the web build has a backend that only explains what is missing, until the
-  bridge of step 2 exists.
+- `backend/` does the work, and reports back with events. On the desktop it
+  runs `leto-client` on worker threads. A browser page cannot open sockets, so
+  the web build asks the bridge that served the page, which runs the same
+  engine: see [The web client and its bridge](#the-web-client-and-its-bridge).
 - `ui/` draws the screens from the state and tells the state what the person
   did.
 
 ## A stream
 
-Starting an app goes through the same three parts, and through two crates
-that know nothing of each other:
+What a shell asks of the engine and what it hears back are the same for all
+of them: `Request` and `Event` in `leto_core::engine`. `leto_client::Service`
+does the asking on worker threads for a `Shell`, which is whoever gets the
+news and provides the sinks of a stream. The desktop app is one shell, each
+browser on the bridge is another.
+
+Starting an app goes through the three parts of the app, and through two
+crates that know nothing of each other:
 
 1. `leto-client` asks the PC to start the app, or to go back to it when it is
    already running, and connects the stream (`Client::play`). The video,
@@ -133,7 +140,8 @@ edge once a second shows dropped pictures, and colour bars show wrong colours.
 What a person does is described once, in `leto_core::input`: a key by its
 Windows code, a mouse movement or position, a wheel turn, the state of a
 gamepad. The app produces these and `Session::send` turns them into Moonlight
-control messages, so the web client will reuse the first half as it is.
+control messages. In the browser the same app produces them and the bridge
+passes them on.
 
 - **Keys are named by where they sit**, not by what the layout prints on
   them: the code sent is the one of the American keyboard for that place, and
@@ -169,6 +177,62 @@ The stand-in host records what it receives (`FakeHost::inputs`) and draws it
 on its test card: a disc where the pointer is, lit while a button is held, a
 square per key held, and a dial for the first gamepad.
 
+## The web client and its bridge
+
+A browser page cannot open the sockets the Moonlight protocol needs. The
+bridge can. It is a library, `leto-bridge`, started with
+`leto-cli bridge` for now: it serves the web client that `cargo xtask web`
+built and runs the client engine for each browser that opens it. To a PC the
+bridge is one more paired device. Every browser on a bridge sees the PCs that
+bridge is paired with.
+
+```
+browser  <-- HTTPS and a WebSocket -->  bridge  <-- the Moonlight protocol -->  PC
+```
+
+- **HTTPS, with a certificate of its own.** Browsers only give a page their
+  decoders, their microphone and their camera when it came over HTTPS. The
+  bridge makes itself a certificate on first run, for its name and its
+  addresses, and renews it before it runs out. No authority vouches for it, so
+  a browser warns once and the person goes on. `leto-cli bridge` prints the
+  certificate's fingerprint to compare. Plain HTTP on the same port is sent
+  to HTTPS.
+- **A browser has to be known.** Whoever reaches the bridge reaches the PCs,
+  keyboard and mouse included. A new browser is asked for the eight digits the
+  bridge shows where it runs, then keeps a key in its own storage. The bridge
+  keeps only a hash of that key. A wrong code is answered after two seconds
+  during which no code is looked at, five wrong codes draw a new code, and
+  each code lets one browser in. The WebSocket is only opened for the page the
+  bridge served itself.
+- **One language**, in `leto_core::bridge`: the browser sends `Request`s and
+  `Input`s, the bridge sends `Event`s, as JSON. Pictures and sound travel as
+  binary messages and stay encoded all the way: the bridge never decodes.
+- **The browser decodes**, with WebCodecs. The bridge reads the codec of each
+  keyframe from its parameters and says it before the first picture.
+  Pictures are drawn on a canvas of their own *behind* the app's canvas, and
+  the app leaves a hole over it: a picture goes from the decoder to the
+  screen without egui drawing a frame. Sound is decoded the same way and
+  played piece after piece, 40 ms ahead of the speakers, skipping ahead when
+  more than 120 ms piles up.
+- **Late is worse than lost.** A WebSocket never loses anything, so a browser
+  that falls behind would see the past. The bridge lets 30 pictures wait for
+  a browser, then drops what comes until a keyframe finds room, and asks the
+  PC for that keyframe. The browser does the same with its decoder, and asks
+  the bridge for a keyframe when a picture fails to decode.
+- **Input** is the desktop app's code: the same keys by place, the same two
+  mouse modes, the same three shortcuts. What differs is asked of the browser
+  in one module, `window.rs`: the full screen, the pointer for the game
+  mouse, and the keys. While a stream has the keyboard, the browser's own
+  shortcuts are kept from acting where the browser allows it, and in full
+  screen Chrome and Edge also hand over Escape and the system's shortcuts.
+
+The rules that need no browser are plain Rust, tested with the rest: when a
+piece of sound plays and which pictures a decoder may be given
+(`backend/flow.rs`), the gate, the relay, the HTTP the bridge speaks. The
+bridge is tested end to end against the stand-in host with a WebSocket
+client. The browser's half was checked by hand in Chromium, against the same
+host: nothing runs a browser in the pipeline yet.
+
 ## Trust between a client and a PC
 
 Pairing gives each side the other's certificate. From then on the client only
@@ -177,6 +241,10 @@ a client it knows. `leto-client` has its own HTTPS transport for this, because
 the ones shipped with moonlight-common-rust accept any certificate. A PC that
 was reinstalled therefore has to be paired again, and something else on the
 network cannot pass for it.
+
+The bridge adds nothing to this and takes nothing away: it is the paired
+device, and the check is the engine's. What it adds is the gate described
+above, between itself and browsers.
 
 ## Dependencies and licences
 

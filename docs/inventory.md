@@ -197,10 +197,29 @@ client always needs a bridge. moonlight-web-stream is that bridge:
 - It already forwards the browser's microphone
   (`web/stream/audio/microphone_pipe.ts`, `getUserMedia`).
 
-Decision: Leto reuses the bridge design and the WebRTC transport, and replaces
-the TypeScript interface with the Leto app compiled to WebAssembly so the web
-client looks and behaves like the desktop one. Until the Leto host exists, the
-bridge runs next to Apollo. Later the Leto host serves the web client itself.
+Decision: Leto reuses the bridge design, and replaces the TypeScript interface
+with the Leto app compiled to WebAssembly so the web client looks and behaves
+like the desktop one. Until the Leto host exists, the bridge runs next to
+Apollo. Later the Leto host serves the web client itself.
+
+The transport, decided when the bridge was written in step 2: a WebSocket and
+WebCodecs first, not WebRTC. This reverses what this document first said, for
+these reasons:
+
+- Leto's bridge runs on the network of the person's own devices. WebRTC earns
+  its complexity when packets are lost or when the two ends have to find a
+  path to each other, and a home network asks for neither.
+- A WebSocket and the browser's own decoders are a few hundred lines on each
+  side, with nothing to negotiate. A WebRTC stack in the bridge is a large
+  dependency, and its browser half decides on its own how long to hold a
+  picture back, which is hard to keep low.
+- The cost is a TCP connection: when a packet is lost, what follows waits for
+  it. The bridge drops pictures instead of queueing them when a browser falls
+  behind, so the delay stays bounded.
+
+WebRTC stays the answer for reaching a bridge from outside the home, and can
+be added next to the WebSocket without changing the rest: the engine hands
+the bridge encoded pictures and sound either way.
 
 ## Repository structure: Craft Anything
 

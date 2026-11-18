@@ -19,11 +19,12 @@ Sunshine hosts.
 
 ## Status
 
-Very early. The desktop app finds PCs that run Apollo or Sunshine, pairs with
-them, lists their apps and streams one: you see its picture, hear its sound
-and play with the keyboard, the mouse and gamepads of your device. Nothing
-has been tried against a real PC yet, only against the stand-in host of the
-tests.
+Very early. The app finds PCs that run Apollo or Sunshine, pairs with them,
+lists their apps and streams one: you see its picture, hear its sound and
+play with the keyboard and the mouse of your device. It does so as a desktop
+app, with gamepads too, and in a browser, through a small bridge that runs on
+your network. Nothing has been tried against a real PC yet, only against the
+stand-in host of the tests.
 
 | Step | State |
 |---|---|
@@ -56,6 +57,18 @@ cargo xtask web                   # the web client, into dist/web
 
 The app looks for your PC on the network. Choose it, type the PIN the app
 shows in Apollo or Sunshine on the PC, then choose an app to stream it.
+
+To use Leto from a browser, on this computer or another device of your
+network, build the web client and start its bridge:
+
+```sh
+cargo xtask web                   # once, and after each change
+cargo run -p leto-cli -- bridge   # prints the address to open, and a code
+```
+
+Open the address in the browser. It warns that the certificate is the
+bridge's own: go on. Then type the code the bridge printed. The browser is
+asked once.
 
 ## Documentation
 
