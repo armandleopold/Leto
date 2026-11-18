@@ -131,6 +131,9 @@ pub(crate) struct Hands {
     /// The left stick of the first gamepad, when one is plugged in.
     pub stick: Option<[f32; 2]>,
     pub gamepad_button_held: bool,
+    /// How loud the client's microphone is, from 0 to 1, when the host
+    /// listens to it.
+    pub voice: Option<f32>,
 }
 
 impl Hands {
@@ -319,6 +322,17 @@ impl TestCard {
             let dot = (centre.0 + x * radius * 0.6, centre.1 - y * radius * 0.6);
             let colour = if hands.gamepad_button_held { sun } else { moon };
             self.canvas.disc(dot.0, dot.1, radius * 0.3, colour);
+        }
+
+        // The microphone's meter, above the colour bars on the right: it
+        // rises with the voice.
+        if let Some(voice) = hands.voice {
+            let tall = self.canvas.height / 6;
+            let (left, top) =
+                (self.canvas.width - unit * 3, self.canvas.height * 9 / 10 - tall - unit);
+            self.canvas.rectangle(left, top, unit, tall, shade);
+            let lit = ((tall as f32 * voice.clamp(0.0, 1.0)) as usize).min(tall);
+            self.canvas.rectangle(left, top + tall - lit, unit, lit, sun);
         }
 
         // The pointer, over everything else. It lights up while a mouse
