@@ -14,6 +14,7 @@
 
 mod camera;
 mod encode;
+mod feed;
 mod microphone;
 mod queue;
 mod sound;
@@ -23,6 +24,7 @@ mod voice;
 
 pub use camera::Camera;
 pub use encode::{Encoded, PictureEncoder, Sending};
+pub use feed::{CameraFeed, Carrier, Fed, Feeding, Limits};
 pub use microphone::Microphone;
 pub use sound::SoundDecoder;
 pub use speaker::Speaker;
