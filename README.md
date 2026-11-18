@@ -23,8 +23,10 @@ Very early. The app finds PCs that run Apollo or Sunshine, pairs with them,
 lists their apps and streams one: you see its picture, hear its sound and
 play with the keyboard and the mouse of your device. It does so as a desktop
 app, with gamepads too, and in a browser, through a small bridge that runs on
-your network. Nothing has been tried against a real PC yet, only against the
-stand-in host of the tests.
+your network. Both send the microphone of your device to a PC that takes
+one, which Apollo and Sunshine only do in special builds for now. Nothing has
+been tried against a real PC yet, only against the stand-in host of the
+tests.
 
 | Step | State |
 |---|---|

@@ -205,18 +205,23 @@ picture.
   input (`Microphone`), mixes its channels into one, brings it to 48 kHz and
   encodes it (`VoiceEncoder`), and `Session::send_microphone` sends each
   frame. The news that a stream is connected says whether the PC takes a
-  microphone.
-- **Off until the person turns it on,** in every stream. The system is asked
-  for the microphone the first time the switch is turned on. While it is on,
-  the switch is lit and fills with what the microphone hears, and a small
-  microphone stays in a corner of the picture when the bar is away. A PC
-  that takes none has the switch dimmed, with the reason.
+  microphone. In a browser the same frames are made by the browser, and
+  reach the engine through the bridge: see
+  [the web client](#the-web-client-and-its-bridge).
+- **Off until the person turns it on,** in every stream. The system, or the
+  browser, is asked for the microphone the first time the switch is turned
+  on. While it is on, the switch is lit and fills with what the microphone
+  hears, and a small microphone stays in a corner of the picture when the
+  bar is away. A PC that takes none has the switch dimmed, with the reason.
+  A browser asks the person before it hands a microphone over: until it
+  answers, the switch is not lit and the bar says that the PC hears nothing
+  yet.
 - **Nothing is captured without a listener.** The backend only opens the
   microphone for a connected stream to a PC that takes one, and lets go of
   it when the stream is left, fails or ends, on the engine's thread, without
-  waiting for the window.
-- The web client has no switch yet: a browser's microphone does not reach
-  the bridge.
+  waiting for the window. In a browser the microphone belongs to the stream
+  the page is showing and goes with it, and one that the browser hands over
+  after the switch went off is let go of unused.
 
 The stand-in host takes a microphone the way the Apollo build does: it
 decodes what arrives, shows how loud it is on the test card, and saves it as
@@ -257,8 +262,9 @@ browser  <-- HTTPS and a WebSocket -->  bridge  <-- the Moonlight protocol -->  
   each code lets one browser in. The WebSocket is only opened for the page the
   bridge served itself.
 - **One language**, in `leto_core::bridge`: the browser sends `Request`s and
-  `Input`s, the bridge sends `Event`s, as JSON. Pictures and sound travel as
-  binary messages and stay encoded all the way: the bridge never decodes.
+  `Input`s, the bridge sends `Event`s, as JSON. Pictures and sound, and the
+  microphone the other way, travel as binary messages and stay encoded all
+  the way: the bridge never decodes.
 - **The browser decodes**, with WebCodecs. The bridge reads the codec of each
   keyframe from its parameters and says it before the first picture.
   Pictures are drawn on a canvas of their own *behind* the app's canvas, and
@@ -271,8 +277,17 @@ browser  <-- HTTPS and a WebSocket -->  bridge  <-- the Moonlight protocol -->  
   a browser, then drops what comes until a keyframe finds room, and asks the
   PC for that keyframe. The browser does the same with its decoder, and asks
   the bridge for a keyframe when a picture fails to decode.
+- **The browser encodes its microphone**, with WebCodecs too. It captures
+  with the echo cancellation, the noise suppression and the gain control it
+  has for calls, and brings the result to the rate of the page's sound,
+  48 kHz. A script on its sound thread (`web/microphone.js`, an audio
+  worklet) cuts that into pieces of twenty milliseconds, its Opus encoder
+  makes one packet of each, and the page sends each packet as one message.
+  The bridge hands them to the stream that browser is watching. They go the
+  way input does: a browser the gate does not know has no engine to take
+  them.
 - **Input** is the desktop app's code: the same keys by place, the same two
-  mouse modes, the same three shortcuts. What differs is asked of the browser
+  mouse modes, the same shortcuts. What differs is asked of the browser
   in one module, `window.rs`: the full screen, the pointer for the game
   mouse, and the keys. While a stream has the keyboard, the browser's own
   shortcuts are kept from acting where the browser allows it, and in full
