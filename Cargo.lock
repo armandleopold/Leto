@@ -2188,6 +2188,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "leto-return"
+version = "0.0.1"
+dependencies = [
+ "aes-gcm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "leto-testhost"
 version = "0.0.1"
 dependencies = [
