@@ -51,7 +51,7 @@ const CAMERA_FILE: &str = "leto-camera.png";
 
 const USAGE: &str = "\
 Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
-             [--no-microphone] [--no-camera]
+             [--no-microphone] [--no-camera] [--camera WxH]
 
   --name NAME   The name the host gives itself (default: Salon)
   --id ID       The unique id it reports (default: a fixed one)
@@ -65,7 +65,17 @@ Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
                 Apollo
   --no-camera   Take no camera from the client, like every Sunshine and
                 Apollo
+  --camera WxH  Take pictures of a camera no larger than this, for example
+                640x360 (default: 1920x1080). A client halves a larger
+                camera until it fits
 ";
+
+/// A width and a height, written like `640x360`.
+fn largest(size: &str) -> Option<(u32, u32)> {
+    let (width, height) = size.split_once('x')?;
+    let size = (width.parse().ok()?, height.parse().ok()?);
+    (size.0 > 0 && size.1 > 0).then_some(size)
+}
 
 fn main() -> ExitCode {
     let mut options = Options {
@@ -109,6 +119,9 @@ fn main() -> ExitCode {
                 options.camera = None;
                 Ok(())
             }
+            "--camera" => value().and_then(|size| largest(&size).ok_or(())).map(|size| {
+                options.camera = Some(size);
+            }),
             _ => Err(()),
         };
         if parsed.is_err() {
