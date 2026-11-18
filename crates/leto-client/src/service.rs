@@ -64,6 +64,14 @@ struct Watching {
     cameras: u64,
 }
 
+impl Watching {
+    /// The attempt whose stream plays. One that ended by itself keeps its
+    /// session until the person leaves it, and plays no more.
+    fn playing(&self) -> Option<u64> {
+        self.session.as_ref().filter(|session| !session.is_over()).and(self.wanted)
+    }
+}
+
 /// The engine, working for one interface.
 pub struct Service<S: Shell> {
     client: Arc<Client>,
@@ -107,8 +115,10 @@ impl<S: Shell> Service<S> {
             Request::Play { attempt, .. } => {
                 let mut watching = lock(&watching);
                 watching.wanted = Some(*attempt);
-                // A camera goes with one stream, and that one is over.
+                // A camera goes with one stream, and that one is over. The
+                // next camera does not go to the PC it came from either.
                 watching.camera = None;
+                watching.host = None;
             }
             Request::Leave => {
                 let mut watching = lock(&watching);
@@ -189,14 +199,14 @@ impl<S: Shell> Service<S> {
         const NO_STREAM: &str = "The camera goes along with a stream, and none is playing.";
         let (attempt, host) = {
             let watching = lock(&self.watching);
-            match (watching.session.as_ref().and(watching.wanted), &watching.host) {
+            match (watching.playing(), &watching.host) {
                 (Some(attempt), Some(host)) => (attempt, host.clone()),
                 _ => return Err(NO_STREAM.to_owned()),
             }
         };
         let link = self.client.send_camera(&host, sending).map_err(|error| explain(&error))?;
         let mut watching = lock(&self.watching);
-        if watching.session.is_some() && watching.wanted == Some(attempt) {
+        if watching.playing() == Some(attempt) {
             watching.cameras += 1;
             watching.camera = Some((watching.cameras, link));
             Ok(watching.cameras)

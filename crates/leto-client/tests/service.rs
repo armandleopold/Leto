@@ -367,6 +367,28 @@ fn a_camera_stops_with_a_stream_that_ends_and_when_asked() {
     desk.wait(|event| matches!(event, Event::StreamEnded { attempt: 2, .. }).then_some(()));
     assert_eq!(desk.service.camera(third, Duration::ZERO, true, b"a picture"), None);
     wait_for("the PC to learn that the camera stopped", || !host.camera_report().open);
+
+    // A stream that ended takes no camera, though nobody left it yet.
+    assert!(desk.service.camera_open(CAMERA).is_err());
+    assert!(!host.camera_report().open);
+}
+
+#[test]
+fn a_camera_does_not_go_to_the_pc_of_the_stream_before() {
+    let host = FakeHost::start();
+    let desk = Desk::with_camera();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2 });
+    desk.wait(|event| matches!(event, Event::Camera { attempt: 2, .. }).then_some(()));
+
+    // Another stream is asked for, from a PC that is not there, with the
+    // first one still connected: a camera is for the stream on screen, and
+    // that one never played.
+    let nobody = leto_client::HostId("nobody".to_owned());
+    desk.service.ask(Request::Play { host: nobody, app: 1, attempt: 3 });
+    desk.wait(|event| matches!(event, Event::PlayFailed { attempt: 3, .. }).then_some(()));
+    assert!(desk.service.camera_open(CAMERA).is_err());
+    assert!(!host.camera_report().open);
 }
 
 #[test]
