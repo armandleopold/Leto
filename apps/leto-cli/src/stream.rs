@@ -627,8 +627,12 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(report["takes_camera"], true, "{json}");
         assert_eq!(report["camera_problem"], serde_json::Value::Null, "{json}");
+        // More than the first: pictures went on leaving. How many depends on
+        // how well this computer keeps time, which the test card goes by: on
+        // GitHub's macOS, whose naps run late by up to 170 ms, 15 left in
+        // these two seconds. leto-media tests the camera's pace exactly.
         let sent = report["camera_pictures"].as_u64().unwrap();
-        assert!(sent >= 20, "{json}");
+        assert!(sent >= 2, "{json}");
         assert_eq!(
             (&report["camera_width"], &report["camera_height"], &report["camera_fps"]),
             (&640.into(), &360.into(), &30.into())
