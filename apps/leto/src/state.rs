@@ -5,7 +5,7 @@
 //! work the backend has to do comes out of [`State::take_requests`].
 
 use leto_core::{
-    engine::ScreenMode,
+    engine::{Choices, ScreenMode},
     input::InputAllowed,
     model::{AppSummary, HostId, HostSummary, Pin, Reachability},
 };
@@ -256,8 +256,9 @@ impl State {
     }
 
     /// The person chose an app: start it, or go back to it if it is the one
-    /// running, to fill `screen` when the window knows the screen it is on.
-    pub fn play(&mut self, app: &AppSummary, screen: Option<ScreenMode>) {
+    /// running, for `screen` when the window knows the screen it should
+    /// fill, and as the person chose.
+    pub fn play(&mut self, app: &AppSummary, screen: Option<ScreenMode>, choices: Choices) {
         let Screen::Apps(view) = &mut self.screen else { return };
         if view.quitting {
             return;
@@ -281,6 +282,7 @@ impl State {
             app: app.id,
             attempt: self.attempts,
             screen,
+            choices,
         });
         self.screen = Screen::Stream(StreamView {
             host: view.host.clone(),
@@ -379,12 +381,16 @@ impl State {
         }
     }
 
-    /// The person stops watching. The app keeps running on the PC.
-    pub fn leave_stream(&mut self) {
+    /// The person stops watching. The app keeps running on the PC, unless
+    /// the person chose to `quit` it too.
+    pub fn leave_stream(&mut self, quit: bool) {
         if let Screen::Stream(view) = &self.screen {
             let host = view.host.clone();
             self.requests.push(Request::Leave);
             self.show_apps(host);
+            if quit {
+                self.quit_app();
+            }
         }
     }
 
@@ -815,7 +821,7 @@ mod tests {
     fn the_microphone_is_off_until_the_person_turns_it_on_in_every_stream() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
 
         // Nothing to switch before the PC said it takes one.
         state.switch_microphone();
@@ -830,8 +836,8 @@ mod tests {
 
         // Left on, it is off again in the next stream.
         state.switch_microphone();
-        state.leave_stream();
-        state.play(&app(1, "Desktop"), None);
+        state.leave_stream(false);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(2, true), 9.0);
         assert_eq!(microphone(&state), &Mic::Off);
     }
@@ -840,7 +846,7 @@ mod tests {
     fn a_pc_that_takes_no_microphone_has_nothing_to_switch() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(1, false), 3.0);
         state.switch_microphone();
         assert_eq!(microphone(&state), &Mic::NotTaken);
@@ -850,7 +856,7 @@ mod tests {
     fn a_microphone_that_cannot_be_used_says_why_and_can_be_tried_again() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(1, true), 3.0);
 
         // A failure nobody asked for a microphone for changes nothing.
@@ -880,7 +886,7 @@ mod tests {
     fn the_camera_is_off_until_the_person_turns_it_on_in_every_stream() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(1, true), 3.0);
 
         // Nothing to switch before the PC said whether it takes one, which
@@ -901,8 +907,8 @@ mod tests {
         // Left on, it is off again in the next stream, and what the PC of
         // the stream before says comes too late to matter.
         state.switch_camera();
-        state.leave_stream();
-        state.play(&app(1, "Desktop"), None);
+        state.leave_stream(false);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(2, true), 9.0);
         state.apply(camera_news(1, true), 9.1);
         assert_eq!(camera(&state), &Cam::Unknown);
@@ -914,7 +920,7 @@ mod tests {
     fn a_pc_that_takes_no_camera_has_nothing_to_switch() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(1, true), 3.0);
         state.apply(camera_news(1, false), 3.5);
         state.switch_camera();
@@ -925,7 +931,7 @@ mod tests {
     fn a_camera_that_cannot_be_sent_says_why_and_can_be_tried_again() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(1, true), 3.0);
         state.apply(camera_news(1, true), 3.5);
 
@@ -948,8 +954,14 @@ mod tests {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
 
-        state.play(&app(2, "Steam"), None);
-        let play = Request::Play { host: salon.id.clone(), app: 2, attempt: 1, screen: None };
+        state.play(&app(2, "Steam"), None, Choices::default());
+        let play = Request::Play {
+            host: salon.id.clone(),
+            app: 2,
+            attempt: 1,
+            screen: None,
+            choices: Choices::default(),
+        };
         assert_eq!(state.take_requests(), [play]);
         let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert!(!view.connected);
@@ -958,7 +970,7 @@ mod tests {
         let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert!(view.connected);
 
-        state.leave_stream();
+        state.leave_stream(false);
         assert_eq!(state.take_requests(), [Request::Leave, Request::Apps(salon.id)]);
         let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert_eq!(view.notice, None);
@@ -968,7 +980,7 @@ mod tests {
     fn a_stream_that_does_not_start_says_why_on_the_apps_screen() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.take_requests();
 
         state
@@ -988,7 +1000,7 @@ mod tests {
             (StreamEnd::HostError(0x8003_0023), "Salon ended the stream (error 0x80030023).", true),
         ] {
             let mut state = state_with_apps(&salon);
-            state.play(&app(2, "Steam"), None);
+            state.play(&app(2, "Steam"), None, Choices::default());
             state.apply(playing(1, false), 3.0);
             state.take_requests();
 
@@ -1000,11 +1012,39 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_is_asked_for_as_the_person_chose_and_can_close_its_app_when_left() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        let chosen = Choices { bitrate_kbps: Some(9000), sound_on_pc: true, ..Choices::default() };
+        state.play(&app(1, "Desktop"), None, chosen);
+        assert_eq!(
+            state.take_requests(),
+            [Request::Play {
+                host: salon.id.clone(),
+                app: 1,
+                attempt: 1,
+                screen: None,
+                choices: chosen
+            }]
+        );
+        state.apply(playing(1, true), 3.0);
+
+        // Left as chosen: the app closes on the PC too, after the stream.
+        state.leave_stream(true);
+        assert_eq!(
+            state.take_requests(),
+            [Request::Leave, Request::Apps(salon.id.clone()), Request::Quit(salon.id.clone())]
+        );
+        let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(view.quitting);
+    }
+
+    #[test]
     fn news_about_a_stream_the_person_left_changes_no_screen() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
-        state.leave_stream();
+        state.play(&app(1, "Desktop"), None, Choices::default());
+        state.leave_stream(false);
         state.take_requests();
         let before = state.screen.clone();
 
@@ -1015,7 +1055,7 @@ mod tests {
         assert_eq!(state.take_requests(), []);
 
         // The same goes for a second stream: the first one's end is not its own.
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.take_requests();
         state.apply(Event::StreamEnded { attempt: 1, why: StreamEnd::AppClosed }, 6.0);
         assert!(matches!(&state.screen, Screen::Stream(view) if view.attempt == 2));
@@ -1028,7 +1068,7 @@ mod tests {
         salon.running_app = Some(1);
         let mut state = state_with_apps(&salon);
 
-        state.play(&app(2, "Steam"), None);
+        state.play(&app(2, "Steam"), None, Choices::default());
         assert_eq!(state.take_requests(), []);
         let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
         let text = "Desktop is running on this PC. Close it to start Steam.";
@@ -1037,10 +1077,16 @@ mod tests {
 
         // The stream is made for the screen the window is on.
         let screen = ScreenMode { width: 2560, height: 1440, refresh_hz: 144, scale_percent: 125 };
-        state.play(&app(1, "Desktop"), Some(screen));
+        state.play(&app(1, "Desktop"), Some(screen), Choices::default());
         assert_eq!(
             state.take_requests(),
-            [Request::Play { host: salon.id, app: 1, attempt: 1, screen: Some(screen) }]
+            [Request::Play {
+                host: salon.id,
+                app: 1,
+                attempt: 1,
+                screen: Some(screen),
+                choices: Choices::default()
+            }]
         );
     }
 
@@ -1054,7 +1100,7 @@ mod tests {
         state.quit_app();
         assert_eq!(state.take_requests(), [Request::Quit(salon.id.clone())]);
         // Nothing starts while the app is closing.
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         assert_eq!(state.take_requests(), []);
 
         let result = Err("The PC did not answer.".to_owned());
@@ -1069,10 +1115,16 @@ mod tests {
         state.apply(Event::Hosts(vec![salon.clone()]), 5.0);
         state.apply(Event::QuitEnded { host: salon.id.clone(), result: Ok(()) }, 5.0);
         state.take_requests();
-        state.play(&app(2, "Steam"), None);
+        state.play(&app(2, "Steam"), None, Choices::default());
         assert_eq!(
             state.take_requests(),
-            [Request::Play { host: salon.id, app: 2, attempt: 1, screen: None }]
+            [Request::Play {
+                host: salon.id,
+                app: 2,
+                attempt: 1,
+                screen: None,
+                choices: Choices::default()
+            }]
         );
     }
 
@@ -1080,7 +1132,7 @@ mod tests {
     fn going_back_to_the_pcs_from_a_stream_leaves_it() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
-        state.play(&app(1, "Desktop"), None);
+        state.play(&app(1, "Desktop"), None, Choices::default());
         state.take_requests();
 
         state.back(8.0);

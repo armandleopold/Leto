@@ -22,6 +22,9 @@ leto-protocol = { workspace = true }
 # Every key for a stream, and what the screen is like. Nothing in a browser.
 leto-system = { workspace = true }
 log = { workspace = true }
+# The settings are kept as JSON.
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The client engine needs sockets, which a browser page does not have.
@@ -39,8 +42,6 @@ leto-testhost = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
-# What the page and its bridge say to each other is JSON.
-serde_json = { workspace = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [

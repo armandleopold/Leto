@@ -16,7 +16,7 @@ use std::{
 
 use leto_client::{
     AudioSink, CameraSettings, Client, Counter, Service, Shell, VideoSink,
-    engine::{CameraOffer, Event, Request, ScreenMode, StreamEnd},
+    engine::{CameraOffer, Choices, Event, Request, ScreenMode, StreamEnd},
     input::{Input, InputAllowed, Key, Modifiers},
 };
 use leto_testhost::{
@@ -218,7 +218,13 @@ fn a_stream_for_a_screen_asks_the_pc_for_a_screen_just_like_it() {
 
     // Without a screen, a stream is what Moonlight asks for by default, on
     // a screen the PC already has.
-    desk.service.ask(Request::Play { host: id.clone(), app: 1, attempt: 1, screen: None });
+    desk.service.ask(Request::Play {
+        host: id.clone(),
+        app: 1,
+        attempt: 1,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| match event {
         Event::Playing { attempt: 1, .. } => Some(()),
         Event::PlayFailed { message, .. } => panic!("{message}"),
@@ -232,7 +238,13 @@ fn a_stream_for_a_screen_asks_the_pc_for_a_screen_just_like_it() {
     assert_eq!(host.screen_asked(), Some(asked));
 
     let screen = ScreenMode { width: 1280, height: 720, refresh_hz: 30, scale_percent: 150 };
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2, screen: Some(screen) });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: Some(screen),
+        choices: Choices::default(),
+    });
     desk.wait(|event| match event {
         Event::Playing { attempt: 2, .. } => Some(()),
         Event::PlayFailed { message, .. } => panic!("{message}"),
@@ -253,7 +265,13 @@ fn a_stream_starts_takes_input_and_is_left() {
     let id = desk.pair(&host);
     assert_eq!(desk.service.streaming(), None);
 
-    desk.service.ask(Request::Play { host: id.clone(), app: 1, attempt: 7, screen: None });
+    desk.service.ask(Request::Play {
+        host: id.clone(),
+        app: 1,
+        attempt: 7,
+        screen: None,
+        choices: Choices::default(),
+    });
     let (allowed, microphone) = desk.wait(|event| match event {
         Event::Playing { attempt: 7, input, microphone } => Some((input, microphone)),
         Event::PlayFailed { message, .. } => panic!("{message}"),
@@ -303,7 +321,13 @@ fn a_pc_that_takes_no_microphone_says_so_and_gets_none() {
     let host = FakeHost::start_with(Options { microphone: false, ..Options::default() });
     let desk = Desk::new();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 3, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 3,
+        screen: None,
+        choices: Choices::default(),
+    });
     let microphone = desk.wait(|event| match event {
         Event::Playing { attempt: 3, microphone, .. } => Some(microphone),
         Event::PlayFailed { message, .. } => panic!("{message}"),
@@ -318,7 +342,13 @@ fn an_app_closed_on_the_pc_ends_the_stream_with_news() {
     let host = FakeHost::start();
     let desk = Desk::new();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| matches!(event, Event::Playing { attempt: 2, .. }).then_some(()));
 
     host.close_app();
@@ -347,7 +377,13 @@ fn a_camera_goes_along_with_a_stream_and_stops_when_it_is_left() {
     assert!(desk.service.camera_open(CAMERA).is_err());
     assert!(!host.camera_report().open);
 
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 4, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 4,
+        screen: None,
+        choices: Choices::default(),
+    });
     // The news that the stream plays comes first: nothing waits for the
     // camera.
     let mut playing = false;
@@ -382,7 +418,13 @@ fn a_camera_stops_with_a_stream_that_ends_and_when_asked() {
     let host = FakeHost::start();
     let desk = Desk::with_camera();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| matches!(event, Event::Camera { attempt: 2, .. }).then_some(()));
 
     let first = desk.service.camera_open(CAMERA).unwrap();
@@ -416,14 +458,26 @@ fn a_camera_does_not_go_to_the_pc_of_the_stream_before() {
     let host = FakeHost::start();
     let desk = Desk::with_camera();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| matches!(event, Event::Camera { attempt: 2, .. }).then_some(()));
 
     // Another stream is asked for, from a PC that is not there, with the
     // first one still connected: a camera is for the stream on screen, and
     // that one never played.
     let nobody = leto_client::HostId("nobody".to_owned());
-    desk.service.ask(Request::Play { host: nobody, app: 1, attempt: 3, screen: None });
+    desk.service.ask(Request::Play {
+        host: nobody,
+        app: 1,
+        attempt: 3,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| matches!(event, Event::PlayFailed { attempt: 3, .. }).then_some(()));
     assert!(desk.service.camera_open(CAMERA).is_err());
     assert!(!host.camera_report().open);
@@ -434,7 +488,13 @@ fn a_pc_that_takes_no_camera_says_so_and_one_that_refuses_is_explained() {
     let stock = FakeHost::start_with(Options { camera: None, ..Options::default() });
     let desk = Desk::with_camera();
     let id = desk.pair(&stock);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 1, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 1,
+        screen: None,
+        choices: Choices::default(),
+    });
     let offer = desk.wait(|event| match event {
         Event::Camera { attempt: 1, offer } => Some(offer),
         Event::PlayFailed { message, .. } => panic!("{message}"),
@@ -446,7 +506,13 @@ fn a_pc_that_takes_no_camera_says_so_and_one_that_refuses_is_explained() {
     let host = FakeHost::start();
     let desk = Desk::with_camera();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 1, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 1,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| matches!(event, Event::Camera { attempt: 1, .. }).then_some(()));
     host.refuse_camera(true);
     let message = desk.service.camera_open(CAMERA).unwrap_err();
@@ -460,7 +526,13 @@ fn a_shell_without_a_camera_hears_nothing_about_one() {
     let host = FakeHost::start();
     let desk = Desk::new();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 2, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| matches!(event, Event::Playing { attempt: 2, .. }).then_some(()));
     // Long enough for the news about a camera to have come, had the PC
     // been asked.
@@ -477,7 +549,13 @@ fn a_shell_that_cannot_show_a_stream_says_why_and_starts_nothing() {
     let host = FakeHost::start();
     let desk = Desk::with(Some("This device cannot decode pictures."));
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 1, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 1,
+        screen: None,
+        choices: Choices::default(),
+    });
     let message = desk.wait(|event| match event {
         Event::PlayFailed { attempt: 1, message } => Some(message),
         _ => None,
@@ -494,7 +572,13 @@ fn what_apollo_refuses_is_explained_with_the_box_to_tick() {
     });
     let desk = Desk::new();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 1, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 1,
+        screen: None,
+        choices: Choices::default(),
+    });
     let message = desk.wait(|event| match event {
         Event::PlayFailed { attempt: 1, message } => Some(message),
         _ => None,
@@ -507,7 +591,13 @@ fn a_service_that_goes_away_leaves_its_stream() {
     let host = FakeHost::start();
     let desk = Desk::new();
     let id = desk.pair(&host);
-    desk.service.ask(Request::Play { host: id, app: 1, attempt: 1, screen: None });
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 1,
+        screen: None,
+        choices: Choices::default(),
+    });
     desk.wait(|event| matches!(event, Event::Playing { attempt: 1, .. }).then_some(()));
     // A host only misses a client it has met. The engine says that the
     // stream plays once the host has answered on the control connection,

@@ -104,6 +104,40 @@ fn paint_icon_button(painter: &Painter, rect: Rect, response: &Response, icon: I
     icon(painter, rect.shrink(rect.width() * 0.27), if lit { theme::MOON } else { theme::DIM });
 }
 
+/// A switch that turns `on` on or off when clicked. `name` is what it
+/// turns on, for screen readers.
+pub fn switch(ui: &mut Ui, on: &mut bool, name: &str) -> Response {
+    let (rect, mut response) = ui.allocate_exact_size(vec2(44.0, 24.0), Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(Role::Switch, enabled, *on, name));
+    let how_on = ui.ctx().animate_bool_responsive(response.id, *on);
+    let lit = response.hovered() || response.has_focus();
+    let track = if *on {
+        theme::SUN
+    } else if lit {
+        theme::SURFACE_HOVER
+    } else {
+        theme::GROUND
+    };
+    let line = if *on {
+        theme::SUN
+    } else if lit {
+        theme::DIM
+    } else {
+        theme::LINE
+    };
+    let radius = rect.height() / 2.0;
+    ui.painter().rect(rect, radius, track, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+    let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
+    let knob = if *on { theme::GROUND } else { theme::DIM };
+    ui.painter().circle_filled(Pos2::new(x, rect.center().y), radius * 0.62, knob);
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
 /// A button with the back arrow and the name of where it leads.
 pub fn back_button(ui: &mut Ui, to: &str) -> Response {
     let font = FontId::proportional(theme::BODY);

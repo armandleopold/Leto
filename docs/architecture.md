@@ -122,6 +122,25 @@ makes for the stream. A screen the owner set for the device on Apollo's side
 wins. Sunshine ignores the question and shows its own screen. A browser says
 its screen's size but not its pace: it gets 60, lying down.
 
+Those are the defaults, and the settings change them, after Moonlight's
+(`settings.rs`, drawn by `ui/settings.rs` behind the cog at the top right).
+The person may choose the stream's size and pace instead of the screen's, its
+bit rate (from 0.5 to 150 Mbit/s, as in Moonlight), no screen of its own on
+the PC, the PC's speakers playing too, no optimized game settings, the app
+closed on the PC when the stream is left, no full screen when it connects,
+V-Sync off, when the system's shortcuts go to the PC (always, in full screen
+only, never), the mouse buttons swapped, the wheel reversed, A and B and X
+and Y swapped on gamepads, Leto silent in the background, and the statistics
+from the start. What the PC must know travels with the request
+(`Request::Play::choices`, `StreamSettings::chosen`); the rest stays in the
+app. The settings are kept as JSON: `settings.json` beside the paired PCs on
+the desktop, the page's local storage in a browser. A choice that is missing,
+as after an update, is its default, and a file that cannot be read is all
+defaults. A change is saved at once and counts from the next stream; V-Sync
+counts from Leto's next start, since the window is made with it. A browser
+offers no full screen on connect, no V-Sync and no capture of the system's
+shortcuts, which it does not let a page have.
+
 The window fills the screen as the stream connects, and gives it back when
 the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
 Moonlight: what the PC sends, what arrives, what is lost, decoded and shown
@@ -211,7 +230,10 @@ passes them on.
   Windows+L stay with Windows, which no program can take. Leto's own
   shortcuts are found by the letter the layout prints on the key, which
   Windows tells even when Ctrl and Alt held together, AltGr on a French
-  layout, change what the key types.
+  layout, change what the key types. The person can keep the system's
+  shortcuts for Windows in the settings, always or while Leto does not fill
+  the screen: the hook is then not set, and the other keys still go to the
+  PC through the window.
 - eframe would turn Ctrl+C, Ctrl+X and Ctrl+V into clipboard events and keep
   those keys from the PC, so that is turned off, and `clipboard.rs` does it
   for Leto's own text fields when no stream has the keyboard.

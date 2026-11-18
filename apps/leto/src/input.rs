@@ -196,6 +196,10 @@ pub struct Controls {
     /// The PC hears nothing: the keyboard and the mouse are this device's.
     /// What is held is still followed, for the shortcuts.
     muted: bool,
+    /// The person chose to have the left and right buttons change places,
+    /// and the wheel scroll the other way.
+    swap_buttons: bool,
+    reverse_scroll: bool,
 }
 
 impl Controls {
@@ -256,9 +260,20 @@ impl Controls {
         None
     }
 
+    /// Makes the left and right buttons change places on the PC, and the
+    /// wheel scroll the other way, or not. For the next press and turn.
+    pub fn choose(&mut self, swap_buttons: bool, reverse_scroll: bool) {
+        self.swap_buttons = swap_buttons;
+        self.reverse_scroll = reverse_scroll;
+    }
+
     /// A mouse button went down or came up.
     pub fn button(&mut self, pressed: PointerButton, down: bool) {
-        let button = button(pressed);
+        let button = match (button(pressed), self.swap_buttons) {
+            (MouseButton::Left, true) => MouseButton::Right,
+            (MouseButton::Right, true) => MouseButton::Left,
+            (button, _) => button,
+        };
         if down == self.buttons.contains(&button) {
             return;
         }
@@ -319,8 +334,10 @@ impl Controls {
             MouseWheelUnit::Page => delta * NOTCHES_PER_PAGE,
         };
         // What is on screen moving down is the wheel turning up, and what is
-        // on screen moving right is the wheel tilting left.
-        self.wheel += vec2(-notches.x, notches.y) * f32::from(WHEEL_NOTCH);
+        // on screen moving right is the wheel tilting left. Unless the person
+        // would rather have it the other way.
+        let way = if self.reverse_scroll { -1.0 } else { 1.0 };
+        self.wheel += vec2(-notches.x, notches.y) * f32::from(WHEEL_NOTCH) * way;
         let [horizontal, vertical] = whole(&mut self.wheel);
         if horizontal != 0 || vertical != 0 {
             self.push(Input::Scroll { horizontal, vertical });
@@ -706,5 +723,31 @@ mod tests {
             controls.wheel(MouseWheelUnit::Point, vec2(0.0, 5.0));
         }
         assert_eq!(controls.take(), [Input::Scroll { horizontal: 0, vertical: 120 }]);
+    }
+
+    #[test]
+    fn the_buttons_and_the_wheel_go_the_way_the_person_chose() {
+        let mut controls = Controls::default();
+        controls.choose(true, true);
+        controls.button(PointerButton::Primary, true);
+        controls.button(PointerButton::Middle, true);
+        controls.wheel(MouseWheelUnit::Line, vec2(1.0, 1.0));
+        assert_eq!(
+            controls.take(),
+            [
+                Input::MouseButton { button: MouseButton::Right, down: true },
+                Input::MouseButton { button: MouseButton::Middle, down: true },
+                Input::Scroll { horizontal: 120, vertical: -120 },
+            ]
+        );
+        // What is held is let go of as the PC knows it.
+        controls.release_all();
+        assert_eq!(
+            controls.take(),
+            [
+                Input::MouseButton { button: MouseButton::Middle, down: false },
+                Input::MouseButton { button: MouseButton::Right, down: false },
+            ]
+        );
     }
 }

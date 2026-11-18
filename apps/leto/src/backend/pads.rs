@@ -5,9 +5,7 @@
 //! stream hears of every gamepad once, then of each change, and of a gamepad
 //! being unplugged.
 
-#[cfg(any(target_arch = "wasm32", test))]
-use leto_core::input::GamepadButtons;
-use leto_core::input::{GamepadKind, GamepadState, Input, MAX_GAMEPADS};
+use leto_core::input::{GamepadButtons, GamepadKind, GamepadState, Input, MAX_GAMEPADS};
 
 /// The gamepads of this device, by number on the PC.
 #[derive(Default)]
@@ -82,6 +80,22 @@ impl Pads {
             self.slots.iter().position(|slot| slot.as_ref().is_some_and(|pad| pad.id == id))?;
         Some((u8::try_from(index).ok()?, &mut self.slots[index]))
     }
+}
+
+/// `input` as the person chose to have it: with `swap` the buttons A and B
+/// change places, and X and Y, for gamepads labelled the other way round.
+pub fn as_chosen(input: Input, swap: bool) -> Input {
+    let Input::Gamepad { number, mut state } = input else { return input };
+    if swap {
+        let held = state.buttons;
+        for (one, other) in
+            [(GamepadButtons::A, GamepadButtons::B), (GamepadButtons::X, GamepadButtons::Y)]
+        {
+            state.buttons.set(one, held.contains(other));
+            state.buttons.set(other, held.contains(one));
+        }
+    }
+    Input::Gamepad { number, state }
 }
 
 /// The family of a gamepad, so the PC can show the right button names.
@@ -195,6 +209,23 @@ mod tests {
         left_stick: [0.0, 0.0],
         right_stick: [0.0, 0.0],
     };
+
+    #[test]
+    fn a_and_b_and_x_and_y_change_places_when_the_person_chose_so() {
+        let held = GamepadButtons::A.with(GamepadButtons::Y).with(GamepadButtons::START);
+        let input = Input::Gamepad { number: 0, state: GamepadState { buttons: held, ..REST } };
+        assert_eq!(as_chosen(input, false), input);
+        let swapped = GamepadButtons::B.with(GamepadButtons::X).with(GamepadButtons::START);
+        assert_eq!(
+            as_chosen(input, true),
+            Input::Gamepad { number: 0, state: GamepadState { buttons: swapped, ..REST } }
+        );
+        // Nothing else changes.
+        assert_eq!(
+            as_chosen(Input::GamepadLeft { number: 1 }, true),
+            Input::GamepadLeft { number: 1 }
+        );
+    }
 
     #[test]
     fn a_stream_hears_of_a_gamepad_once_then_of_every_change() {

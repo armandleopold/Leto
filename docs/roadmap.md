@@ -56,9 +56,14 @@ Progress:
   browser's own encoder and hands the pictures to the bridge, which asks the
   PC and passes them on. See
   [architecture.md](architecture.md#from-a-browser).
-- Later in this step: decoding on the graphics card, H.265, HDR, surround
-  sound, and the settings of Advanced mode (size, pictures per second, bit
-  rate).
+- Done: the settings, behind the cog at the top right, after Moonlight's:
+  size, pictures per second and bit rate of the stream, full screen, V-Sync,
+  the PC's screen of its own, its speakers and game settings, closing the app
+  when leaving, the system's shortcuts, the mouse buttons and wheel, gamepad
+  buttons, silence in the background and statistics. Leto keeps them. See
+  [architecture.md](architecture.md#a-stream).
+- Later in this step: decoding on the graphics card, AV1 and H.265 with a
+  choice of codec and decoder in the settings, HDR, surround sound.
 
 What the web client does not do yet:
 

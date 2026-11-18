@@ -2,7 +2,11 @@
 
 use std::{
     cell::RefCell,
-    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak, mpsc},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError, Weak,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
 
@@ -17,7 +21,7 @@ use leto_media::{
 };
 
 use super::{
-    Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, gamepad,
+    Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, gamepad, pads,
     stream::{Outlet, Screen, Sound},
 };
 use crate::{
@@ -32,6 +36,8 @@ pub struct Backend {
     ctx: egui::Context,
     /// The camera and the microphone while the person tries them out.
     tried: RefCell<Tried>,
+    /// The person has A and B change places on the gamepads, and X and Y.
+    swapped: Arc<AtomicBool>,
 }
 
 /// The camera and the microphone of this device, tried out with no PC
@@ -208,15 +214,23 @@ impl Backend {
         let service = Client::open_default()
             .map(|client| Arc::new(Service::new(Arc::new(client), desk)))
             .map_err(|error| explain(&error));
+        let swapped = Arc::new(AtomicBool::new(false));
         match &service {
             Ok(service) => {
-                // Gamepads go to the stream that is connected, whichever it is.
+                // Gamepads go to the stream that is connected, whichever it
+                // is, as the person chose.
                 let (asked, sent) = (Arc::clone(service), Arc::clone(service));
-                gamepad::watch(move || asked.streaming(), move |input| sent.input([input]));
+                let chosen = Arc::clone(&swapped);
+                gamepad::watch(
+                    move || asked.streaming(),
+                    move |input| {
+                        sent.input([pads::as_chosen(input, chosen.load(Ordering::Relaxed))]);
+                    },
+                );
             }
             Err(error) => log::error!("the client engine did not start: {error}"),
         }
-        Self { service, events, ctx: ctx.clone(), tried: RefCell::default() }
+        Self { service, events, ctx: ctx.clone(), tried: RefCell::default(), swapped }
     }
 
     /// Open when the engine started, closed for good when it did not.
@@ -258,6 +272,18 @@ impl Backend {
         if let Ok(service) = &self.service {
             service.shell().outlet().set_pace(pace);
         }
+    }
+
+    /// Silences the stream, or lets it be heard again.
+    pub fn mute(&self, mute: bool) {
+        if let Ok(service) = &self.service {
+            service.shell().outlet().set_muted(mute);
+        }
+    }
+
+    /// Has A and B change places on the gamepads, and X and Y, or not.
+    pub fn swap_gamepad_buttons(&self, swap: bool) {
+        self.swapped.store(swap, Ordering::Relaxed);
     }
 
     /// What happened to the pictures of the stream so far.

@@ -139,3 +139,19 @@ pub fn microphone(painter: &Painter, rect: Rect, color: Color32, level: f32) {
     painter.line_segment([Pos2::new(center.x, center.y + radius), at(rect, 0.5, 0.96)], stroke);
     painter.line_segment([at(rect, 0.3, 0.96), at(rect, 0.7, 0.96)], stroke);
 }
+
+/// A cog wheel: the settings.
+pub fn gear(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let center = rect.center();
+    let size = rect.width();
+    painter.circle_stroke(center, size * 0.3, stroke);
+    painter.circle_stroke(center, size * 0.11, stroke);
+    // Eight teeth around the wheel, thicker than its line.
+    let tooth = Stroke::new(stroke.width * 1.9, color);
+    for step in 0..8 {
+        let angle = std::f32::consts::FRAC_PI_4 * step as f32;
+        let out = vec2(angle.cos(), angle.sin());
+        painter.line_segment([center + out * size * 0.3, center + out * size * 0.47], tooth);
+    }
+}

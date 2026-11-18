@@ -2092,6 +2092,7 @@ dependencies = [
  "leto-system",
  "leto-testhost",
  "log",
+ "serde",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",

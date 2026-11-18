@@ -144,10 +144,10 @@ impl<S: Shell> Service<S> {
                 }
                 shell.tell(Event::Hosts(client.hosts()));
             }
-            Request::Play { host, app, attempt, screen } => {
-                // A screen this device knows is filled as it is.
-                let settings =
-                    screen.map_or_else(StreamSettings::default, StreamSettings::for_screen);
+            Request::Play { host, app, attempt, screen, choices } => {
+                // A screen this device knows is filled as it is, unless the
+                // person chose otherwise.
+                let settings = StreamSettings::chosen(screen, choices);
                 play(&client, &shell, &watching, &host, app, attempt, settings);
             }
             Request::Leave => {

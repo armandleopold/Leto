@@ -15,6 +15,7 @@ use super::{icons, widgets};
 use crate::{
     backend::{Filming, Picture},
     input::{Controls, Shortcut},
+    settings::Settings,
     state::{Cam, Mic, State, StreamView},
     stats::{Counts, Rates},
     theme, window,
@@ -34,8 +35,9 @@ const BAR_MARGIN: f32 = 10.0;
 /// A browser fills the screen with F11 on its own, without telling the
 /// page: there, F11 is not Leto's to act on.
 const F11_FILLS: bool = cfg!(not(target_arch = "wasm32"));
-/// A stream fills the screen as soon as it connects, as in Moonlight. A
-/// browser only lets a page fill the screen right after a click.
+/// A stream fills the screen as soon as it connects, as in Moonlight, unless
+/// the person chose otherwise. A browser only lets a page fill the screen
+/// right after a click.
 const FILLS_ON_CONNECT: bool = cfg!(not(target_arch = "wasm32"));
 /// Seconds between two updates of the statistics.
 const STATISTICS_EVERY: f64 = 1.0;
@@ -247,16 +249,22 @@ pub fn show(
     state: &mut State,
     view: &StreamView,
     player: &mut Player,
+    settings: &Settings,
     status: Status<'_>,
 ) -> Vec<Input> {
     let window = ui.max_rect();
     let (now, focused) = ui.input(|input| (input.time, input.focused));
     let fills_screen = window::fills_screen(ui.ctx());
     let mut asked = Asked::default();
+    player.controls.choose(settings.swap_mouse_buttons, settings.reverse_scroll);
     // Once connected, every key is the PC's, the system's shortcuts too
-    // where the system lets go of them, while the window is in front and
-    // until the person takes them back.
-    let keep = view.connected && !player.released && focused;
+    // where the system lets go of them and the person did not choose
+    // otherwise, while the window is in front and until the person takes
+    // them back.
+    let keep = view.connected
+        && !player.released
+        && focused
+        && settings.capture_shortcuts.takes(fills_screen);
     if std::mem::take(&mut player.slipped) && keep {
         window::slipped();
     }
@@ -289,9 +297,12 @@ pub fn show(
     }
 
     if view.connected {
-        if player.bar_until.is_none() && FILLS_ON_CONNECT && !fills_screen {
+        if player.bar_until.is_none() {
             // Just connected.
-            asked.fill = true;
+            asked.fill = FILLS_ON_CONNECT && settings.full_screen && !fills_screen;
+            if settings.statistics && player.statistics.is_none() {
+                player.statistics = Some(Statistics::new(status.counts, player.shown, now));
+            }
         }
         let bar_until = *player.bar_until.get_or_insert(now + BAR_STAYS);
         let mut refused = false;
@@ -433,7 +444,7 @@ pub fn show(
     }
     if asked.leave {
         player.controls.release_all();
-        state.leave_stream();
+        state.leave_stream(settings.quit_on_leave);
     }
     player.controls.take()
 }
