@@ -24,6 +24,11 @@ ignore = [
     # not by this crate. Remove this line when moonlight-common-rust moves to
     # `rsa` 0.10.
     { id = "RUSTSEC-2023-0071", reason = "one signature per manual pairing; see the comment above" },
+    # `paste` is no longer maintained. It is a macro that runs while Leto is
+    # built, where nokhwa (the camera) uses it to make up names: nothing of
+    # it is in the app, and it has no known flaw. Remove this line when
+    # nokhwa stops using it.
+    { id = "RUSTSEC-2024-0436", reason = "a build-time macro of nokhwa; see the comment above" },
 ]
 
 [licenses]

@@ -32,9 +32,10 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       # Sound output on Linux goes through ALSA and gamepads through udev,
-      # and building against them needs their headers.
-      - name: Install the ALSA and udev headers
-        run: sudo apt-get update && sudo apt-get install --yes libasound2-dev libudev-dev
+      # and building against them needs their headers. The camera goes
+      # through V4L2, whose bindings are made with libclang.
+      - name: Install the ALSA and udev headers, and libclang
+        run: sudo apt-get update && sudo apt-get install --yes libasound2-dev libudev-dev libclang-dev
       # The macOS compile check has C and C++ code to build, and zig is a
       # compiler for macOS that runs on Linux.
       - name: Install zig
