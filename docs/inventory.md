@@ -105,8 +105,9 @@ is, most likely does the same.
 
 Apollo makes a screen of its own for a stream when the client asks: its
 `/launch` reads `virtualDisplay=1`, the `mode` every client sends (width,
-height and pace) and `scaleFactor`, the size of text in percent, 100 unless
-said. A screen mode or "always use a virtual display" that its owner set for
+height and pace) and `scaleFactor`, 100 unless said, by which it multiplies
+the width and height of that screen and of the stream (`process.cpp`), to
+draw more pixels than the client shows. Leto never sends it. A screen mode or "always use a virtual display" that its owner set for
 the device in Apollo's pages wins over what the client asks. Read in
 Apollo's source; Leto asks for it, and the stand-in host records what it was
 asked (`FakeHost::screen_asked`).

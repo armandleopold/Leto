@@ -1076,7 +1076,7 @@ mod tests {
         assert_eq!(view.running(), Some(&app(1, "Desktop")));
 
         // The stream is made for the screen the window is on.
-        let screen = ScreenMode { width: 2560, height: 1440, refresh_hz: 144, scale_percent: 125 };
+        let screen = ScreenMode { width: 2560, height: 1440, refresh_hz: 144 };
         state.play(&app(1, "Desktop"), Some(screen), Choices::default());
         assert_eq!(
             state.take_requests(),

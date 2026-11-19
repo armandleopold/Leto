@@ -32,8 +32,7 @@ Progress:
   connects; on Windows every key goes to the PC, the Windows key, Alt+Tab
   and Alt+F4 too; Ctrl+Alt+Shift+Z gives the keyboard and the mouse back and
   Ctrl+Alt+Shift+S shows the statistics. The PC is asked for a screen of its
-  own just like this device's, in size, pace and text size, which Apollo
-  makes. A window another one hides or covers shows one picture a second, or
+  own just like this device's, in size and pace, which Apollo makes. A window another one hides or covers shows one picture a second, or
   none. See [architecture.md](architecture.md#a-stream).
 - Done: the same in the browser. `leto-cli bridge` serves the web client and
   relays the stream, which the browser decodes itself. See
