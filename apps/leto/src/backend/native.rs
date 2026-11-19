@@ -261,7 +261,7 @@ impl Backend {
     /// The latest picture of the stream that nobody has shown yet.
     pub fn take_picture(&self) -> Option<Picture> {
         let outlet = self.service.as_ref().ok()?.shell().outlet();
-        outlet.take_picture().map(Picture::Pixels)
+        outlet.take_picture().map(Picture::Planes)
     }
 
     /// The window draws the pictures itself: nothing to place.
