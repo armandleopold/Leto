@@ -16,7 +16,8 @@
 //! since. It is set again too when a key gets past it to the window, when a
 //! key reached it late, and every second besides, since Windows says
 //! nothing of a hook it removed. The new one is set before the old one goes,
-//! so that no key gets through in between.
+//! and the old one goes half a second later, so that no key gets through in
+//! between, not even one Windows was handing to the old one.
 //!
 //! Where Windows never calls the hook all the same, the keys that reach
 //! Leto's window are taken there (`windows/window.rs`).
@@ -75,6 +76,10 @@ const RENEW_EVERY_MS: u32 = 1000;
 /// How long a key may wait for the hook before Windows may have given up on
 /// it: the hook is then set again at once.
 const LATE: Duration = Duration::from_millis(100);
+
+/// How long a hook stays set once another replaced it: Windows may be
+/// handing it a key at that very moment, which would otherwise go past both.
+const RETIRED_FOR: Duration = Duration::from_millis(500);
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
@@ -276,6 +281,8 @@ fn listen(ready: &mpsc::Sender<u32>) {
         return;
     }
     let mut hook: HHOOK = ptr::null_mut();
+    // Hooks replaced by a newer one, and since when.
+    let mut retired: Vec<(HHOOK, Instant)> = Vec::new();
     let mut timer = 0;
     // SAFETY: `message` is a valid MSG to write to. Zero is the end, and a
     // negative answer a failure.
@@ -311,13 +318,23 @@ fn listen(ready: &mpsc::Sender<u32>) {
                     log::debug!("Windows did not let the hook be set again");
                     continue;
                 }
-                unset_hook(hook);
+                retired.push((hook, Instant::now()));
                 hook = renewed;
                 SETS.fetch_add(1, Ordering::SeqCst);
+                retired.retain(|&(old, since)| {
+                    let kept = since.elapsed() < RETIRED_FOR;
+                    if !kept {
+                        unset_hook(old);
+                    }
+                    kept
+                });
             }
             DISARM if !hook.is_null() => {
                 unset_hook(hook);
                 hook = ptr::null_mut();
+                for (old, _) in retired.drain(..) {
+                    unset_hook(old);
+                }
                 if timer != 0 {
                     // SAFETY: the timer set when the hook was.
                     unsafe { KillTimer(ptr::null_mut(), timer) };

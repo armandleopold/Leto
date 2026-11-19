@@ -250,8 +250,9 @@ passes them on.
   only decides and waits for no other thread: another thread tells the
   window. Windows asks the hook set last first, so Leto sets it each time
   its window comes in front, again when a key gets past it to the window or
-  reaches it late, and every second besides, the new one before the old one
-  goes. On some computers Windows never calls the hook at all, security
+  reaches it late, and every second besides. The new one is set first, and
+  the old one goes half a second later, since Windows may be handing it a
+  key at that moment. On some computers Windows never calls the hook at all, security
   software perhaps seeing to it: the keys then reach Leto's window, which
   takes each from its messages for the stream before acting on it, so that
   Alt+F4 does not close Leto, and Windows is asked to leave aside the
