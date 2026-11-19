@@ -247,14 +247,10 @@ fn run(
         }
         let Some((encoder, started)) = &mut encoder else { continue };
 
-        // No more pictures than were promised: a camera that is faster has
-        // the others left out. One that comes a little early is on time.
         let at = started.elapsed();
-        let step = Duration::from_secs(1) / encoder.sending().fps;
-        if at + step / 4 < due {
+        if !on_time(at, encoder.sending().fps, &mut due) {
             continue;
         }
-        due = (due + step).max(at + step / 2);
 
         let encoded = match encoder.encode(&picture, key_frame) {
             Ok(Some(encoded)) => encoded,
@@ -274,6 +270,22 @@ fn run(
             None => return Some(Feeding::Over),
         }
     }
+}
+
+/// Whether a picture that came `at` this long after the first is sent, for
+/// no more than `fps` a second. `due` is when the next one is, and moves on
+/// when one is sent.
+///
+/// No more pictures than were promised: a camera that is faster has the
+/// others left out. One that comes a little early is on time, and one that
+/// comes late does not let the next ones come in a pile.
+fn on_time(at: Duration, fps: u32, due: &mut Duration) -> bool {
+    let step = Duration::from_secs(1) / fps;
+    if at + step / 4 < *due {
+        return false;
+    }
+    *due = (*due + step).max(at + step / 2);
+    true
 }
 
 #[cfg(test)]
@@ -378,9 +390,13 @@ mod tests {
         assert_eq!(carried.opened, Some(sending));
         let (first, last) = (&carried.pictures[0], &carried.pictures[carried.pictures.len() - 1]);
         assert!(first.1, "the first picture decodes on its own");
-        // About thirty a second, by the clock that the pictures carry.
+        // No more than thirty a second, by the clock that the pictures carry.
+        // How many fewer depends on how well this computer keeps time, which
+        // the test card goes by: on GitHub's macOS its naps ran late by up to
+        // 170 ms, and it gave ten pictures a second. The tests of `on_time`
+        // check the pace exactly.
         let pace = (carried.pictures.len() - 1) as f64 / (last.0 - first.0).as_secs_f64();
-        assert!((20.0..=33.0).contains(&pace), "{pace} pictures a second");
+        assert!(pace <= 33.0, "{pace} pictures a second");
 
         // And they are the card: white on the left, black on the right.
         let mut decoder = VideoDecoder::new().expect("a decoder");
@@ -406,8 +422,71 @@ mod tests {
         let sending = carried.opened.expect("the carrier was opened");
         assert_eq!((sending.width, sending.height, sending.fps), (320, 180, 10));
         let (first, last) = (&carried.pictures[0], &carried.pictures[carried.pictures.len() - 1]);
+        // No more than ten a second, however well this computer keeps time.
         let pace = (carried.pictures.len() - 1) as f64 / (last.0 - first.0).as_secs_f64();
-        assert!((6.0..=11.0).contains(&pace), "{pace} pictures a second");
+        assert!(pace <= 11.0, "{pace} pictures a second");
+    }
+
+    /// Which of the pictures that came at `times`, in milliseconds after
+    /// the first, are sent at `fps` a second.
+    fn sent(fps: u32, times: impl IntoIterator<Item = f64>) -> Vec<f64> {
+        let mut due = Duration::ZERO;
+        times
+            .into_iter()
+            .filter(|ms| on_time(Duration::from_secs_f64(ms / 1000.0), fps, &mut due))
+            .collect()
+    }
+
+    const STEP: f64 = 1000.0 / 30.0;
+
+    #[test]
+    fn a_camera_at_the_pace_has_every_picture_sent_even_a_little_early_or_late() {
+        let steady: Vec<f64> = (0..90).map(|n| f64::from(n) * STEP).collect();
+        assert_eq!(sent(30, steady.clone()), steady);
+
+        // Up to three quarters of a picture late, then on time again.
+        let wobbly: Vec<f64> = (0..90u32)
+            .map(|n| f64::from(n) * STEP + [0.0, 8.0, 0.0, 24.0, 2.0, 15.0][n as usize % 6])
+            .collect();
+        assert_eq!(sent(30, wobbly.clone()), wobbly);
+
+        // A camera slower than the pace, or one that missed some.
+        let slow: Vec<f64> = (0..45).map(|n| f64::from(n) * 2.0 * STEP).collect();
+        assert_eq!(sent(30, slow.clone()), slow);
+    }
+
+    #[test]
+    fn a_camera_faster_than_the_pace_is_brought_down_to_it() {
+        // Sixty a second for three seconds: every other one.
+        let twice: Vec<f64> = (0..180).map(|n| f64::from(n) * STEP / 2.0).collect();
+        let kept = sent(30, twice.clone());
+        assert_eq!(kept, twice.iter().copied().step_by(2).collect::<Vec<_>>());
+
+        // A little faster, forty a second: still thirty.
+        let kept = sent(30, (0..120).map(|n| f64::from(n) * 25.0));
+        assert!((89..=91).contains(&kept.len()), "{} in three seconds", kept.len());
+
+        // Thirty a second brought down to ten.
+        let kept = sent(10, (0..90).map(|n| f64::from(n) * STEP));
+        assert_eq!(kept.len(), 30);
+    }
+
+    #[test]
+    fn pictures_that_come_in_a_pile_after_a_late_one_are_left_out() {
+        // What the test card did on GitHub's macOS: a nap 100 ms too long,
+        // then two pictures at once to catch up, then on time.
+        let times = [0.0, 33.3, 133.0, 135.0, 137.0, 166.7, 200.0];
+        assert_eq!(sent(30, times), [0.0, 33.3, 133.0, 166.7, 200.0]);
+
+        // A camera of sixty a second that stopped for half a second does
+        // not make up for it.
+        let times = (0..30)
+            .map(|n| f64::from(n) * STEP / 2.0)
+            .chain((0..30).map(|n| 1000.0 + f64::from(n) * STEP / 2.0));
+        let after: Vec<f64> = sent(30, times).into_iter().filter(|ms| *ms >= 1000.0).collect();
+        let gaps: Vec<f64> = after.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(gaps.iter().all(|gap| *gap >= STEP / 2.0 - 0.1), "{gaps:?}");
+        assert!((15..=16).contains(&after.len()), "{after:?}");
     }
 
     #[test]
