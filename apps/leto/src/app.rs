@@ -1,6 +1,6 @@
 //! The app's single window: a top bar and one screen at a time.
 
-use egui::{Align, Layout, RichText, Sense, Vec2};
+use egui::{Align, Id, Layout, Rect, RichText, Sense, UiBuilder, Vec2};
 use leto_core::{brand, platform::Platform};
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
         self,
         apps::Covers,
         devices::Preview,
-        gate, icons,
+        frame, gate, icons,
         stream::{Player, Status},
         widgets,
     },
@@ -148,6 +148,7 @@ impl eframe::App for LetoApp {
         };
         let heard = self.try_devices(ui.ctx(), &tried);
 
+        let streaming = matches!((&door, &self.state.screen), (Door::Open, Screen::Stream(_)));
         match (&door, self.state.screen.clone()) {
             // A stream takes the whole window: no bar, no margins.
             (Door::Open, Screen::Stream(view)) => {
@@ -290,6 +291,12 @@ impl eframe::App for LetoApp {
             }
         }
 
+        if !streaming {
+            // Last, so that the pointer on an edge shows that it resizes the
+            // window, whatever is under it. A stream's edges are the PC's.
+            frame::edges(ui.ctx());
+        }
+
         // Covers are only kept for the PC whose apps are on screen, or were a
         // moment ago: leaving a stream returns to them.
         let shown = match &self.state.screen {
@@ -316,11 +323,26 @@ impl eframe::App for LetoApp {
     }
 }
 
-/// The bar at the top: the logo, and the settings on the right. Returns
+/// The bar at the top: the logo, and the settings on the right. Where Leto
+/// draws the window's frame, the bar moves the window, and the buttons that
+/// minimize, maximize and close it sit in its top right corner. Returns
 /// whether the person asked to open the settings, or to close them.
 fn top_bar(ui: &mut egui::Ui, settings_open: bool) -> bool {
     let size = egui::vec2(ui.available_width(), 60.0);
     let margin = if size.x < 560.0 { 16.0 } else { 32.0 };
+    let bar = Rect::from_min_size(ui.cursor().min, size);
+    frame::drag_by(ui, bar, Id::unique("top-bar"));
+    if frame::OWN {
+        // As high as the bar, in its corner, where the pointer stops.
+        let corner = Rect::from_min_max(
+            bar.right_top() - egui::vec2(3.0 * frame::BUTTON_WIDTH, 0.0),
+            bar.max,
+        );
+        let layout = Layout::right_to_left(Align::Min);
+        // Taking no room from the bar, which goes under them.
+        let mut buttons = ui.new_child(UiBuilder::new().max_rect(corner).layout(layout));
+        frame::buttons(&mut buttons, egui::vec2(frame::BUTTON_WIDTH, size.y), 0);
+    }
     ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
         ui.add_space(margin);
         ui.add(
@@ -328,7 +350,8 @@ fn top_bar(ui: &mut egui::Ui, settings_open: bool) -> bool {
                 .fit_to_exact_size(LOGO),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_space(margin - 8.0);
+            // Beside the buttons of the frame, where there are some.
+            ui.add_space(if frame::OWN { 3.0 * frame::BUTTON_WIDTH + 8.0 } else { margin - 8.0 });
             let name = if settings_open { "Close the settings" } else { "Settings" };
             widgets::icon_button(ui, icons::gear, name).clicked()
         })

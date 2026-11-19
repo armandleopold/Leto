@@ -86,6 +86,19 @@ It is made of three parts that do not reach into each other:
 - `ui/` draws the screens from the state and tells the state what the person
   did.
 
+On Windows the window has no title bar of the system's: Leto's own top bar
+takes its place (`ui/frame.rs`). Dragged, it moves the window, with the
+system's snapping to the sides; double-clicked, it maximizes the window or
+gives the screen back. Its top right corner holds the buttons that minimize,
+maximize and close it, as tall as the bar, and the window's edges resize it.
+egui gives such a window the system's shadow. A stream in a window, rather
+than full screen, has the same three buttons at the end of its bar, which
+moves the window too; its edges are the PC's, for the mouse. `leto.exe`
+carries the app's icon and name as Windows resources, made by
+`apps/leto/build.rs` from `assets/brand/windows/leto.ico`: Explorer, its
+search and the Task Manager show them before the app runs. Elsewhere the
+system draws the frame.
+
 ## A stream
 
 What a shell asks of the engine and what it hears back are the same for all
