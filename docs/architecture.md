@@ -111,6 +111,21 @@ crates that know nothing of each other:
 Leaving a stream keeps the app running on the PC, like closing Moonlight. The
 apps screen then offers to resume it or to close it.
 
+A stream that loses its PC while the person watches it is not left. The engine
+says so (`Event::Reconnecting`) and asks the PC for the stream again, after 1,
+2 and 3 seconds and then every 5, until it plays, the person leaves it, or the
+PC answers in a way that asking again will not change (`Event::PlayFailed`).
+A PC that does not answer, or answers as one still busy with the stream it
+lost, is asked again (`service.rs`, `passing`). The window keeps the last
+picture and puts "Connection lost. Reconnecting…" over it, from the moment
+the engine says so or once three seconds pass without a new picture,
+whichever comes first: a PC that goes silent can take the connection ten
+seconds or more to notice. The camera sent to the PC stops with the stream
+and starts again when it is back. The stand-in host's `drop` breaks a stream
+and `busy` makes it refuse new ones, which is how the tests lose a PC. A
+browser that loses its bridge still ends the stream: only the bridge asks a
+PC again.
+
 A stream is made for the screen it is shown on. When the person picks an
 app, the window says what its screen is like (`window::screen`): its pixels
 and its pace as Windows reports them (`leto_system::display`), elsewhere as
