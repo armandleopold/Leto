@@ -20,7 +20,8 @@
 //! between, not even one Windows was handing to the old one.
 //!
 //! Where Windows never calls the hook all the same, the keys that reach
-//! Leto's window are taken there (`windows/window.rs`).
+//! Leto's window are taken there, and Alt+Tab, which never reaches a
+//! window, is registered as Leto's own shortcut (`windows/window.rs`).
 
 use std::{
     cell::{Cell, RefCell},
@@ -476,7 +477,7 @@ mod tests {
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
             KEYEVENTF_SCANCODE, SendInput,
         },
-        WindowsAndMessaging::{PM_REMOVE, WM_KEYDOWN, WM_KEYUP, WM_NULL},
+        WindowsAndMessaging::{PM_REMOVE, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_NULL},
     };
 
     use super::*;
@@ -556,6 +557,22 @@ mod tests {
         taken.message
     }
 
+    /// One of the shortcuts Windows keeps for itself, `id`, ended by
+    /// `virtual_key`, as Windows tells this thread of it once registered,
+    /// and the message the thread then takes.
+    fn switch(id: i32, virtual_key: u16) -> u32 {
+        let held = (virtual_key as isize) << 16 | 1;
+        // SAFETY: a message with no pointers in it, to this very thread.
+        let posted =
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_HOTKEY, id as usize, held) };
+        assert_ne!(posted, 0, "the shortcut was not posted");
+        let mut taken = MSG::default();
+        // SAFETY: `taken` is a valid MSG to write to.
+        let got = unsafe { PeekMessageW(&mut taken, ptr::null_mut(), 0, 0, PM_REMOVE) };
+        assert_ne!(got, 0, "the shortcut never came");
+        taken.message
+    }
+
     #[test]
     fn windows_says_what_its_layout_prints_on_a_key() {
         // The runners type in English: the key next to Tab prints Q.
@@ -626,6 +643,21 @@ mod tests {
         assert_eq!(heard(2), [(Key::LEFT_SUPER, true), (Key::LEFT_SUPER, false)]);
         until("the hook being set again for a key that got past", || sets() > before);
         assert_eq!(SLIPS.load(Ordering::SeqCst), 2);
+
+        // Alt+Tab, where Windows never calls the hook: Alt reaches the
+        // window, Windows tells of the shortcut it keeps for itself instead
+        // of the Tab going down, and the Tab comes up at the window. All of
+        // it goes to the stream, in order.
+        assert_eq!(at_window(0x12, 0x38, false, true), WM_NULL);
+        assert_eq!(switch(window::FIRST_SWITCH, 0x09), WM_NULL);
+        assert_eq!(at_window(0x09, 0x0F, false, false), WM_NULL);
+        assert_eq!(at_window(0x12, 0x38, false, false), WM_NULL);
+        assert_eq!(
+            heard(4),
+            [(Key::LEFT_ALT, true), (Key::TAB, true), (Key::TAB, false), (Key::LEFT_ALT, false)]
+        );
+        // A shortcut that is not Leto's is left alone.
+        assert_eq!(switch(window::FIRST_SWITCH - 1, 0x09), WM_HOTKEY);
 
         capture(false);
         until("the hook being removed", || !CAPTURING.load(Ordering::SeqCst));
