@@ -259,12 +259,19 @@ passes them on.
   shortcuts programs registered (`RIDEV_NOHOTKEYS`), which it does for a
   program that reads the keyboard itself: the Start menu is Explorer's, as
   are Windows+E, Windows+D and the rest. Alt+Tab and Alt+Esc never reach a
-  window: Leto registers them as its own shortcuts while the stream has the
-  keyboard (`RegisterHotKey`), which a program in front may do, and Windows
-  then tells the window's thread of them instead of switching windows; the
-  Tab or Esc goes to the PC between the Alt the window heard go down and the
-  Tab coming up. The log says when Windows did not let Leto have them,
-  another program having them already. The log counts the keys, how
+  window: Windows sees them as the Tab or Esc goes down with Alt held. So
+  each time an Alt reaches the window for the stream, Leto tells Windows
+  that it came up again, with a key of its own making (`SendInput`, marked
+  as Leto's): the stream still holds Alt, Windows sees a plain Tab, and the
+  window gets it for the PC. That Alt coming up reaches the window too,
+  where its mark has it dropped, and the low-level hook lets it go its way.
+  Held down, Alt repeats, and Windows hears it go down again, so each repeat
+  is let go of too. For a Tab that comes before that, Leto also registers
+  Alt+Tab and Alt+Esc as its own shortcuts while the stream has the keyboard
+  (`RegisterHotKey`), which a program in front may do, and Windows then
+  tells the window's thread of them instead of switching windows. The log
+  says when Windows did not let Leto have them, another program having them
+  already, or did not take the Alt Leto let go of. The log counts the keys, how
   long they waited, how many came late and how many reached the window,
   never which. Keys are named by their scan code, the numeric keypad
   included. A key goes back to whoever got it go down, so nothing stays held
