@@ -29,7 +29,7 @@ use std::{
     collections::BTreeMap,
     fmt, io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc},
     thread,
     time::Duration,
 };
@@ -57,7 +57,7 @@ pub use session::{
     AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings, Tally,
     VideoFrame, VideoSetup, VideoSink, VirtualDisplay,
 };
-use store::{Identity, Saved, SavedHost, Store};
+use store::{Identity, Saved, SavedAddress, SavedHost, Store};
 use transport::Transport;
 
 /// Where Leto keeps its settings on this system: the user's configuration
@@ -69,6 +69,10 @@ pub fn default_directory() -> Result<PathBuf, Error> {
 }
 
 type Host = MoonlightHost<Transport>;
+
+/// How many addresses Leto keeps for one PC. The ones that answered least
+/// recently go first.
+const ADDRESSES_KEPT: usize = 4;
 type ProtocolError = moonlight_common::error::Error;
 
 /// What can go wrong, in words meant for the person using Leto.
@@ -166,6 +170,9 @@ impl From<ProtocolError> for Error {
 /// A host the client knows, saved or only seen on the network.
 struct Entry {
     summary: HostSummary,
+    /// Every address and port the host was reached at, the one that answered
+    /// last first. The summary has that one.
+    addresses: Vec<(String, u16)>,
     /// The host's certificate from pairing, as PEM.
     certificate: Option<String>,
     /// Kept between runs: paired, or added by hand.
@@ -181,6 +188,9 @@ pub struct Client {
     secret: ClientSecret,
     /// Shared with the streams, which outlive the calls that start them.
     hosts: Arc<Mutex<BTreeMap<HostId, Entry>>>,
+    /// Held while the file is written: hosts can be saved from several
+    /// threads at once.
+    saving: Mutex<()>,
 }
 
 impl Client {
@@ -216,6 +226,11 @@ impl Client {
             .hosts
             .into_iter()
             .map(|host| {
+                let addresses = std::iter::once((host.address.clone(), host.port))
+                    .chain(
+                        host.other_addresses.into_iter().map(|other| (other.address, other.port)),
+                    )
+                    .collect();
                 let summary = HostSummary {
                     id: host.id.clone(),
                     name: host.name,
@@ -227,13 +242,24 @@ impl Client {
                     busy: false,
                     running_app: None,
                 };
-                let entry =
-                    Entry { summary, certificate: host.certificate, saved: true, handle: None };
+                let entry = Entry {
+                    summary,
+                    addresses,
+                    certificate: host.certificate,
+                    saved: true,
+                    handle: None,
+                };
                 (host.id, entry)
             })
             .collect();
 
-        Ok(Self { store, identifier, secret, hosts: Arc::new(Mutex::new(hosts)) })
+        Ok(Self {
+            store,
+            identifier,
+            secret,
+            hosts: Arc::new(Mutex::new(hosts)),
+            saving: Mutex::new(()),
+        })
     }
 
     /// Every host the client knows, sorted by name.
@@ -251,7 +277,8 @@ impl Client {
     }
 
     /// Adds a host by address (`"192.168.1.20"`, `"pc.example.org:47989"`)
-    /// and keeps it between runs.
+    /// and keeps it between runs. A host Leto knows already keeps its other
+    /// addresses too.
     pub fn add(&self, address: &str) -> Result<HostSummary, Error> {
         let (address, port) =
             parse_address(address).ok_or_else(|| Error::BadAddress(address.trim().to_owned()))?;
@@ -281,26 +308,18 @@ impl Client {
         Ok(found)
     }
 
-    /// Asks every known host whether it is there. Hosts that were only seen
-    /// on the network and no longer answer are dropped.
+    /// Asks every known host whether it is there, at every address it was
+    /// reached at. Hosts that were only seen on the network and no longer
+    /// answer are dropped.
     pub fn refresh(&self) -> Vec<HostSummary> {
-        let known: Vec<(HostId, String, u16)> = self
-            .lock()
-            .values()
-            .map(|entry| {
-                (entry.summary.id.clone(), entry.summary.address.clone(), entry.summary.port)
-            })
-            .collect();
+        let known: Vec<HostId> = self.lock().keys().cloned().collect();
 
         // All at once: a PC that is off takes seconds to give up on.
         thread::scope(|scope| {
-            for (id, address, port) in known {
-                scope.spawn(move || match self.probe(&address, port) {
-                    // The address now belongs to another PC: the one asked for is gone.
-                    Ok(summary) if summary.id != id => self.mark_offline(&id),
-                    Ok(_) => {}
-                    Err(error) => {
-                        log::debug!("{address} did not answer: {error}");
+            for id in known {
+                scope.spawn(move || {
+                    if let Err(error) = self.reach(&id) {
+                        log::debug!("{} did not answer: {error}", self.for_log(&id));
                         self.mark_offline(&id);
                     }
                 });
@@ -549,72 +568,115 @@ impl Client {
 
     /// Asks the host at `address` who it is and records the answer.
     fn probe(&self, address: &str, port: u16) -> Result<HostSummary, Error> {
-        let mut handle = Host::new(address.to_owned(), port, None)?;
-        handle.update()?;
-        let id = HostId(handle.unique_id()?.to_string());
-
-        // A host this device is paired with must prove it still is that host,
-        // and gets to say whether it still knows this device.
-        let certificate = self.lock().get(&id).and_then(|entry| entry.certificate.clone());
-        let mut paired = false;
-        if let Some(certificate) = &certificate {
-            let server = ServerIdentifier::from_pem(parse_pem(certificate)?);
-            match handle.set_identity(self.identifier.clone(), self.secret.clone(), server) {
-                Ok(()) => paired = true,
-                Err(ProtocolError::ConnectionFailed | ProtocolError::ConnectionTimeout) => {
-                    return Err(Error::Offline);
-                }
-                Err(error) => {
-                    log::warn!("{address} no longer accepts this device's pairing: {error}");
-                    handle = Host::new(address.to_owned(), port, None)?;
-                    handle.update()?;
-                }
-            }
-        }
-
-        let summary = HostSummary {
-            id: id.clone(),
-            name: handle.host_name()?,
-            address: address.to_owned(),
-            port,
-            kind: match handle.version()?.server_type {
-                ServerType::Apollo => HostKind::Apollo,
-                ServerType::FoundationSunshine => HostKind::FoundationSunshine,
-                ServerType::NvidiaGameStream => HostKind::GameStream,
-                _ => HostKind::Sunshine,
-            },
-            paired,
-            reachability: Reachability::Online,
-            busy: handle.state()? == ServerState::Busy,
-            running_app: Some(handle.current_game()?).filter(|app| *app != 0),
-        };
-
-        let mut hosts = self.lock();
-        let entry = hosts.entry(id).or_insert_with(|| Entry {
-            summary: summary.clone(),
-            certificate: None,
-            saved: false,
-            handle: None,
-        });
-        entry.summary = summary.clone();
-        entry.handle = Some(Arc::new(handle));
-        Ok(summary)
+        let answer = self.asker().ask(address, port)?;
+        Ok(self.record(answer))
     }
 
-    /// The live handle of a host, asking the host first if there is none yet.
-    fn handle(&self, id: &HostId) -> Result<Arc<Host>, Error> {
-        let (handle, address, port) = {
+    /// Asks a known host at every address it was reached at, all at once,
+    /// and keeps the first to answer: the nearest way there. That is how a
+    /// PC reached through a VPN is still streamed over the local network
+    /// when both lead to it, as Moonlight prefers its address there.
+    fn reach(&self, id: &HostId) -> Result<HostSummary, Error> {
+        let (addresses, paired) = {
             let hosts = self.lock();
             let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
-            (entry.handle.clone(), entry.summary.address.clone(), entry.summary.port)
+            (entry.addresses.clone(), entry.certificate.is_some())
         };
+        let (sender, answers) = mpsc::channel();
+        for (address, port) in addresses {
+            let (asker, sender) = (self.asker(), sender.clone());
+            // Not waited for: an address that leads nowhere takes seconds to
+            // give up on, and the nearest one has answered long before.
+            let asking = thread::Builder::new().name("leto: Ask".to_owned()).spawn(move || {
+                // Nobody listens any more once another address answered.
+                let _ = sender.send(asker.ask(&address, port));
+            });
+            if let Err(error) = asking {
+                log::error!("could not start a worker thread: {error}");
+            }
+        }
+        drop(sender);
+
+        // An answer that does not prove the pairing is kept for when no
+        // address gives a better one.
+        let mut unproven = None;
+        let mut failure = Error::Offline;
+        for answer in answers {
+            match answer {
+                // That address now belongs to another PC.
+                Ok(answer) if answer.summary.id != *id => {
+                    self.record(answer);
+                }
+                Ok(answer) if answer.summary.paired || !paired => return Ok(self.record(answer)),
+                Ok(answer) => {
+                    unproven.get_or_insert(answer);
+                }
+                Err(error) => failure = error,
+            }
+        }
+        unproven.map(|answer| self.record(answer)).ok_or(failure)
+    }
+
+    /// What asking a host needs, for a thread of its own.
+    fn asker(&self) -> Asker {
+        Asker {
+            hosts: Arc::clone(&self.hosts),
+            identifier: self.identifier.clone(),
+            secret: self.secret.clone(),
+        }
+    }
+
+    /// Keeps what a host answered, and the address it answered at as the one
+    /// to use. A saved host that learns an address is saved again.
+    fn record(&self, answer: Answer) -> HostSummary {
+        let Answer { summary, handle, local } = answer;
+        let learned = {
+            let mut hosts = self.lock();
+            let entry = hosts.entry(summary.id.clone()).or_insert_with(|| Entry {
+                summary: summary.clone(),
+                addresses: Vec::new(),
+                certificate: None,
+                saved: false,
+                handle: None,
+            });
+            let before = entry.addresses.clone();
+            let reached = (summary.address.clone(), summary.port);
+            entry.addresses.retain(|known| *known != reached);
+            entry.addresses.insert(0, reached);
+            // The host's own idea of its address, on the port it answered.
+            if let Some(local) = local
+                && !entry
+                    .addresses
+                    .iter()
+                    .any(|(known, port)| *known == local && *port == summary.port)
+            {
+                entry.addresses.push((local, summary.port));
+            }
+            entry.addresses.truncate(ADDRESSES_KEPT);
+            if before.len() > 1 && before.first() != entry.addresses.first() {
+                log::info!(
+                    "{} answers first at {}, of the {} addresses Leto knows for it",
+                    summary.name,
+                    join_address(&summary.address, summary.port),
+                    entry.addresses.len()
+                );
+            }
+            entry.summary = summary.clone();
+            entry.handle = Some(Arc::new(handle));
+            entry.saved && entry.addresses != before
+        };
+        if learned && let Err(error) = self.persist() {
+            log::warn!("could not keep the addresses of {}: {error}", summary.name);
+        }
+        summary
+    }
+    /// The live handle of a host, asking the host first if there is none yet.
+    fn handle(&self, id: &HostId) -> Result<Arc<Host>, Error> {
+        let handle = self.lock().get(id).ok_or(Error::UnknownHost)?.handle.clone();
         if let Some(handle) = handle {
             return Ok(handle);
         }
-        let summary = self.probe(&address, port)?;
-        if summary.id != *id {
-            return Err(Error::Offline);
-        }
+        self.reach(id)?;
         self.lock().get(id).and_then(|entry| entry.handle.clone()).ok_or(Error::UnknownHost)
     }
 
@@ -633,6 +695,9 @@ impl Client {
 
     /// Writes the saved hosts to disk.
     fn persist(&self) -> Result<(), Error> {
+        // From taking what to save until it is saved, so that the file ends
+        // with the latest.
+        let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
         let hosts = self
             .lock()
             .values()
@@ -642,6 +707,14 @@ impl Client {
                 name: entry.summary.name.clone(),
                 address: entry.summary.address.clone(),
                 port: entry.summary.port,
+                other_addresses: entry
+                    .addresses
+                    .iter()
+                    .filter(|(address, port)| {
+                        (address, *port) != (&entry.summary.address, entry.summary.port)
+                    })
+                    .map(|(address, port)| SavedAddress { address: address.clone(), port: *port })
+                    .collect(),
                 kind: entry.summary.kind,
                 certificate: entry.certificate.clone(),
             })
@@ -657,6 +730,80 @@ impl Client {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<HostId, Entry>> {
         // The map stays consistent even if a thread panicked while holding it.
         self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// What asking a host who it is needs, owned so that it can go to a thread
+/// of its own.
+#[derive(Clone)]
+struct Asker {
+    hosts: Arc<Mutex<BTreeMap<HostId, Entry>>>,
+    identifier: ClientIdentifier,
+    secret: ClientSecret,
+}
+
+/// What a host answered, not yet recorded.
+struct Answer {
+    summary: HostSummary,
+    handle: Host,
+    /// The address the host gives itself on its own network.
+    local: Option<String>,
+}
+
+impl Asker {
+    /// Asks the host at `address` who it is. A host this device is paired
+    /// with must prove it still is that host.
+    fn ask(&self, address: &str, port: u16) -> Result<Answer, Error> {
+        let mut handle = Host::new(address.to_owned(), port, None)?;
+        handle.update()?;
+        let id = HostId(handle.unique_id()?.to_string());
+
+        // A host this device is paired with must prove it still is that host,
+        // and gets to say whether it still knows this device.
+        let certificate = self
+            .hosts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .and_then(|entry| entry.certificate.clone());
+        let mut paired = false;
+        if let Some(certificate) = &certificate {
+            let server = ServerIdentifier::from_pem(parse_pem(certificate)?);
+            match handle.set_identity(self.identifier.clone(), self.secret.clone(), server) {
+                Ok(()) => paired = true,
+                Err(ProtocolError::ConnectionFailed | ProtocolError::ConnectionTimeout) => {
+                    return Err(Error::Offline);
+                }
+                Err(error) => {
+                    log::warn!("{address} no longer accepts this device's pairing: {error}");
+                    handle = Host::new(address.to_owned(), port, None)?;
+                    handle.update()?;
+                }
+            }
+        }
+
+        let summary = HostSummary {
+            id,
+            name: handle.host_name()?,
+            address: address.to_owned(),
+            port,
+            kind: match handle.version()?.server_type {
+                ServerType::Apollo => HostKind::Apollo,
+                ServerType::FoundationSunshine => HostKind::FoundationSunshine,
+                ServerType::NvidiaGameStream => HostKind::GameStream,
+                _ => HostKind::Sunshine,
+            },
+            paired,
+            reachability: Reachability::Online,
+            busy: handle.state()? == ServerState::Busy,
+            running_app: Some(handle.current_game()?).filter(|app| *app != 0),
+        };
+        // Sunshine and Apollo give the address of theirs that the question
+        // came in on: their address on the local network when asked from
+        // further away, for example through a forwarded port.
+        let local =
+            handle.local_ip().ok().filter(|ip| !ip.is_unspecified()).map(|ip| ip.to_string());
+        Ok(Answer { summary, handle, local })
     }
 }
 

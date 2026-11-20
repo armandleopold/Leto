@@ -26,12 +26,24 @@ pub struct Identity {
 pub struct SavedHost {
     pub id: HostId,
     pub name: String,
+    /// Where the host answered last.
     pub address: String,
     pub port: u16,
+    /// Other ways the host was reached: on another network, through a VPN,
+    /// or at the address it gives itself on its own network.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_addresses: Vec<SavedAddress>,
     pub kind: HostKind,
     /// The host's certificate from pairing, as PEM. `None` until paired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate: Option<String>,
+}
+
+/// One more address of a saved host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedAddress {
+    pub address: String,
+    pub port: u16,
 }
 
 /// The content of the file.
@@ -129,6 +141,7 @@ mod tests {
             name: "Salon".into(),
             address: "192.168.1.20".into(),
             port: 47989,
+            other_addresses: vec![SavedAddress { address: "10.8.0.3".into(), port: 47989 }],
             kind: HostKind::Apollo,
             certificate: Some("PEM".into()),
         };
@@ -154,6 +167,19 @@ mod tests {
         store.save(&Saved::default()).expect("the store saves");
         let mode = fs::metadata(store.path()).expect("the file exists").permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_file_from_before_other_addresses_still_loads() {
+        let directory = temporary_directory("older");
+        fs::create_dir_all(&directory).expect("the directory is created");
+        let store = Store::in_directory(&directory);
+        let older = br#"{"hosts":[{"id":"abc","name":"Salon","address":"10.8.0.3","port":47989,"kind":"apollo"}]}"#;
+        fs::write(store.path(), older).expect("the file is written");
+        let loaded = store.load().expect("the store loads");
+        assert_eq!(loaded.hosts[0].address, "10.8.0.3");
+        assert!(loaded.hosts[0].other_addresses.is_empty());
         let _ = fs::remove_dir_all(&directory);
     }
 

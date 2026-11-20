@@ -544,6 +544,25 @@ bridge is tested end to end against the stand-in host with a WebSocket
 client. The browser's half was checked by hand in Chromium, against the same
 host: nothing runs a browser in the pipeline yet.
 
+## The ways to a PC
+
+A PC can often be reached in more than one way: on the local network,
+through a VPN, by a name. `leto-client` keeps up to four addresses for each
+PC: the ones it was added by or found at on the network, and the one the PC
+gives itself. Sunshine and Apollo tell which of their addresses a question
+came in on, which, asked from beyond a forwarded port, is their address on
+their own network.
+
+Each time it looks for a PC, it asks at every address at once and uses the
+first that answers: the nearest way there, the one with the shortest round
+trip. Moonlight prefers a PC's address on the local network for the same
+reason. The other addresses stay for when that one stops answering, for
+example away from home. A paired PC must prove who it is at each address; an
+answer that does not prove it is only taken when no address does better, and
+then shows the PC as not paired, as before. An address where another PC now
+answers adds that PC to the list. The addresses are kept in `client.json`,
+the one that answered last as `address` and the others as `other_addresses`.
+
 ## Trust between a client and a PC
 
 Pairing gives each side the other's certificate. From then on the client only

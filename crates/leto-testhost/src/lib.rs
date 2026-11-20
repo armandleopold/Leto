@@ -153,6 +153,9 @@ pub struct Options {
     /// it. Whichever the client asks for, the pictures are H.264: enough to
     /// see what a client chooses, as [`StreamReport::codec`] tells.
     pub encodes: Codecs,
+    /// How long the host waits before answering a question over HTTP or
+    /// HTTPS, as a PC far away seems to.
+    pub answer_after: Duration,
 }
 
 impl Default for Options {
@@ -172,6 +175,7 @@ impl Default for Options {
             microphone: true,
             camera: Some((1920, 1080)),
             encodes: Codecs::of(Codec::H264),
+            answer_after: Duration::ZERO,
         }
     }
 }
@@ -557,6 +561,7 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, service: Service) -> thread
 
 fn handle_plain(mut stream: TcpStream, shared: &Shared) {
     let Some(target) = read_request(&mut stream) else { return };
+    thread::sleep(shared.options.answer_after);
     let (kind, body) = respond(shared, &target, None, local_ip(&stream));
     write_response(&mut stream, kind, &body);
 }
@@ -572,6 +577,7 @@ fn handle_secure(stream: TcpStream, shared: &Shared) {
     }
     let client =
         stream.conn.peer_certificates().and_then(|chain| chain.first()).map(|c| c.to_vec());
+    thread::sleep(shared.options.answer_after);
     let (kind, body) = respond(shared, &target, Some(client), local_ip(&stream.sock));
     write_response(&mut stream, kind, &body);
     stream.conn.send_close_notify();
