@@ -8,7 +8,12 @@
 //! thread. Given a Direct3D 11 device they decode on the graphics card, and
 //! the picture is read back from it.
 
-use std::{cell::Cell, ptr, sync::OnceLock};
+use std::{
+    cell::Cell,
+    ptr,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use leto_core::engine::{Codec, Codecs, Decodable};
 use windows::{
@@ -107,6 +112,9 @@ pub struct Decoder {
     /// Time of the next picture and how long each lasts, in 100 ns.
     time: i64,
     step: i64,
+    /// How long the last call spent getting its pictures out of the
+    /// decoder: from the graphics card, for one decoded there.
+    copying: Duration,
 }
 
 // SAFETY: every object in it was made in the multithreaded apartment, where
@@ -168,6 +176,7 @@ impl Decoder {
             shown: (width as usize, height as usize),
             time: 0,
             step: 10_000_000 / i64::from(fps.max(1)),
+            copying: Duration::ZERO,
         };
         decoder.choose_output()?;
         // SAFETY: plain messages to the decoder, which is ready for them.
@@ -183,9 +192,16 @@ impl Decoder {
         self.card.is_some()
     }
 
+    /// How long the last [`Self::decode`] spent getting the picture out of
+    /// the decoder, waiting for the graphics card to finish it included.
+    pub const fn copying(&self) -> Duration {
+        self.copying
+    }
+
     /// Decodes one picture, and copies it into `planes` when they are given.
     /// Returns whether there was a picture.
     pub fn decode(&mut self, data: &[u8], planes: Option<&mut Planes>) -> Result<bool, Error> {
+        self.copying = Duration::ZERO;
         // The thread that decodes may not be the one that made the decoder.
         start().map_err(|error| failed("Media Foundation did not start", &error))?;
         let sample = self.sample(data)?;
@@ -250,7 +266,10 @@ impl Decoder {
             match result {
                 Ok(()) => {
                     if let (Some(sample), Some(planes)) = (sample, planes.as_deref_mut()) {
+                        // Reading waits for the card to finish the picture.
+                        let start = Instant::now();
                         shown |= self.read(&sample, planes)?;
+                        self.copying += start.elapsed();
                     }
                 }
                 Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(shown),

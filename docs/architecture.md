@@ -103,8 +103,15 @@ crates that know nothing of each other:
    that stream. What arrives is handed over still encoded, to a `VideoSink`
    and an `AudioSink`, on threads that belong to the stream.
 2. The app's backend gives it two sinks built on `leto-media`. The video sink
-   decodes each picture and keeps only the latest one for the window. The
-   audio sink decodes each packet and queues it for the speakers.
+   decodes each picture and keeps only the latest one for the window. A
+   picture that newer ones already wait behind is decoded, since they build
+   on it, but not copied out of the decoder: the engine tells the sink how
+   many wait (a `Leto:` change in the vendored `moonlight-common`, as
+   moonlight-common-c's `LiGetPendingVideoFrames`). A decoder slower than
+   the stream, as at 144 pictures a second in 3840 × 1080, then skips
+   pictures instead of falling further and further behind, which the mouse
+   pointer shows first; one still goes through every 100 ms. The audio sink
+   decodes each packet and queues it for the speakers.
 3. The window picks the latest picture up when it redraws and shows it as
    large as fits, undistorted.
 
@@ -145,9 +152,11 @@ shortcuts, which it does not let a page have.
 
 The window fills the screen as the stream connects, and gives it back when
 the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
-Moonlight: what the PC sends, what arrives, what is lost, decoded and shown
-per second, how long a picture takes to decode and to make on the PC, and the
-time to the PC and back (`stats.rs`, counted by the backend).
+Moonlight: what the PC sends, what arrives, what is lost, decoded, skipped to
+keep up and shown per second, how long a picture takes to decode, how much of
+that goes to copying it out of the decoder (from the graphics card, waiting
+for the card included), how long the PC takes to make it, and the time to the
+PC and back (`stats.rs`, counted by the backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones

@@ -729,6 +729,12 @@ fn statistics_lines(
             None => per_second(rates.decoded),
         },
     ));
+    if let Some(took) = rates.copying_ms {
+        lines.push(("Copied out", format!("{took:.1} ms of that for each picture shown")));
+    }
+    if rates.skipped > 0.0 {
+        lines.push(("Skipped", format!("{}, to keep up", per_second(rates.skipped))));
+    }
     lines.push(("Shown", per_second(rates.shown)));
     if let Some(took) = rates.host_ms {
         lines.push(("On the PC", format!("{took:.1} ms to capture and encode")));
@@ -1268,14 +1274,20 @@ mod tests {
         let lines = statistics_lines(&statistics, Some(counts), None);
         assert_eq!(lines.last(), Some(&("Arrived", "Counting…".to_owned())));
 
-        for _ in 0..144 {
+        for picture in 0..144 {
             counts.received(20_000, Some(0), Some(Duration::from_millis(5)));
             counts.decoded(Some(Duration::from_millis(9)));
+            // Every other one waits behind the next and is skipped.
+            if picture % 2 == 0 {
+                counts.copied(Duration::from_millis(7));
+            } else {
+                counts.skipped += 1;
+            }
         }
         // Not a second yet: nothing changes.
-        statistics.update(Some(counts), 140, 10.5);
+        statistics.update(Some(counts), 70, 10.5);
         assert_eq!(statistics.rates, None);
-        statistics.update(Some(counts), 144, 11.0);
+        statistics.update(Some(counts), 72, 11.0);
         let lines = statistics_lines(&statistics, Some(counts), Some(Duration::from_millis(3)));
         let said: Vec<_> = lines.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         assert_eq!(
@@ -1286,7 +1298,9 @@ mod tests {
                 "Arrived: 144.0 per second, 23.0 Mbit/s".to_owned(),
                 "Lost on the way: 0 in all, 0.0 % lately".to_owned(),
                 "Decoded: 144.0 per second, 9.0 ms each".to_owned(),
-                "Shown: 144.0 per second".to_owned(),
+                "Copied out: 7.0 ms of that for each picture shown".to_owned(),
+                "Skipped: 72.0 per second, to keep up".to_owned(),
+                "Shown: 72.0 per second".to_owned(),
                 "On the PC: 5.0 ms to capture and encode".to_owned(),
                 "Network: 3 ms there and back".to_owned(),
             ]
