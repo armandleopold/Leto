@@ -254,10 +254,12 @@ What this first version does, and what it leaves for later:
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
-  drifts behind the picture. A PC sends sound all the time, silence included,
-  so a stream that has had none for five seconds, or whose first second of
-  sound did not decode, shows "No sound" in its bar and says why in the log,
-  as speakers that did not open do.
+  drifts behind the picture. A stream whose first second of sound did not
+  decode shows "No sound" in its bar and says why in the log, as speakers
+  that did not open do. A stream that has had no sound at all does not:
+  Sunshine and Apollo send nothing while the PC plays nothing, as a real
+  Apollo showed, and nothing tells that apart from sound lost on the way.
+  The log notes it after five seconds, for whoever reads it.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
