@@ -42,6 +42,9 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    # Pictures that stay on the card are shared with the window's OpenGL.
+    "Win32_Graphics_OpenGL",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
 ] }

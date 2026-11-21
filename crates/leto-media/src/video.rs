@@ -158,6 +158,31 @@ impl VideoDecoder {
         }
     }
 
+    /// Leaves pictures on the graphics card they are decoded on from now
+    /// on, for a [`crate::Card`] to draw from, or has them read back as
+    /// before. Only Windows' decoders on the card do: every other picture
+    /// comes in planes whatever is asked. Asked for by who shows the planes
+    /// with a card that [`crate::Card::keeps`]: nothing else shows them.
+    pub fn keep_on_card(&mut self, keep: bool) {
+        match &mut self.by {
+            By::OpenH264(_) => {
+                let _ = keep;
+            }
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.keep_on_card(keep),
+        }
+    }
+
+    /// Whether the next picture decoded into planes stays on the graphics
+    /// card instead.
+    pub fn keeps_on_card(&self) -> bool {
+        match &self.by {
+            By::OpenH264(_) => false,
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.keeps(),
+        }
+    }
+
     /// The pictures are decoded on the graphics card.
     pub fn on_graphics_card(&self) -> bool {
         match &self.by {

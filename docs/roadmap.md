@@ -72,6 +72,10 @@ Progress:
   buttons and wheel, gamepad
   buttons, silence in the background and statistics. Leto keeps them. See
   [architecture.md](architecture.md#a-stream).
+- Being tried: on Windows, a picture decoded on the graphics card stays
+  there until the window draws it, instead of coming through memory. Behind
+  a setting under Advanced, off by default, and never run on a real graphics
+  card yet. See [architecture.md](architecture.md#a-stream).
 - Done: decoding on the graphics card on Windows, and AV1 and H.265 with it.
   The PC is offered what the card decodes, AV1 first, then H.265, and H.264
   always; the settings choose the codec and the decoder. See

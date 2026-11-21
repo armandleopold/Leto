@@ -540,6 +540,9 @@ impl Backend {
     /// The browser decides where it decodes.
     pub const fn allow_graphics_card(&self, _allowed: bool) {}
 
+    /// And where its pictures are until it shows them.
+    pub const fn keep_on_card(&self, _keep: bool) {}
+
     /// Why the stream has no sound, when it has none.
     pub fn sound_problem(&self) -> Option<String> {
         let inner = self.page.inner.borrow();
