@@ -253,12 +253,15 @@ impl VideoSink for Screen {
 /// Decodes the sound of a stream and plays it.
 pub struct Sound {
     outlet: Arc<Outlet>,
+    /// The sound output the person chose, by the name the system gives it;
+    /// `None` plays on the system's default.
+    speakers: Option<String>,
     playing: Option<(SoundDecoder, Speaker)>,
 }
 
 impl Sound {
-    pub fn new(outlet: &Arc<Outlet>) -> Self {
-        Self { outlet: Arc::clone(outlet), playing: None }
+    pub fn new(outlet: &Arc<Outlet>, speakers: Option<String>) -> Self {
+        Self { outlet: Arc::clone(outlet), speakers, playing: None }
     }
 }
 
@@ -276,7 +279,9 @@ impl AudioSink for Sound {
             &setup.mapping,
         );
         // A stream without sound is still worth watching.
-        match decoder.and_then(|decoder| Ok((decoder, Speaker::open(setup.sample_rate)?))) {
+        match decoder.and_then(|decoder| {
+            Ok((decoder, Speaker::open(setup.sample_rate, self.speakers.as_deref())?))
+        }) {
             Ok(playing) => self.playing = Some(playing),
             Err(error) => self.outlet.set_sound_problem(sentence(&error.to_string())),
         }

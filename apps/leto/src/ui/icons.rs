@@ -140,6 +140,30 @@ pub fn microphone(painter: &Painter, rect: Rect, color: Color32, level: f32) {
     painter.line_segment([at(rect, 0.3, 0.96), at(rect, 0.7, 0.96)], stroke);
 }
 
+/// A loudspeaker, and its sound going out to the right.
+pub fn speaker(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let cone = vec![
+        at(rect, 0.04, 0.36),
+        at(rect, 0.22, 0.36),
+        at(rect, 0.48, 0.12),
+        at(rect, 0.48, 0.88),
+        at(rect, 0.22, 0.64),
+        at(rect, 0.04, 0.64),
+    ];
+    painter.add(egui::Shape::closed_line(cone, stroke));
+    let center = at(rect, 0.5, 0.5);
+    for radius in [0.2, 0.4] {
+        let wave: Vec<Pos2> = (-6..=6)
+            .map(|step| {
+                let angle = step as f32 / 6.0 * 0.85;
+                center + vec2(angle.cos(), angle.sin()) * rect.width() * radius
+            })
+            .collect();
+        painter.line(wave, stroke);
+    }
+}
+
 /// A cog wheel: the settings.
 pub fn gear(painter: &Painter, rect: Rect, color: Color32) {
     let stroke = stroke(rect, color);
