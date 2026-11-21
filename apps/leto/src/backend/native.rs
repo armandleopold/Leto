@@ -400,6 +400,14 @@ impl Backend {
         }
     }
 
+    /// Lets pictures decoded on the graphics card stay there, for a window
+    /// that draws them from it, or has them read back into memory.
+    pub fn keep_on_card(&self, keep: bool) {
+        if let Ok(service) = &self.service {
+            service.shell().outlet().set_kept(keep);
+        }
+    }
+
     /// Silences the stream, or lets it be heard again.
     pub fn mute(&self, mute: bool) {
         if let Ok(service) = &self.service {

@@ -172,7 +172,8 @@ V-Sync off, when the system's shortcuts go to the PC (always, in full screen
 only, never), the PC's pointer drawn in the picture instead of this device's,
 the mouse buttons swapped, the wheel reversed, A and B and X
 and Y swapped on gamepads, Leto silent in the background, the statistics
-from the start, decoding on the processor only, and a codec of their own. What the PC must know travels with the request
+from the start, decoding on the processor only, a codec of their own, and on
+Windows pictures that stay on the graphics card, which is being tried. What the PC must know travels with the request
 (`Request::Play::choices`, `StreamSettings::chosen`); the rest stays in the
 app. The settings are kept as JSON: `settings.json` beside the paired PCs on
 the desktop, the page's local storage in a browser. A choice that is missing,
@@ -187,8 +188,9 @@ the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
 Moonlight: what the PC sends, what arrives, what is lost, decoded, skipped to
 keep up and shown per second, how long a picture takes to decode, how much of
 that goes to copying it out of the decoder (from the graphics card, waiting
-for the card included), how long the PC takes to make it, and the time to the
-PC and back (`stats.rs`, counted by the backend).
+for the card included) or to leaving it on the card, how long the PC takes
+to make it, and the time to the PC and back (`stats.rs`, counted by the
+backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones
@@ -234,9 +236,25 @@ What this first version does, and what it leaves for later:
   processor makes the pixels as before. With V-Sync on, each drawing first
   waits until the card is done with the one before (`glFinish`), so that a
   picture never waits behind others to reach the screen: the driver would
-  otherwise queue two or three, each a refresh later. The picture still goes
-  from the card to memory and back: drawing it from where the decoder left
-  it would need Direct3D and OpenGL to share it.
+  otherwise queue two or three, each a refresh later.
+- A picture decoded on the graphics card still goes from the card to memory
+  and back that way, and reading it waits until the card has finished it,
+  which is most of what "decoding" takes. Behind a setting, off by default
+  and being tried, it stays on the card instead (`leto-media/src/kept.rs`).
+  The decoder's pictures are Direct3D's and the window draws with OpenGL, so
+  the card's video processor turns each picture into pixels in a texture of
+  Direct3D's (BT.601 in limited range, colour to the left of its pixels,
+  nothing "improved"), and the driver gives the window's OpenGL that same
+  texture to draw from (`WGL_NV_DX_interop2`). The planes then say where the
+  picture is and hold nothing (`Planes::kept`), and one lock makes sure that
+  the decoder writes and the window draws in turn. The app asks for it each
+  frame, only when the setting is on and the window's card says it shares
+  (`Card::keeps`, `Outlet::set_kept`, `VideoDecoder::keep_on_card`). It
+  falls back by itself, with one line in the log: a decoder that cannot
+  leave a picture there reads it as before, and a window that cannot draw
+  one (a laptop that decodes on one card and draws on the other) says so,
+  after which pictures come through memory until Leto starts again. Nothing
+  of this has run on a real graphics card yet: no test here has one.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.
@@ -824,6 +842,8 @@ with a comment that says why it does not apply and when to remove it.
 operating system directly (capture, codecs, virtual devices) opts back in with
 `#![allow(unsafe_code)]` at its top, and keeps that code in as few modules as
 possible. `leto-system` is one: its `unsafe` is in the modules for Windows,
-each call with the reason it is sound. `leto-media` opts in for one module
-only, its Windows video decoder (`video/windows.rs`), which calls Media
-Foundation and Direct3D 11.
+each call with the reason it is sound. `leto-media` opts in for three modules
+only: its Windows video decoder (`video/windows.rs`), which calls Media
+Foundation and Direct3D 11, the drawing of pictures by the graphics card
+(`card.rs`), which calls OpenGL, and the pictures that stay on the card
+(`kept.rs`), which calls Direct3D 11 and the driver's sharing with OpenGL.

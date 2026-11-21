@@ -19,6 +19,8 @@ pub struct Counts {
     /// them, where the backend knows.
     pub codec: Option<Codec>,
     pub on_graphics_card: Option<bool>,
+    /// The pictures stay on the graphics card until they are drawn.
+    pub kept_on_card: bool,
     /// Pictures that arrived, and their size in bytes.
     pub received: u64,
     pub bytes: u64,

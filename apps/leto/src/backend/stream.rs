@@ -78,6 +78,9 @@ pub struct Outlet {
     pace: Mutex<Pace>,
     /// The sound is decoded and not played.
     muted: AtomicBool,
+    /// Pictures decoded on the graphics card may stay there: the window
+    /// draws them from where they are.
+    kept: AtomicBool,
     /// Why the stream has no pictures, when it has none.
     picture_problem: Mutex<Option<String>>,
     /// What happened to the sound so far.
@@ -139,6 +142,17 @@ impl Outlet {
     pub fn set_muted(&self, muted: bool) {
         if self.muted.swap(muted, Ordering::Relaxed) != muted {
             log::debug!("the stream is {}", if muted { "muted" } else { "heard" });
+        }
+    }
+
+    /// Lets pictures decoded on the graphics card stay there, for a window
+    /// that draws them from it, or has them read back into memory.
+    pub fn set_kept(&self, kept: bool) {
+        if self.kept.swap(kept, Ordering::Relaxed) != kept {
+            log::debug!(
+                "pictures decoded on the graphics card {}",
+                if kept { "may stay there" } else { "are read back from it" }
+            );
         }
     }
 
@@ -239,6 +253,8 @@ pub struct Screen {
     left: Option<Instant>,
     /// Pictures went undecoded: the next ones are no use until a keyframe.
     stale: bool,
+    /// The pictures stay on the graphics card, as the log was told.
+    kept: bool,
 }
 
 impl Screen {
@@ -252,6 +268,7 @@ impl Screen {
             last: None,
             left: None,
             stale: false,
+            kept: false,
         }
     }
 
@@ -313,6 +330,20 @@ impl VideoSink for Screen {
         let Some(decoder) = &mut self.decoder else { return Decoded::Ok };
         let fate = fate(pace, frame.waiting, self.left.map(|left| left.elapsed()));
         let seen = fate == Fate::Shown;
+        decoder.keep_on_card(self.outlet.kept.load(Ordering::Relaxed));
+        let kept = decoder.keeps_on_card();
+        if self.kept != kept {
+            self.kept = kept;
+            log::info!(
+                "pictures {}",
+                if kept {
+                    "stay on the graphics card until they are drawn"
+                } else {
+                    "come through memory to be drawn"
+                }
+            );
+            self.outlet.count(|counts| counts.kept_on_card = kept);
+        }
         let start = Instant::now();
         let decoded = if seen {
             decoder.decode_planes(frame.data, &mut self.picture)
