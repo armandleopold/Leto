@@ -721,13 +721,16 @@ Windows. Its text never reaches a log, and a browser
 cannot give or remove one through the bridge: the tunnel belongs to the
 device the engine runs on.
 
-What it does not do, and what was never tried:
+What it does not do, and what was tried:
 
-- It was never tried against a real WireGuard server. Two of Leto's own
-  tunnel ends talk to each other in the tests, and a whole session goes
-  through them to the stand-in host: finding it, pairing, the apps, pictures,
-  sound and input. boringtun is the WireGuard that Cloudflare runs, but
-  nothing here met `wg` or a router's WireGuard.
+- It met one real WireGuard server, on 2026-11-21: the Windows app reached
+  a PC through the WireGuard of a Raspberry Pi at home, of which the PC is
+  a peer too, and the person who tried it reports that it works well. Which
+  of pictures, sound and input were looked at is not known, and no other
+  server was tried, a router's among them. In the tests two of Leto's own
+  tunnel ends talk to each other, and a whole session goes through them to
+  the stand-in host: finding it, pairing, the apps, pictures, sound and
+  input.
 - Leto should have a peer of its own on the server. The same keys in use at
   the same time by the WireGuard app, on this device or another, take the
   tunnel from each other every few seconds.
@@ -743,7 +746,9 @@ What it does not do, and what was never tried:
   address, since a broadcast does not cross WireGuard. That wakes it only
   while the device the tunnel ends on still knows which card has that
   address, which routers forget after a while, and never when the tunnel
-  ends on the sleeping PC itself. See below.
+  ends on the sleeping PC itself. A PC that is a peer of the server, and
+  known to Leto by its address inside WireGuard, is in that case: that
+  address is the PC's own end of a tunnel, asleep with it. See below.
 - Not in the browser: the web client reaches PCs through the bridge, which
   uses the tunnel of the device it runs on.
 
