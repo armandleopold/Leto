@@ -76,6 +76,33 @@ pub struct HostSummary {
     /// paired with.
     #[serde(default)]
     pub wakeable: bool,
+    /// Leto reaches the host through its own WireGuard tunnel, not
+    /// directly.
+    #[serde(default)]
+    pub tunnel: bool,
+}
+
+/// The WireGuard tunnel Leto runs itself, from a file the person gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelSummary {
+    /// This device's address inside the tunnel.
+    pub address: String,
+    /// Where the other end is, as the file names it. None when it is the
+    /// other end that comes.
+    pub endpoint: Option<String>,
+    /// The addresses the tunnel leads to, as `10.8.0.0/24`.
+    pub covers: Vec<String>,
+    /// This device's public key in the tunnel, which the other end must
+    /// know.
+    pub public_key: String,
+    /// The tunnel is open: Leto opens it when a PC it leads to is looked
+    /// for.
+    pub running: bool,
+    /// Seconds since the other end last proved who it is. None if it has
+    /// not yet.
+    pub handshake: Option<u64>,
+    /// Why the tunnel does not work, if Leto knows.
+    pub problem: Option<String>,
 }
 
 /// One app a host offers to stream.

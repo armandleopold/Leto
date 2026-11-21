@@ -1303,6 +1303,7 @@ mod tests {
                 busy: true,
                 running_app: Some(1),
                 wakeable: false,
+                tunnel: false,
             },
             app: AppSummary { id: 1, title: "Desktop".into(), hdr: false },
             attempt: 1,

@@ -349,6 +349,11 @@ impl Backend {
         }
     }
 
+    /// The engine here can run a WireGuard tunnel of its own.
+    pub fn has_tunnel(&self) -> bool {
+        true
+    }
+
     /// Open when the engine started, closed for good when it did not.
     pub fn door(&self) -> Door {
         match &self.service {

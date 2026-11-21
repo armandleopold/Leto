@@ -203,6 +203,16 @@ struct Inner {
     hands: Mutex<Hands>,
 }
 
+/// The ports of a stream, each any free one when 0.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Ports {
+    pub rtsp: u16,
+    pub video: u16,
+    pub control: u16,
+    pub audio: u16,
+    pub microphone: u16,
+}
+
 /// One stream to one client, from `/launch` until either side leaves.
 pub(crate) struct Session {
     inner: Arc<Inner>,
@@ -212,8 +222,8 @@ pub(crate) struct Session {
 
 impl Session {
     /// Opens the ports of a new stream on `interface`.
-    pub fn start(interface: IpAddr, launch: Launch) -> io::Result<Self> {
-        let listener = TcpListener::bind((interface, 0))?;
+    pub fn start(interface: IpAddr, launch: Launch, ports: Ports) -> io::Result<Self> {
+        let listener = TcpListener::bind((interface, ports.rtsp))?;
         listener.set_nonblocking(true)?;
         let rtsp_port = listener.local_addr()?.port();
 
@@ -227,10 +237,10 @@ impl Session {
         let inner = Arc::new(Inner {
             launch,
             version: APP_VERSION.parse().expect("the stand-in host's version is well formed"),
-            video: UdpSocket::bind((interface, 0))?,
-            audio: UdpSocket::bind((interface, 0))?,
-            control: UdpSocket::bind((interface, 0))?,
-            microphone: UdpSocket::bind((interface, 0))?,
+            video: UdpSocket::bind((interface, ports.video))?,
+            audio: UdpSocket::bind((interface, ports.audio))?,
+            control: UdpSocket::bind((interface, ports.control))?,
+            microphone: UdpSocket::bind((interface, ports.microphone))?,
             ping: ping_bytes,
             connect_data: u32::from_le_bytes([random[8], random[9], random[10], random[11]]) | 1,
             rtsp_sequence: AtomicU32::new(0),

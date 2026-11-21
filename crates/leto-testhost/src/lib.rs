@@ -159,6 +159,24 @@ pub struct Options {
     /// How long the host waits before answering a question over HTTP or
     /// HTTPS, as a PC far away seems to.
     pub answer_after: Duration,
+    /// Use the ports a Sunshine or an Apollo uses, counted from `port`:
+    /// HTTPS five below it, RTSP twenty-one above, pictures, control and
+    /// sound nine, ten and eleven above, and the microphone thirteen above
+    /// on a host that takes no camera, which has that port otherwise. Only
+    /// with a `port`. Without it every other port is any free one, so that
+    /// many hosts run side by side.
+    pub real_ports: bool,
+}
+
+impl Options {
+    /// The port `above` the host's own that a real host would use, where
+    /// this one does as real hosts do: any free port otherwise.
+    fn port_at(&self, above: i32) -> u16 {
+        if !self.real_ports || self.port == 0 {
+            return 0;
+        }
+        u16::try_from(i32::from(self.port) + above).unwrap_or(0)
+    }
 }
 
 impl Default for Options {
@@ -179,6 +197,7 @@ impl Default for Options {
             camera: Some((1920, 1080)),
             encodes: Codecs::of(Codec::H264),
             answer_after: Duration::ZERO,
+            real_ports: false,
         }
     }
 }
@@ -283,7 +302,7 @@ impl FakeHost {
 
     pub fn start_with(options: Options) -> Self {
         let (http, cameras) = listen(&options);
-        let https = TcpListener::bind((options.interface.as_str(), 0)).unwrap();
+        let https = TcpListener::bind((options.interface.as_str(), options.port_at(-5))).unwrap();
         let (cameras, api) = cameras.unzip();
         let shared = Arc::new(Shared {
             identity: Mutex::new(new_identity()),
@@ -840,7 +859,16 @@ fn launch(
         scale_percent: query.get("scaleFactor").and_then(|scale| scale.parse().ok()),
     });
     playing.end_stream(false);
-    let session = match stream::Session::start(local, launch) {
+    let options = &shared.options;
+    let ports = stream::Ports {
+        rtsp: options.port_at(21),
+        video: options.port_at(9),
+        control: options.port_at(10),
+        audio: options.port_at(11),
+        // The camera listens there too, on a host that takes one.
+        microphone: if shared.cameras.is_some() { 0 } else { options.port_at(13) },
+    };
+    let session = match stream::Session::start(local, launch, ports) {
         Ok(session) => session,
         Err(error) => return failure(503, &format!("Failed to start the stream: {error}")),
     };

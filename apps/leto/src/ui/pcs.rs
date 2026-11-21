@@ -146,7 +146,9 @@ fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Optio
     let state_pos = rect.min + vec2(33.0, 100.0);
     widgets::line(painter, state_pos, state_text, theme::SMALL + 0.5, ink, text_width - 17.0);
 
-    let detail = format!("{} · {}", host.kind.name(), shown_address(host));
+    // Through Leto's own tunnel, the address is the PC's at home.
+    let way = if host.tunnel { " · WireGuard" } else { "" };
+    let detail = format!("{} · {}{way}", host.kind.name(), shown_address(host));
     let detail_pos = rect.min + vec2(16.0, 122.0);
     widgets::line(painter, detail_pos, &detail, theme::SMALL - 0.5, theme::DIM, text_width);
 

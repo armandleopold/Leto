@@ -195,6 +195,11 @@ impl Backend {
     }
 
     /// Whether the bridge takes requests from this browser.
+    /// The tunnel is a matter for the device the bridge runs on.
+    pub fn has_tunnel(&self) -> bool {
+        false
+    }
+
     pub fn door(&self) -> Door {
         self.page.inner.borrow().door.clone()
     }

@@ -10,4 +10,5 @@ pub mod pairing;
 pub mod pcs;
 pub mod settings;
 pub mod stream;
+pub mod tunnel;
 pub mod widgets;

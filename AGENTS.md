@@ -70,6 +70,13 @@ a paired device, as Apollo does; to see a packet arrive, listen on UDP at its
 port plus 9 once it is stopped, as the tests in
 `crates/leto-client/tests/wake.rs` do.
 
+`leto-cli tunnel use home.conf` gives Leto a WireGuard tunnel of its own to
+reach PCs through, `leto-cli tunnel` shows it and `tunnel remove` takes it
+away. No WireGuard server at hand? `crates/leto-client/tests/tunnel.rs` puts
+the stand-in host behind a tunnel end of Leto's own (`leto_tunnel::Relay`).
+A host reached through a tunnel must use the ports of a real one, counted
+from its own: `--port` on the stand-in host, `Options::real_ports` in a test.
+
 The web client needs its bridge: `cargo xtask web` builds the client, then
 `leto-cli bridge` serves it on port 5386 and prints the address to open and
 the code a new browser has to be given. The address is HTTPS with a
@@ -130,6 +137,9 @@ builds and tests it for real.
   decodes it. The browser's microphone and camera come back the same way,
   encoded by the browser. What the two say to each other is in
   `leto_core::bridge`: change both ends together.
+- WireGuard, and everything that goes through it, is in `leto-tunnel`, which
+  knows nothing of PCs. `leto-client` only decides which addresses get a
+  door (`tunnel.rs`), and everything else opens ordinary sockets to it.
 - How a camera is fitted to what a PC takes (size, pictures a second, bit
   rate) is one rule for every client, in `leto_core::engine`.
 - Code of the web build that needs no browser goes outside
@@ -162,8 +172,9 @@ builds and tests it for real.
 - **A browser has to be known to the bridge.** Never add a way to ask the
   bridge for anything, or to send it input, that skips its gate.
 - **A log tells no secret.** People send their logs to whoever helps them.
-  Never log a PIN, a key, a bridge code, or the query of a request (during
-  pairing it carries the challenges). See `leto_client::logs`.
+  Never log a PIN, a key, a bridge code, the text of a WireGuard file, or
+  the query of a request (during pairing it carries the challenges). See
+  `leto_client::logs`.
 - **Code ported from another project** says so in a comment at the top of the
   module: which project, which file, which commit.
 - Write code, comments, documentation and commit messages in English.
