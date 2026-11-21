@@ -2,8 +2,9 @@
 //! and the mouse of this device go to the PC.
 
 use egui::{
-    Align, Align2, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order, Pos2, Rect,
-    RichText, Sense, Stroke, TextFormat, TextureHandle, Ui, UiBuilder, Vec2,
+    Align, Align2, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Margin, MouseWheelUnit,
+    Order, PointerButton, Pos2, Rect, RichText, Sense, Stroke, TextFormat, TextureHandle, Ui,
+    UiBuilder, Vec2,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -18,7 +19,9 @@ use crate::{
     settings::Settings,
     state::{Cam, Mic, State, StreamView},
     stats::{Counts, Rates},
-    theme, window,
+    theme,
+    touch::{Gesture, Touches},
+    window,
 };
 
 /// Seconds the bar stays when a stream starts, to say how to get out of it.
@@ -31,6 +34,10 @@ const GRIP_STAYS: f32 = 2.5;
 const GRIP_ZONE: Vec2 = Vec2::new(150.0, 16.0);
 /// The pointer still counts as over the bar this close to it.
 const BAR_MARGIN: f32 = 10.0;
+
+/// The system shows a keyboard on the screen only when asked, and the bar
+/// has a button for it: a phone or a tablet has no other.
+const ON_SCREEN_KEYBOARD: bool = cfg!(target_os = "android");
 
 /// A browser fills the screen with F11 on its own, without telling the
 /// page: there, F11 is not Leto's to act on.
@@ -107,6 +114,10 @@ pub struct Player {
     /// stream gives the window back.
     filled_screen: bool,
     controls: Controls,
+    /// The fingers on a touch screen, for the right button and the wheel.
+    touches: Touches,
+    /// The keyboard on the screen shows, for the PC.
+    typing: bool,
     /// Keys taken from the interface before it acted on them.
     strokes: Vec<KeyStroke>,
     /// The mouse turns the view of a game instead of moving a pointer.
@@ -582,6 +593,23 @@ pub fn show(
             player.hiding_pointer.retain(|host| *host != view.host.id);
         }
     }
+    if asked.keyboard {
+        player.typing = !player.typing;
+    }
+    player.typing &= !asked.leave;
+    if player.typing {
+        // The system shows its keyboard while egui says text is being
+        // typed. What is typed goes to the PC, as any key.
+        let cursor = Rect::from_center_size(window.center(), vec2(1.0, 20.0));
+        ui.ctx().output_mut(|output| {
+            output.ime = Some(egui::output::IMEOutput {
+                purpose: egui::IMEPurpose::Normal,
+                rect: window,
+                cursor_rect: cursor,
+                should_interrupt_composition: false,
+            });
+        });
+    }
     if asked.leave {
         player.controls.release_all();
         state.leave_stream(settings.quit_on_leave && !closing);
@@ -607,6 +635,8 @@ struct Asked {
     release: bool,
     /// Show the other pointer: this device's, or the PC's own.
     pointer: bool,
+    /// Show the keyboard on the screen, or hide it.
+    keyboard: bool,
 }
 
 /// Passes what the mouse did on to the controls. Returns whether a button
@@ -617,6 +647,7 @@ fn mouse(ui: &Ui, player: &mut Player, place: Rect) -> bool {
     let bar = player.bar.filter(|_| !game_mouse).map(|bar| bar.expand(BAR_MARGIN));
     let on_bar = |pointer: Pos2| bar.is_some_and(|bar| bar.contains(pointer));
     let controls = &mut player.controls;
+    let touches = &mut player.touches;
     let mut clicked = false;
 
     if ui.ctx().current_pass_index() > 0 {
@@ -629,7 +660,24 @@ fn mouse(ui: &Ui, player: &mut Player, place: Rect) -> bool {
         let mut pointer = input.pointer.latest_pos();
         let scale = input.pixels_per_point;
         for event in &input.events {
+            // A second finger: egui's pointer, made of the first, is not
+            // the mouse's until both lift.
+            let fingers = touches.hold_the_pointer();
             match event {
+                Event::Touch { id, phase, pos, .. } if !game_mouse && !on_bar(*pos) => {
+                    match touches.touch(id.0, *phase, *pos, input.time) {
+                        Some(Gesture::LetGo) => controls.button(PointerButton::Primary, false),
+                        Some(Gesture::Scroll(by)) => controls.wheel(MouseWheelUnit::Point, by),
+                        Some(Gesture::RightClick(at)) => {
+                            controls.pointer_at(at, place, scale);
+                            controls.button(PointerButton::Secondary, true);
+                            controls.button(PointerButton::Secondary, false);
+                            clicked = true;
+                        }
+                        None => {}
+                    }
+                }
+                Event::PointerMoved(_) | Event::PointerButton { .. } if fingers => {}
                 Event::PointerMoved(at) => {
                     pointer = Some(*at);
                     if !game_mouse && !on_bar(*at) {
@@ -1057,6 +1105,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                             let others = if narrow { 210.0 } else { 330.0 }
                                 + if has_camera { 44.0 } else { 0.0 }
                                 + if content.local_pointer.is_some() { 44.0 } else { 0.0 }
+                                + if ON_SCREEN_KEYBOARD { 44.0 } else { 0.0 }
                                 + if windowed { 3.0 * 36.0 + 17.0 } else { 0.0 };
                             names(ui, content.view, (window.width() - others).clamp(80.0, 360.0));
                             if let Some([width, height]) = content.picture.filter(|_| !narrow) {
@@ -1081,6 +1130,11 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                      pointer ({})",
                                     Shortcut::GameMouse.keys()
                                 );
+                                if ON_SCREEN_KEYBOARD {
+                                    let tip = "Keyboard: type on the PC with this device's";
+                                    asked.keyboard |=
+                                        widgets::icon_button(ui, icons::keyboard, tip).clicked();
+                                }
                                 let switch = widgets::icon_button(ui, icons::mouse, &mouse);
                                 asked.game_mouse |= switch.clicked() && content.view.connected;
                                 let fill = if content.view.connected {

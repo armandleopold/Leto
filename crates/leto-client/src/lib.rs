@@ -67,9 +67,21 @@ pub use session::{
 use store::{Identity, Saved, SavedAddress, SavedHost, Store};
 use transport::Transport;
 
+/// The folder [`default_directory`] gives, when the system has none to
+/// offer: an Android app is handed its own as it starts. Only the first
+/// call counts, and it must come before anything reads the settings.
+pub fn use_directory(folder: PathBuf) {
+    let _ = CHOSEN_DIRECTORY.set(folder);
+}
+
+static CHOSEN_DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 /// Where Leto keeps its settings on this system: the user's configuration
-/// folder.
+/// folder, or the one given to [`use_directory`].
 pub fn default_directory() -> Result<PathBuf, Error> {
+    if let Some(folder) = CHOSEN_DIRECTORY.get() {
+        return Ok(folder.clone());
+    }
     let folders = directories::ProjectDirs::from("re", "leto", "Leto")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this system has no home folder"))?;
     Ok(folders.config_dir().to_owned())

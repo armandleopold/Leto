@@ -34,14 +34,23 @@ serde_json = { workspace = true }
 leto-client = { workspace = true }
 # Decoders and speakers. The web build will use the browser's own.
 leto-media = { workspace = true }
-# Reads what to paste into the app's text fields. The version eframe uses.
-arboard = { version = "3.6", default-features = false }
 # Gamepads. On Linux it needs the udev headers (`libudev-dev`) to build.
 gilrs = { version = "0.11", default-features = false, features = ["wgi"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # A stand-in PC to stream from in tests.
 leto-testhost = { workspace = true }
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+# Reads what to paste into the app's text fields. The version eframe uses.
+# Android has no clipboard it can reach without Java.
+arboard = { version = "3.6", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The window is an Android NativeActivity, with no Java of Leto's own.
+eframe = { workspace = true, features = ["android-native-activity"] }
+# The activity's type, for `run_android`. The version eframe uses.
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

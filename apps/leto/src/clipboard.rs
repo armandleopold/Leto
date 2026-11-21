@@ -59,6 +59,7 @@ pub fn shortcuts(raw: &mut RawInput) {
 }
 
 /// The text on the clipboard, when there is some.
+#[cfg(not(target_os = "android"))]
 fn pasted() -> Option<String> {
     let text = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text());
     match text {
@@ -69,6 +70,13 @@ fn pasted() -> Option<String> {
             None
         }
     }
+}
+
+/// Android's clipboard is reached through Java, which this version of the
+/// app does not call for it yet.
+#[cfg(target_os = "android")]
+fn pasted() -> Option<String> {
+    None
 }
 
 #[cfg(test)]
