@@ -252,7 +252,10 @@ What this first version does, and what it leaves for later:
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
-  drifts behind the picture.
+  drifts behind the picture. A PC sends sound all the time, silence included,
+  so a stream that has had none for five seconds, or whose first second of
+  sound did not decode, shows "No sound" in its bar and says why in the log,
+  as speakers that did not open do.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
