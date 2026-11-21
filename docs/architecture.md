@@ -73,8 +73,18 @@ instead of scattering `cfg` attributes through the interface.
 
 `apps/leto` is an [egui](https://github.com/emilk/egui) app. The same code
 draws the native window and, compiled to WebAssembly, the web client
-(`cargo xtask web` builds it into `dist/web`). The look is fixed: the "Braise"
-palette from `leto_core::brand`, dark, whatever the system theme.
+(`cargo xtask web` builds it into `dist/web`).
+
+The look is the "Braise" palette from `leto_core::brand`, by night and by day
+(`theme.rs`): a warm black ground with ivory text, or the same turned over,
+ivory under warm black, with the orange accent a little deeper so that it
+shows on ivory. Leto wears the one the system asks for and changes with it
+while it runs: Windows tells the app, and a browser tells the page
+(`prefers-color-scheme`). Linux tells neither, so the app is dark there
+unless `LETO_THEME=light` is in its environment. A stream is always shown by
+night, whatever the system asks for: black surrounds its pictures, and what
+is drawn over them has to be read on them. A test checks that what is
+written can be read on both grounds.
 
 It is made of three parts that do not reach into each other:
 

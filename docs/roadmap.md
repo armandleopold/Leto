@@ -74,6 +74,8 @@ Progress:
   The PC is offered what the card decodes, AV1 first, then H.265, and H.264
   always; the settings choose the codec and the decoder. See
   [architecture.md](architecture.md#a-stream).
+- Done: a light look beside the dark one. The app wears the one the system
+  asks for, on Windows and in a browser, and a stream stays dark.
 - Done: waking a PC that sleeps or is off. Leto learns the address of its
   network card when pairing and sends it the packet that wakes it when the
   PC is chosen while offline, or with `leto-cli wake`. See

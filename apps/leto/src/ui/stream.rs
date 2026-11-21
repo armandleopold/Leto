@@ -731,7 +731,7 @@ fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(Color32::from_black_alpha(200))
-                .stroke(Stroke::new(1.0, theme::LINE))
+                .stroke(Stroke::new(1.0, theme::line()))
                 .corner_radius(theme::CARD_RADIUS)
                 .inner_margin(Margin::symmetric(10, 8))
                 .show(ui, |ui| {
@@ -742,7 +742,7 @@ fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status
                             for (name, value) in lines {
                                 ui.label(widgets::dim(name).size(theme::SMALL));
                                 ui.label(
-                                    RichText::new(value).color(theme::MOON).size(theme::SMALL),
+                                    RichText::new(value).color(theme::text()).size(theme::SMALL),
                                 );
                                 ui.end_row();
                             }
@@ -813,7 +813,7 @@ fn grip(ui: &Ui, window: Rect) {
     let rect = Rect::from_center_size(window.center_top() + vec2(0.0, 7.0), vec2(44.0, 5.0));
     let painter = ui.painter();
     painter.rect_filled(rect.expand(1.0), 4, Color32::from_black_alpha(120));
-    painter.rect_filled(rect, 3, theme::MOON.gamma_multiply(0.55));
+    painter.rect_filled(rect, 3, theme::text().gamma_multiply(0.55));
 }
 
 /// A small sign in a corner of the picture that the PC is listening, or
@@ -832,7 +832,7 @@ fn live(
         ui.ctx().layer_painter(egui::LayerId::new(Order::Foreground, Id::unique("stream-live")));
     let ground = Color32::from_black_alpha(170).gamma_multiply(opacity);
     painter.circle_filled(rect.center(), rect.width() / 2.0, ground);
-    icon(&painter, rect.shrink(8.0), theme::SUN.gamma_multiply(opacity));
+    icon(&painter, rect.shrink(8.0), theme::sun().gamma_multiply(opacity));
 }
 
 /// How full the microphone's meter is for a level from 0 to 1. Ears hear in
@@ -858,12 +858,12 @@ fn waiting(ui: &mut Ui, window: Rect, view: &StreamView, problem: Option<&str>) 
     let layout = Layout::top_down(Align::Center);
     ui.scope_builder(UiBuilder::new().max_rect(area).layout(layout), |ui| {
         if let Some(problem) = problem {
-            let text = RichText::new(problem).color(theme::PROBLEM);
+            let text = RichText::new(problem).color(theme::problem());
             ui.add(egui::Label::new(text).wrap().halign(Align::Center));
             ui.add_space(6.0);
             return widgets::quiet_button(ui, "Leave").clicked();
         }
-        ui.add(egui::Spinner::new().size(26.0).color(theme::SUN));
+        ui.add(egui::Spinner::new().size(26.0).color(theme::sun()));
         ui.add_space(6.0);
         ui.add(egui::Label::new(widgets::dim(text)).wrap().halign(Align::Center));
         ui.add_space(6.0);
@@ -901,14 +901,14 @@ fn connection_lost(ctx: &egui::Context, window: Rect, bar: Option<Rect>) {
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(Color32::from_black_alpha(225))
-                .stroke(Stroke::new(1.0, theme::PROBLEM))
+                .stroke(Stroke::new(1.0, theme::problem()))
                 .corner_radius(theme::CARD_RADIUS)
                 .inner_margin(Margin::symmetric(10, 6))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let (sign, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-                        icons::warning(ui.painter(), sign, theme::PROBLEM);
-                        let text = RichText::new(LOST).color(theme::PROBLEM).size(theme::SMALL);
+                        icons::warning(ui.painter(), sign, theme::problem());
+                        let text = RichText::new(LOST).color(theme::problem()).size(theme::SMALL);
                         ui.label(text);
                     });
                 });
@@ -963,7 +963,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
             }
             egui::Frame::new()
                 .fill(Color32::from_black_alpha(225))
-                .stroke(Stroke::new(1.0, theme::LINE))
+                .stroke(Stroke::new(1.0, theme::line()))
                 .corner_radius(theme::CARD_RADIUS)
                 .inner_margin(Margin::symmetric(10, 6))
                 .show(ui, |ui| {
@@ -984,7 +984,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 ui.label(widgets::dim(size).size(theme::SMALL));
                             }
                             if let Some(problem) = content.sound_problem {
-                                let text = RichText::new("No sound").color(theme::PROBLEM);
+                                let text = RichText::new("No sound").color(theme::problem());
                                 ui.label(text.size(theme::SMALL)).on_hover_text(problem);
                             }
                             if usable && content.view.connected {
@@ -1020,7 +1020,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                     if let Some(note) = &content.note {
                         // As wide as the buttons, on as many lines as it takes.
                         ui.set_max_width(row.width().max(260.0_f32.min(window.width() - 44.0)));
-                        let color = if note.problem { theme::PROBLEM } else { theme::DIM };
+                        let color = if note.problem { theme::problem() } else { theme::dim() };
                         let text = RichText::new(&note.text).color(color).size(theme::SMALL);
                         ui.add(egui::Label::new(text).wrap());
                         ui.add_space(2.0);
@@ -1039,23 +1039,25 @@ fn microphone_switch(ui: &mut Ui, view: &StreamView, voice: Option<f32>) -> bool
     let (name, color, level) = match &view.microphone {
         Mic::NotTaken => (
             format!("{host} takes no microphone. Apollo and Sunshine need a build that does."),
-            theme::LINE,
+            theme::line(),
             0.0,
         ),
-        Mic::Off => (format!("Microphone: let {host} hear this device ({keys})"), theme::DIM, 0.0),
+        Mic::Off => {
+            (format!("Microphone: let {host} hear this device ({keys})"), theme::dim(), 0.0)
+        }
         Mic::On => match voice {
             Some(level) => (
                 format!("Microphone on: {host} hears this device ({keys} turns it off)"),
-                theme::SUN,
+                theme::sun(),
                 level,
             ),
             None => (
                 format!("Opening the microphone: {host} hears nothing yet ({keys} turns it off)"),
-                theme::DIM,
+                theme::dim(),
                 0.0,
             ),
         },
-        Mic::Failed(why) => (format!("{why} Press to try again."), theme::PROBLEM, 0.0),
+        Mic::Failed(why) => (format!("{why} Press to try again."), theme::problem(), 0.0),
     };
     let usable = view.microphone != Mic::NotTaken;
     let icon = |painter: &egui::Painter, rect: Rect, color: Color32| {
@@ -1077,18 +1079,18 @@ fn camera_switch(ui: &mut Ui, view: &StreamView, film: Option<Filming>) -> bool 
                 "{host} takes no camera. No Apollo or Sunshine does: it takes Leto on the PC, \
                  which comes later."
             ),
-            theme::LINE,
+            theme::line(),
         ),
-        (Cam::Off, _) => (format!("Camera: let {host} see this device ({keys})"), theme::DIM),
+        (Cam::Off, _) => (format!("Camera: let {host} see this device ({keys})"), theme::dim()),
         (Cam::On, Some(Filming::Sending([width, height]))) => (
             format!("Camera on: {host} sees this device, {width} × {height} ({keys} turns it off)"),
-            theme::SUN,
+            theme::sun(),
         ),
         (Cam::On, _) => (
             format!("Opening the camera: {host} sees nothing yet ({keys} turns it off)"),
-            theme::DIM,
+            theme::dim(),
         ),
-        (Cam::Failed(why), _) => (format!("{why} Press to try again."), theme::PROBLEM),
+        (Cam::Failed(why), _) => (format!("{why} Press to try again."), theme::problem()),
     };
     let usable = view.camera != Cam::NotTaken;
     widgets::state_button(ui, icons::camera, &name, color, usable).clicked()
@@ -1107,8 +1109,8 @@ enum News {
 fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
     let font = FontId::proportional(theme::BODY);
     let mut job = LayoutJob::default();
-    job.append(&view.app.title, 0.0, TextFormat::simple(font.clone(), theme::MOON));
-    job.append(&format!("  ·  {}", view.host.name), 0.0, TextFormat::simple(font, theme::DIM));
+    job.append(&view.app.title, 0.0, TextFormat::simple(font.clone(), theme::text()));
+    job.append(&format!("  ·  {}", view.host.name), 0.0, TextFormat::simple(font, theme::dim()));
     job.wrap = TextWrapping {
         max_width,
         max_rows: 1,
@@ -1117,7 +1119,7 @@ fn names(ui: &mut Ui, view: &StreamView, max_width: f32) {
     };
     let galley = ui.painter().layout_job(job);
     let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
-    ui.painter().galley(rect.min, galley, theme::MOON);
+    ui.painter().galley(rect.min, galley, theme::text());
 }
 
 /// The line under the buttons of the bar, when there is something to say:

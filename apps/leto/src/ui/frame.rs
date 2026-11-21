@@ -185,10 +185,10 @@ fn button(ui: &mut Ui, size: egui::Vec2, radius: u8, look: Look) -> Response {
             Color32::WHITE
         }
         _ if lit => {
-            painter.rect_filled(rect, radius, theme::SURFACE_HOVER);
-            theme::MOON
+            painter.rect_filled(rect, radius, theme::surface_hover());
+            theme::text()
         }
-        _ => theme::DIM,
+        _ => theme::dim(),
     };
     glyph(painter, rect.center(), look, color);
     response.on_hover_text(name)
