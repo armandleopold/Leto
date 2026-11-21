@@ -9,7 +9,7 @@ use std::{
     io::{self, Read, Write},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -81,12 +81,16 @@ pub(crate) struct Cameras {
     /// The largest picture the host says it takes.
     largest: (u32, u32),
     state: Mutex<State>,
+    /// Woken when the host answers again after holding its answers.
+    let_go: Condvar,
 }
 
 #[derive(Default)]
 struct State {
     /// The owner of the host does not let devices send their camera.
     refused_by_owner: bool,
+    /// The host keeps what it is asked unanswered for now.
+    held: bool,
     receiving: Option<Receiving>,
     /// Pictures that arrived whole and did not decode.
     undecoded: u64,
@@ -120,7 +124,8 @@ impl Cameras {
         let listener = TcpListener::bind((interface, port))?;
         // With no limit on how long it waits for a packet: see `receive`.
         let socket = UdpSocket::bind((interface, port))?;
-        let cameras = Self { port, socket, largest, state: Mutex::default() };
+        let cameras =
+            Self { port, socket, largest, state: Mutex::default(), let_go: Condvar::new() };
         Ok((Arc::new(cameras), listener))
     }
 
@@ -140,6 +145,13 @@ impl Cameras {
     /// The owner of the host lets devices send their camera, or not.
     pub fn refuse(&self, refused: bool) {
         self.state().refused_by_owner = refused;
+    }
+
+    /// While `held`, the host leaves a device that asks to send its camera
+    /// without an answer: a PC that is slow, for as long as a test wants.
+    pub fn hold(&self, held: bool) {
+        self.state().held = held;
+        self.let_go.notify_all();
     }
 
     fn info(&self) -> Info {
@@ -171,6 +183,9 @@ impl Cameras {
             return Err(400);
         }
         let mut state = self.state();
+        while state.held {
+            state = self.let_go.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
         if state.refused_by_owner {
             return Err(403);
         }
