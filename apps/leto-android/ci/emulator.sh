@@ -26,7 +26,7 @@ adb shell pidof re.leto.app || fail "the app is not running"
 done_
 
 step "Add the PC by its address"
-screen tap 2-pcs Add a PC || screen tap 2-pcs Add || fail "no Add a PC button"
+screen accent 2-pcs || fail "no Add a PC button"
 sleep 3
 adb shell input text 10.0.2.2
 sleep 1
@@ -66,6 +66,17 @@ done_
 
 step "The app's log"
 adb logcat -d -s RustStdoutStderr:* main:* AndroidRuntime:E DEBUG:* | tail -400
+done_
+
+# The screenshots are kept by the workflow, and printed small too, for
+# whoever reads only the log.
+step "Screenshots, small, as base64 JPEG"
+for shot in shots/*.png; do
+  case "$shot" in *.flipped.png) continue ;; esac
+  echo "=== $shot"
+  convert "$shot" -resize 480x -quality 60 jpg:- | base64 -w 0
+  echo
+done
 done_
 
 exec 3>&-

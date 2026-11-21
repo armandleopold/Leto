@@ -3,6 +3,8 @@
   screen.py shot NAME           saves the screen as shots/NAME.png
   screen.py tap NAME WORD...    saves it, finds the words and taps them
   screen.py pin NAME            saves it and prints the four-digit PIN on it
+  screen.py accent NAME         saves it and taps the largest patch of the
+                                accent colour: the main button
 
 The app is drawn by egui, so Android sees no buttons in it: the words are
 read from the picture with tesseract.
@@ -43,10 +45,45 @@ def words(path):
     return found
 
 
+# Leto's accent, the fill of its main buttons (`leto_core::brand`).
+ACCENT = "#FF6B35"
+
+
+def accent(path):
+    """The centre of the largest patch of the accent colour, if any."""
+    listing = subprocess.run(
+        ["convert", path, "-fuzz", "15%", "-fill", "white", "-opaque", ACCENT,
+         "-fill", "black", "+opaque", "white",
+         "-define", "connected-components:verbose=true",
+         "-define", "connected-components:area-threshold=200",
+         "-connected-components", "8", "null:"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    best = None
+    for line in listing.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 5 or "255,255,255" not in fields[-1]:
+            continue
+        x, y = (float(v) for v in fields[2].split(","))
+        area = int(fields[3])
+        if best is None or area > best[0]:
+            best = (area, int(x), int(y))
+    return best
+
+
 def main():
     command, name, *wanted = sys.argv[1:]
     path = shot(name)
     if command == "shot":
+        return 0
+    if command == "accent":
+        best = accent(path)
+        if best is None:
+            print("no button of the accent colour")
+            return 1
+        _, x, y = best
+        subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=True)
+        print(f"tapped the main button at {x},{y}")
         return 0
     found = words(path)
     print("read:", " ".join(word for word, _, _ in found))
