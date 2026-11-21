@@ -816,8 +816,10 @@ find worth telling; `RUST_LOG` changes that and also prints to the terminal.
 During a stream the app writes a line every ten seconds with what its
 statistics show: pictures arrived, decoded and skipped in a second, the bit
 rate, the loss, how long a picture took to decode and how much of that to
-leave the decoder, how long the PC took to make one, and the way to the PC
-and back. A log of a stream that felt slow says where the time went.
+leave the decoder, how long the PC took to make one, the way to the PC and
+back, and on how many pixels of the screen the pictures are drawn: one for
+each of theirs, or more or fewer, which makes them less sharp. A log of a
+stream that felt slow or looked soft says where to look.
 
 A log names PCs and their addresses, and each request's path, but never a
 secret: the folder can be sent as it is. The settings folder around it holds

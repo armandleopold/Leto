@@ -9,7 +9,7 @@ use crate::{
     backend::{Backend, Door, Pace, Unavailable},
     settings::{self, Settings},
     state::{Cam, Device, Devices, Event, Mic, Screen, State, Trial},
-    stats::{Counts, Rates, TOLD_EVERY},
+    stats::{self, Counts, Rates, TOLD_EVERY},
     theme,
     ui::{
         self,
@@ -443,7 +443,7 @@ impl LetoApp {
             self.told = Some((now, counts));
         } else if now - then >= TOLD_EVERY {
             if let Some(rates) = Rates::between(&before, &counts, 0, now - then) {
-                log::debug!("{}", rates.told(round_trip));
+                log::debug!("{}{}", rates.told(round_trip), stats::drawn(self.player.drawn()));
             }
             self.told = Some((now, counts));
         }

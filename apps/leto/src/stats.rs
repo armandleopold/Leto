@@ -174,9 +174,39 @@ impl Rates {
     }
 }
 
+/// What the log is told of how the pictures are drawn: on how many pixels
+/// of the screen, when that is not one for each of theirs. Pictures drawn
+/// larger or smaller are less sharp than the PC made them.
+pub fn drawn(drawn: Option<([usize; 2], [u32; 2])>) -> String {
+    match drawn {
+        Some(([width, height], [across, down]))
+            if width == across as usize && height == down as usize =>
+        {
+            format!("; drawn pixel for pixel, {width} by {height}")
+        }
+        Some(([width, height], [across, down])) => {
+            format!("; pictures of {width} by {height} drawn on {across} by {down} pixels")
+        }
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_log_is_told_when_pictures_are_not_drawn_pixel_for_pixel() {
+        assert_eq!(
+            drawn(Some(([3840, 1080], [3840, 1080]))),
+            "; drawn pixel for pixel, 3840 by 1080"
+        );
+        assert_eq!(
+            drawn(Some(([3840, 1080], [3826, 1076]))),
+            "; pictures of 3840 by 1080 drawn on 3826 by 1076 pixels"
+        );
+        assert_eq!(drawn(None), "");
+    }
 
     #[test]
     fn the_log_is_told_what_was_measured_and_nothing_else() {
