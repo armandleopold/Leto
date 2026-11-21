@@ -1,6 +1,6 @@
 //! What Leto asks of the system itself, beyond what a window gets: every key
-//! for the PC being watched, Windows' own shortcuts too, and what the screen
-//! a stream fills is like.
+//! for the PC being watched, Windows' own shortcuts too, what the screen a
+//! stream fills is like, and a clock fine enough for a stream.
 //!
 //! Only Windows is asked for now. Elsewhere these find nothing, and a stream
 //! gets the keys its window gets.
@@ -9,5 +9,6 @@
 
 #![allow(unsafe_code)]
 
+pub mod clock;
 pub mod display;
 pub mod keyboard;
