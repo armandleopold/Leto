@@ -137,16 +137,33 @@ machine. The pipeline adds the address before it runs the tests.
 The Windows build is not part of `targets`: the Windows job of the pipeline
 builds and tests it for real.
 
-## Releases
+## Commits, pull requests and releases
 
-A release is a tag named after the workspace version in `Cargo.toml`:
-change the version, merge, then `git tag v0.0.2 && git push origin v0.0.2`
-(or run the Release workflow by hand with that tag). The Release workflow
-builds the app and `leto-cli` for Windows, Linux and macOS with the web
-client beside them, publishes them on GitHub with the source and
-`SHA256SUMS.txt`, then starts the Pages workflow, which puts the files of the
-latest release on leto.re for download. A tag that does not match the
-version stops it before anything is built.
+Pull requests are squashed into `main`, with their title as the commit
+message. Titles follow [Conventional Commits](https://www.conventionalcommits.org):
+`feat: …` for something people can use, `fix: …` for a fix, `perf: …`,
+`docs: …`, `ci: …`, `chore: …` and so on, and `feat!: …` for a change that
+breaks something. A check on every pull request refuses another title.
+
+Release Please reads those titles on `main` and keeps a release pull request
+open, titled `chore: release x.y.z`, that bumps the version in `Cargo.toml`,
+`Cargo.lock` and `version.txt` and writes `CHANGELOG.md`. Before 1.0, `feat`
+bumps the patch number too, and a breaking change the minor one. Merging the
+release pull request tags the version, publishes the GitHub release with
+those notes, builds Windows, Linux, macOS, the web client and the Android APK
+(`.github/workflows/release.yml`), attaches them with the source and
+`SHA256SUMS.txt`, and puts them on leto.re for download.
+
+- A new workspace crate goes in the `Cargo.lock` path of
+  `release-please-config.json`, or the Release Please workflow fails and
+  says which crate is missing.
+- Do not change the version by hand: Release Please owns it.
+- The Release builds workflow can be started by hand from the Actions tab
+  with a tag, to rebuild the files of a release or make the first one.
+- The APK is signed with the keystore in the `ANDROID_KEYSTORE_BASE64` and
+  `ANDROID_KEY_PASSWORD` secrets when they are set. Without them each
+  release has a key of its own, and a phone cannot update from one to the
+  next without uninstalling.
 
 ## Where things go
 

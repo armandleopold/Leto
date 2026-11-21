@@ -8,6 +8,7 @@
     { suffix: "-windows-x86_64.zip", label: "Windows", detail: "Windows 10 et 11, 64 bits", tried: true },
     { suffix: "-macos-arm64.tar.gz", label: "macOS", detail: "Mac avec puce Apple" },
     { suffix: "-linux-x86_64.tar.gz", label: "Linux", detail: "64 bits, glibc 2.35 ou plus récent" },
+    { suffix: "-android.apk", label: "Android", detail: "Android 8 ou plus récent" },
     { suffix: "-web.zip", label: "Client Web seul", detail: "Pour une passerelle déjà installée" },
     { suffix: "-source.tar.gz", label: "Code source", detail: "Celui de cette version" }
   ];
@@ -25,7 +26,8 @@
     var ua = navigator.userAgent;
     if (/Windows/.test(ua)) return "Windows";
     if (/Mac OS X/.test(ua) && !/iPhone|iPad/.test(ua)) return "macOS";
-    if (/Linux/.test(ua) && !/Android/.test(ua)) return "Linux";
+    if (/Android/.test(ua)) return "Android";
+    if (/Linux/.test(ua)) return "Linux";
     return null;
   }
 
