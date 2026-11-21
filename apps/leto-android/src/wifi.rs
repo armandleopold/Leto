@@ -45,7 +45,6 @@ impl MulticastLock {
             env.call_method(&lock, "acquire", "()V", &[])?;
             env.new_global_ref(lock)?
         };
-        log::info!("Wi-Fi multicast lock taken: PCs can be found");
         Ok(Self { vm, lock })
     }
 }

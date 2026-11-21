@@ -65,7 +65,7 @@ grep -q "MouseButton\|mouse" host.log || fail "the PC heard no touch"
 done_
 
 step "The app's log"
-adb logcat -d -s leto:* RustStdoutStderr:* AndroidRuntime:E DEBUG:* | tail -400
+adb logcat -d -s RustStdoutStderr:* main:* AndroidRuntime:E DEBUG:* | tail -400
 done_
 
 exec 3>&-

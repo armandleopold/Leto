@@ -20,8 +20,5 @@ crate-type = ["cdylib", "rlib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 leto = { path = "../leto" }
-log = { workspace = true }
 # Calls into Android's Java side: the Wi-Fi lock that lets PCs be found.
 jni = "0.21"
-# What the app writes to its error output goes to Android's log.
-libc = "0.2"
