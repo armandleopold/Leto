@@ -249,6 +249,9 @@ impl Card {
                 self.seen = Some(Seen::open(gl, kept).map_err(Error::Video)?);
             }
         }
+        if let Some(seen) = &mut self.seen {
+            seen.take().map_err(Error::Video)?;
+        }
         self.stays = true;
         Ok(())
     }

@@ -30,9 +30,12 @@ impl OnCard {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        sync::{
+            Arc, Mutex, MutexGuard, PoisonError,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
     };
 
     use eframe::{egui_glow, glow};
@@ -60,7 +63,15 @@ mod native {
         card: Option<Card>,
         /// The picture to put on the card at the next drawing.
         pending: Option<Planes>,
+        /// The drawings since the log was last told of them: how many, how
+        /// long they took in all, and when it was told.
+        drawn: u32,
+        drawing: Duration,
+        told: Option<Instant>,
     }
+
+    /// How often the log is told how long drawing a picture takes.
+    const TOLD_EVERY: Duration = Duration::from_secs(10);
 
     impl OnCard {
         /// A card for a window that draws with `gl`, if it can draw
@@ -132,7 +143,7 @@ mod native {
                 Card::wait(gl);
             }
             let mut inner = self.lock();
-            let Inner { card, pending } = &mut *inner;
+            let Inner { card, pending, drawn, drawing, told } = &mut *inner;
             if card.is_none() {
                 match Card::new(gl) {
                     Ok(made) => {
@@ -153,6 +164,7 @@ mod native {
                 }
             }
             let Some(card) = card else { return };
+            let start = Instant::now();
             if let Some(planes) = pending.take()
                 && let Err(error) = card.show(gl, &planes)
             {
@@ -160,6 +172,20 @@ mod native {
             }
             if let Err(error) = card.draw(gl) {
                 self.keeps_none(&error);
+            }
+            // What the window's side of a picture costs, which the
+            // statistics of decoding do not see.
+            *drawn += 1;
+            *drawing += start.elapsed();
+            let since = *told.get_or_insert(start);
+            if since.elapsed() >= TOLD_EVERY {
+                log::debug!(
+                    "the window drew {drawn} times in {:.0} s, giving the card each drawing in \
+                     {:.2} ms",
+                    since.elapsed().as_secs_f64(),
+                    drawing.as_secs_f64() * 1000.0 / f64::from(*drawn)
+                );
+                (*drawn, *drawing, *told) = (0, Duration::ZERO, Some(Instant::now()));
             }
         }
 

@@ -241,13 +241,15 @@ What this first version does, and what it leaves for later:
   and back that way, and reading it waits until the card has finished it,
   which is most of what "decoding" takes. Behind a setting, off by default
   and being tried, it stays on the card instead (`leto-media/src/kept.rs`).
-  The decoder's pictures are Direct3D's and the window draws with OpenGL, so
-  the card's video processor turns each picture into pixels in a texture of
-  Direct3D's (BT.601 in limited range, colour to the left of its pixels,
-  nothing "improved"), and the driver gives the window's OpenGL that same
-  texture to draw from (`WGL_NV_DX_interop2`). The planes then say where the
-  picture is and hold nothing (`Planes::kept`), and one lock makes sure that
-  the decoder writes and the window draws in turn. The app asks for it each
+  The decoder's pictures are Direct3D's and the window draws with OpenGL.
+  The decoder has the card copy each picture into a texture of Leto's, as
+  Moonlight does, and waits for nothing. When the window is about to draw,
+  the card's video processor turns the latest picture into pixels in a
+  texture of Direct3D's (BT.601 in limited range, colour to the left of its
+  pixels, nothing "improved"), and the driver gives the window's OpenGL that
+  same texture to draw from (`WGL_NV_DX_interop2`). The planes then say
+  where the picture is and hold nothing (`Planes::kept`). The log says every
+  ten seconds what a drawing costs the window. The app asks for it each
   frame, only when the setting is on and the window's card says it shares
   (`Card::keeps`, `Outlet::set_kept`, `VideoDecoder::keep_on_card`). It
   falls back by itself, with one line in the log: a decoder that cannot

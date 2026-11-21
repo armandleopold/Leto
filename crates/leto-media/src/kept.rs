@@ -8,10 +8,12 @@
 //! card, and neither does this.
 //!
 //! The decoder's pictures are Direct3D's and the window draws with OpenGL.
-//! The card's own video processor turns each picture into pixels in a
-//! texture of Direct3D's, and the window's OpenGL is given that same
-//! texture to draw from (`WGL_NV_DX_interop2`, which the drivers of AMD,
-//! Intel and Nvidia all have). Nothing of the picture is in memory.
+//! The decoder has the card copy each picture into a texture of Leto's and
+//! goes on to the next: it waits for nothing. When the window is about to
+//! draw, the card's own video processor turns the latest picture into
+//! pixels in another texture of Direct3D's, and the window's OpenGL is
+//! given that texture to draw from (`WGL_NV_DX_interop2`, which the drivers
+//! of AMD, Intel and Nvidia all have). Nothing of the picture is in memory.
 //!
 //! Only on Windows, where both ends are. Elsewhere a [`Kept`] cannot be
 //! made, and pictures are planes as before.
@@ -61,7 +63,10 @@ pub(crate) mod windows {
     use std::{
         ffi::{CStr, c_char, c_void},
         mem::ManuallyDrop,
-        sync::{Arc, Mutex, MutexGuard, PoisonError},
+        sync::{
+            Arc, Mutex, MutexGuard, PoisonError,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
     use glow::HasContext as _;
@@ -70,8 +75,8 @@ pub(crate) mod windows {
             Foundation::{GetLastError, HANDLE, RECT},
             Graphics::{
                 Direct3D11::{
-                    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEX2D_VPIV,
-                    D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+                    D3D11_BIND_DECODER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
+                    D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
                     D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_COLOR_SPACE,
                     D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
                     D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT,
@@ -103,22 +108,49 @@ pub(crate) mod windows {
     type Gl = glow::Context;
     type Texture = <Gl as glow::HasContext>::Texture;
 
-    /// The texture both sides use: the decoder's video processor writes the
-    /// latest picture into it, and the window draws from it.
+    /// What both sides use, made once for pictures of one size.
+    ///
+    /// The decoder copies each picture into `picture` as it decoded it: a
+    /// copy on the card, asked for and not waited for. The window has the
+    /// card's video processor turn the latest one into `pixels` when it is
+    /// about to draw, and draws from those. So the decoder never waits for
+    /// the window, and a picture the window never draws is never turned
+    /// into pixels.
+    ///
+    /// Moonlight copies the same way where it does not draw from the
+    /// decoder's own textures (`renderVideo` in moonlight-qt's
+    /// `d3d11va.cpp`): the decoder then has its texture back at once.
     pub struct Shared {
-        /// The card as Direct3D knows it. Kept for as long as the texture
-        /// is, which can be longer than the decoder lives.
+        /// The card as Direct3D knows it. Kept for as long as the textures
+        /// are, which can be longer than the decoder lives.
         device: ID3D11Device,
-        texture: ID3D11Texture2D,
-        /// Held by the side that has the texture: Direct3D while it writes
-        /// a picture, OpenGL while it draws one. Never both, as the
-        /// sharing asks.
+        /// What the card is asked through, and the same for video.
+        commands: ID3D11DeviceContext,
+        video: ID3D11VideoContext,
+        /// The latest picture, in the planes the decoder made.
+        picture: ID3D11Texture2D,
+        /// How many pictures were copied into `picture`.
+        copied: AtomicU64,
+        processor: ID3D11VideoProcessor,
+        /// What the processor was made from, kept for as long as it is.
+        _enumerator: ID3D11VideoProcessorEnumerator,
+        /// `picture`, as the processor reads it.
+        from: ID3D11VideoProcessorInputView,
+        /// `pixels`, as the processor writes them.
+        onto: ID3D11VideoProcessorOutputView,
+        /// The pixels of the picture the window drew last.
+        pixels: ID3D11Texture2D,
+        /// Held by the side that has the pixels: Direct3D while it writes
+        /// them, OpenGL while it draws from them. Never both, as the
+        /// sharing asks. The decoder never asks for it.
         turn: Mutex<()>,
     }
 
     // SAFETY: the device was told to protect itself from several threads
-    // (`SetMultithreadProtected`), which covers what is made from it, and
-    // the texture is only touched by whoever holds `turn`.
+    // (`SetMultithreadProtected`), which covers what is made from it: each
+    // call into it is whole. The card runs what it is asked in the order it
+    // was asked, so a copy into `picture` and a reading of it never meet
+    // halfway, and `pixels` are only touched by whoever holds `turn`.
     unsafe impl Send for Shared {}
     // SAFETY: as above.
     unsafe impl Sync for Shared {}
@@ -127,13 +159,36 @@ pub(crate) mod windows {
         fn turn(&self) -> MutexGuard<'_, ()> {
             self.turn.lock().unwrap_or_else(PoisonError::into_inner)
         }
+
+        /// Has the card turn the latest picture into pixels.
+        fn make_pixels(&self) -> windows::core::Result<()> {
+            let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+                Enable: BOOL::from(true),
+                pInputSurface: ManuallyDrop::new(Some(self.from.clone())),
+                ..Default::default()
+            };
+            let streams = [stream];
+            // OpenGL does not draw from the pixels meanwhile.
+            let turn = self.turn();
+            // SAFETY: one stream in, from the view of the picture into the
+            // view of the pixels, both made for this processor. Sent to
+            // the card at once: OpenGL draws from the pixels next.
+            let made = unsafe {
+                let made = self.video.VideoProcessorBlt(&self.processor, &self.onto, 0, &streams);
+                self.commands.Flush();
+                made
+            };
+            drop(turn);
+            let [stream] = streams;
+            drop(ManuallyDrop::into_inner(stream.pInputSurface));
+            made
+        }
     }
 
-    /// The decoder's side: turns each picture into pixels on the card.
+    /// The decoder's side: leaves each picture on the card, where the
+    /// window finds it.
     pub struct Keeper {
         video: ID3D11VideoDevice,
-        context: ID3D11VideoContext,
-        /// The same context, to send what was asked to the card at once.
         commands: ID3D11DeviceContext,
         /// What pictures of the current size go through.
         made: Option<Made>,
@@ -141,25 +196,37 @@ pub(crate) mod windows {
 
     /// What is made once for pictures of one size.
     struct Made {
+        /// The pixels to be seen, across and down.
         size: (u32, u32),
-        enumerator: ID3D11VideoProcessorEnumerator,
-        processor: ID3D11VideoProcessor,
-        target: ID3D11VideoProcessorOutputView,
+        /// The decoder's textures: across, down, and what is in them.
+        laid: (u32, u32, DXGI_FORMAT),
         shared: Arc<Shared>,
     }
+
+    /// The ways to ask for the texture pictures are copied into. The first
+    /// the card's video processor reads from is used: as a decoder's own
+    /// textures, which the processor read before pictures were copied, then
+    /// as Moonlight asks for its copies, then as one more to draw into.
+    const COPIES: [u32; 3] = [
+        D3D11_BIND_DECODER.0 as u32,
+        D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+    ];
 
     impl Keeper {
         pub fn new(device: &ID3D11Device) -> windows::core::Result<Self> {
             let video = device.cast::<ID3D11VideoDevice>()?;
             // SAFETY: asking the device for the context it always has.
             let commands = unsafe { device.GetImmediateContext() }?;
-            let context = commands.cast::<ID3D11VideoContext>()?;
-            Ok(Self { video, context, commands, made: None })
+            Ok(Self { video, commands, made: None })
         }
 
-        /// Turns the picture in `sample`, of which `shown` pixels across
-        /// and down are to be seen, into pixels on the card, and returns
-        /// where they are. The stream is `fps` pictures a second.
+        /// Leaves the picture in `sample`, of which `shown` pixels across
+        /// and down are to be seen, on the card, and returns where the
+        /// window finds it. The stream is `fps` pictures a second.
+        ///
+        /// Nothing is waited for: the card copies the picture when it has
+        /// decoded it, and the decoder has its texture back.
         pub fn keep(
             &mut self,
             device: &ID3D11Device,
@@ -170,63 +237,46 @@ pub(crate) mod windows {
             let size = (u32::try_from(shown.0).unwrap_or(0), u32::try_from(shown.1).unwrap_or(0));
             // SAFETY: reading the sample the decoder just gave: its buffer
             // is a texture of the card's, one of an array of them.
-            let (source, slice) = unsafe {
+            let (source, slice, laid) = unsafe {
                 let buffer = sample.GetBufferByIndex(0)?.cast::<IMFDXGIBuffer>()?;
                 let mut texture = std::ptr::null_mut();
                 buffer.GetResource(&ID3D11Texture2D::IID, &mut texture)?;
-                (ID3D11Texture2D::from_raw(texture), buffer.GetSubresourceIndex()?)
+                let source = ID3D11Texture2D::from_raw(texture);
+                let mut laid = D3D11_TEXTURE2D_DESC::default();
+                source.GetDesc(&mut laid);
+                (source, buffer.GetSubresourceIndex()?, (laid.Width, laid.Height, laid.Format))
             };
-            if self.made.as_ref().is_none_or(|made| made.size != size) {
-                self.made = Some(self.make(device, size, fps)?);
+            if self.made.as_ref().is_none_or(|made| made.size != size || made.laid != laid) {
+                self.made = Some(self.make(device, size, laid, fps)?);
             }
             let Some(made) = &self.made else {
                 return Err(windows::core::Error::empty());
             };
-            let from = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
-                FourCC: 0,
-                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
-                Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
-                    Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: slice },
-                },
-            };
-            let mut input: Option<ID3D11VideoProcessorInputView> = None;
-            // SAFETY: a view of the decoder's texture, made by its device.
+            // SAFETY: the whole of one texture of the decoder's into one
+            // made as large, of the same kind, by the same device.
             unsafe {
-                self.video.CreateVideoProcessorInputView(
+                self.commands.CopySubresourceRegion(
+                    &made.shared.picture,
+                    0,
+                    0,
+                    0,
+                    0,
                     &source,
-                    &made.enumerator,
-                    &from,
-                    Some(&mut input),
-                )?;
+                    slice,
+                    None,
+                );
             }
-            let stream = D3D11_VIDEO_PROCESSOR_STREAM {
-                Enable: BOOL::from(true),
-                pInputSurface: ManuallyDrop::new(input),
-                ..Default::default()
-            };
-            let streams = [stream];
-            // The window does not draw from the texture meanwhile.
-            let turn = made.shared.turn();
-            // SAFETY: one stream in, into the view of the texture made for
-            // it. Sent to the card at once: the window draws it next.
-            let drawn = unsafe {
-                let drawn =
-                    self.context.VideoProcessorBlt(&made.processor, &made.target, 0, &streams);
-                self.commands.Flush();
-                drawn
-            };
-            drop(turn);
-            let [stream] = streams;
-            drop(ManuallyDrop::into_inner(stream.pInputSurface));
-            drawn?;
+            made.shared.copied.fetch_add(1, Ordering::Release);
             Ok(Kept { shared: Arc::clone(&made.shared) })
         }
 
-        /// The video processor and the texture for pictures of `size`.
+        /// The textures and the video processor for pictures of `size`,
+        /// decoded into textures `laid` out as the decoder's are.
         fn make(
             &self,
             device: &ID3D11Device,
             size: (u32, u32),
+            laid: (u32, u32, DXGI_FORMAT),
             fps: u32,
         ) -> windows::core::Result<Made> {
             let (width, height) = size;
@@ -241,10 +291,12 @@ pub(crate) mod windows {
                 OutputHeight: height,
                 Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
             };
+            let video = self.commands.cast::<ID3D11VideoContext>()?;
             // SAFETY: plain calls into the device, with what it just made.
             unsafe {
                 let enumerator = self.video.CreateVideoProcessorEnumerator(&content)?;
                 let processor = self.video.CreateVideoProcessor(&enumerator, 0)?;
+                let (picture, from) = self.copy(device, &enumerator, laid)?;
                 let format = pixels(&enumerator)?;
                 let wanted = D3D11_TEXTURE2D_DESC {
                     Width: width,
@@ -285,7 +337,7 @@ pub(crate) mod windows {
                     right: i32::try_from(width).unwrap_or(i32::MAX),
                     bottom: i32::try_from(height).unwrap_or(i32::MAX),
                 };
-                let context = &self.context;
+                let context = &video;
                 context.VideoProcessorSetStreamFrameFormat(
                     &processor,
                     0,
@@ -314,10 +366,85 @@ pub(crate) mod windows {
                     context.VideoProcessorSetOutputColorSpace(&processor, &PIXEL_COLOURS);
                 }
 
-                let shared =
-                    Arc::new(Shared { device: device.clone(), texture, turn: Mutex::new(()) });
-                Ok(Made { size, enumerator, processor, target, shared })
+                let shared = Arc::new(Shared {
+                    device: device.clone(),
+                    commands: self.commands.clone(),
+                    video,
+                    picture,
+                    copied: AtomicU64::new(0),
+                    processor,
+                    _enumerator: enumerator,
+                    from,
+                    onto: target,
+                    pixels: texture,
+                    turn: Mutex::new(()),
+                });
+                Ok(Made { size, laid, shared })
             }
+        }
+
+        /// The texture pictures are copied into, as large as the decoder's
+        /// and of their kind, and how the video processor reads it.
+        ///
+        /// # Safety
+        ///
+        /// Plain calls into the device the enumerator is of.
+        unsafe fn copy(
+            &self,
+            device: &ID3D11Device,
+            enumerator: &ID3D11VideoProcessorEnumerator,
+            laid: (u32, u32, DXGI_FORMAT),
+        ) -> windows::core::Result<(ID3D11Texture2D, ID3D11VideoProcessorInputView)> {
+            let read = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                FourCC: 0,
+                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 },
+                },
+            };
+            let mut refused = windows::core::Error::empty();
+            for asked in COPIES {
+                let wanted = D3D11_TEXTURE2D_DESC {
+                    Width: laid.0,
+                    Height: laid.1,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: laid.2,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: asked,
+                    CPUAccessFlags: 0,
+                    MiscFlags: 0,
+                };
+                // SAFETY: as the caller promises, with what was just made.
+                let made = unsafe {
+                    let mut texture = None;
+                    device.CreateTexture2D(&wanted, None, Some(&mut texture)).and_then(|()| {
+                        let texture = texture.ok_or_else(windows::core::Error::empty)?;
+                        let mut from = None;
+                        self.video.CreateVideoProcessorInputView(
+                            &texture,
+                            enumerator,
+                            &read,
+                            Some(&mut from),
+                        )?;
+                        Ok((texture, from.ok_or_else(windows::core::Error::empty)?))
+                    })
+                };
+                match made {
+                    Ok(made) => {
+                        log::debug!(
+                            "pictures are copied on the graphics card into a texture of {} by \
+                             {}, asked for as {asked:#x}",
+                            laid.0,
+                            laid.1
+                        );
+                        return Ok(made);
+                    }
+                    Err(error) => refused = error,
+                }
+            }
+            Err(refused)
         }
     }
 
@@ -461,6 +588,9 @@ pub(crate) mod windows {
         shared: Arc<Shared>,
         /// How the texture is read was said, at the first drawing.
         told: bool,
+        /// Which picture the pixels are of: how many had been left on the
+        /// card when they were made.
+        taken: Option<u64>,
     }
 
     // SAFETY: the handles are the driver's names for things, used with the
@@ -495,7 +625,7 @@ pub(crate) mod windows {
                 };
                 let object = (sharing.register)(
                     device,
-                    shared.texture.as_raw(),
+                    shared.pixels.as_raw(),
                     texture.0.get(),
                     glow::TEXTURE_2D,
                     READ_ONLY,
@@ -506,13 +636,27 @@ pub(crate) mod windows {
                     let _ = (sharing.close)(device);
                     return Err(format!("OpenGL did not take the texture: {why:?}"));
                 }
-                Ok(Self { sharing, device, object, texture, shared, told: false })
+                Ok(Self { sharing, device, object, texture, shared, told: false, taken: None })
             }
         }
 
         /// Whether this is the texture `kept` is on.
         pub fn shows(&self, kept: &Kept) -> bool {
             Arc::ptr_eq(&self.shared, &kept.shared)
+        }
+
+        /// Has the card make the pixels of the latest picture the decoder
+        /// left on it, unless they are that picture's already. They are
+        /// what [`Self::draw`] draws from.
+        pub fn take(&mut self) -> Result<(), String> {
+            let copied = self.shared.copied.load(Ordering::Acquire);
+            if self.taken != Some(copied) {
+                self.shared.make_pixels().map_err(|error| {
+                    format!("the card made no pixels of the picture: {}", error.message())
+                })?;
+                self.taken = Some(copied);
+            }
+            Ok(())
         }
 
         /// Lets `draw` draw from the texture, which holds the latest
