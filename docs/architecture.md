@@ -115,14 +115,16 @@ apps screen then offers to resume it or to close it.
 A stream is made for the screen it is shown on. When the person picks an
 app, the window says what its screen is like (`window::screen`): its pixels
 and its pace as Windows reports them (`leto_system::display`), elsewhere as
-egui does at 60 pictures per second, and how large the system draws text.
-The request carries it (`Request::Play::screen`), and the engine asks for a
+egui does at 60 pictures per second. The request carries it (`Request::Play::screen`), and the engine asks for a
 stream of that size and pace (`StreamSettings::for_screen`), within what
 H.264 carries, with a bit rate that grows with the pixels from Moonlight's
 20 Mbit/s for Full HD at 60. It also asks the PC for a screen of its own in
-that mode and text size (`virtualDisplay` and `scaleFactor`), which Apollo
-makes for the stream. A screen the owner set for the device on Apollo's side
-wins. Sunshine ignores the question and shows its own screen. A browser says
+that mode (`virtualDisplay`), which Apollo makes for the stream. It never
+sends Apollo's `scaleFactor`: that is not the size of text but a factor on
+the screen's size, so 125 for a laptop that draws text at 125 % made a
+2400 × 1500 screen and stream for a 1920 × 1200 one. How large text is on
+the PC's new screen is the PC's setting, which Windows keeps for that screen.
+A screen the owner set for the device on Apollo's side wins. Sunshine ignores the question and shows its own screen. A browser says
 its screen's size but not its pace: it gets 60, lying down.
 
 Those are the defaults, and the settings change them, after Moonlight's

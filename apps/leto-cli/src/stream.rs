@@ -550,7 +550,7 @@ mod tests {
             height: 180,
             fps: 30,
             bitrate_kbps: 2000,
-            virtual_display: None,
+            virtual_display: false,
             optimize_games: true,
             sound_on_pc: false,
             codecs: Codecs::of(Codec::H264),
