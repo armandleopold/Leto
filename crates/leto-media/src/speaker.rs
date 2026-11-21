@@ -1,4 +1,5 @@
-//! The speakers: the system's default sound output.
+//! The speakers: the sound output the person chose, or the system's default
+//! one.
 
 use std::{
     sync::{
@@ -11,20 +12,23 @@ use std::{
 use cpal::{
     BufferSize, ErrorKind, FromSample, SampleFormat, SizedSample, StreamConfig,
     SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
-    traits::{DeviceTrait, HostTrait, StreamTrait},
+    traits::{DeviceTrait, StreamTrait},
 };
 
-use crate::{Error, queue::Queue};
+use crate::{Error, endpoints, queue::Queue};
 
 /// How long to wait before trying again to open speakers that failed.
 const RETRY_EVERY: Duration = Duration::from_secs(2);
 
-/// Plays stereo sound on the system's default output.
+/// Plays stereo sound on the output the person chose, or the system's
+/// default one.
 ///
 /// Follows the system when the default output changes, and opens the output
 /// again when it was lost, for example when headphones were unplugged.
 pub struct Speaker {
     sample_rate: u32,
+    /// The output asked for, by its name. `None`: the default one.
+    name: Option<String>,
     output: Option<Output>,
     last_try: Instant,
 }
@@ -39,10 +43,18 @@ struct Output {
 }
 
 impl Speaker {
-    /// Opens the default output for stereo sound at `sample_rate`.
-    pub fn open(sample_rate: u32) -> Result<Self, Error> {
-        let output = Output::open(sample_rate)?;
-        Ok(Self { sample_rate, output: Some(output), last_try: Instant::now() })
+    /// Opens the output named `name`, or the default one, for stereo sound
+    /// at `sample_rate`.
+    pub fn open(sample_rate: u32, name: Option<&str>) -> Result<Self, Error> {
+        let output = Output::open(sample_rate, name)?;
+        let name = name.map(str::to_owned);
+        Ok(Self { sample_rate, name, output: Some(output), last_try: Instant::now() })
+    }
+
+    /// Whether the output stopped playing, and none has taken its place
+    /// yet. [`Speaker::play`] looks for another every now and then.
+    pub fn is_lost(&self) -> bool {
+        self.output.as_ref().is_none_or(|output| output.lost.load(Ordering::Relaxed))
     }
 
     /// Plays stereo samples (left, right, left, right…) after the ones
@@ -54,7 +66,7 @@ impl Speaker {
         }
         if self.output.is_none() && self.last_try.elapsed() >= RETRY_EVERY {
             self.last_try = Instant::now();
-            match Output::open(self.sample_rate) {
+            match Output::open(self.sample_rate, self.name.as_deref()) {
                 Ok(output) => self.output = Some(output),
                 Err(error) => log::debug!("still no sound output: {error}"),
             }
@@ -66,10 +78,8 @@ impl Speaker {
 }
 
 impl Output {
-    fn open(sample_rate: u32) -> Result<Self, Error> {
-        let device = cpal::default_host()
-            .default_output_device()
-            .ok_or_else(|| Error::Speaker("this device has no sound output".to_owned()))?;
+    fn open(sample_rate: u32, name: Option<&str>) -> Result<Self, Error> {
+        let device = endpoints::output(name)?;
         let offered = device.supported_output_configs().map_err(speaker_error)?;
         let chosen = choose(offered, sample_rate).ok_or_else(|| {
             Error::Speaker(format!("the sound output cannot play at {sample_rate} Hz"))

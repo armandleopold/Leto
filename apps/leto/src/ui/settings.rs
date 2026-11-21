@@ -57,11 +57,12 @@ pub fn show(
             picture_and_sound(ui, settings, native);
             hands_and_more(ui, settings, decodable);
             ui.add_space(4.0);
-            let changed = *settings != Settings::default();
+            let defaults = settings.defaults();
+            let changed = *settings != defaults;
             let reset =
                 ui.add_enabled_ui(changed, |ui| widgets::quiet_button(ui, "Restore the defaults"));
             if reset.inner.clicked() {
-                *settings = Settings::default();
+                *settings = defaults;
             }
         },
     );

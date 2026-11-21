@@ -1,6 +1,6 @@
 //! The app's single window: a top bar and one screen at a time.
 
-use egui::{Align, Id, Layout, Rect, RichText, Sense, UiBuilder, Vec2};
+use egui::{Align, Id, Layout, Rect, RichText, Sense, UiBuilder, Vec2, pos2};
 use leto_core::{brand, platform::Platform};
 
 use crate::{
@@ -34,6 +34,8 @@ pub struct LetoApp {
     gate: gate::Form,
     /// The backend took requests in the last frame.
     was_open: bool,
+    /// The page that chooses the devices was on screen in the last frame.
+    was_choosing: bool,
     /// What the person chose, and what of it is kept already.
     settings: Settings,
     saved: Settings,
@@ -56,8 +58,9 @@ impl LetoApp {
             preview: Preview::default(),
             gate: gate::Form::default(),
             was_open: false,
+            was_choosing: false,
+            saved: settings.clone(),
             settings,
-            saved: settings,
             settings_open: false,
         }
     }
@@ -140,6 +143,15 @@ impl eframe::App for LetoApp {
             self.state.tick(now);
         }
 
+        // The devices chosen are used from the next moment, and the page
+        // that chooses them starts with the ones there are now.
+        self.backend.choose_devices(&self.settings.devices);
+        let choosing = matches!((&door, &self.state.screen), (Door::Open, Screen::Devices(_)));
+        if choosing && !self.was_choosing {
+            self.backend.look_for_devices();
+        }
+        self.was_choosing = choosing;
+
         // The camera and the microphone are tried out on one screen, and
         // are off everywhere else, the settings over it included.
         let tried = match (&door, &self.state.screen) {
@@ -220,9 +232,7 @@ impl eframe::App for LetoApp {
                 self.backend.place_picture(None);
                 let ground = egui::Frame::new().fill(theme::GROUND);
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
-                    if top_bar(ui, self.settings_open) {
-                        self.settings_open = !self.settings_open;
-                    }
+                    top_bar(ui);
                     // Escape closes the settings, as their back button does.
                     let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
                     if self.settings_open && escape {
@@ -252,20 +262,36 @@ impl eframe::App for LetoApp {
                                 }
                             }
                             (Door::Open, Screen::Pcs) => {
-                                ui::pcs::show(ui, &mut self.state, now);
+                                if ui::pcs::show(ui, &mut self.state, now) {
+                                    self.settings_open = true;
+                                }
                                 ui.add_space(24.0);
                                 ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
                             }
                             (Door::Open, Screen::Devices(devices)) => {
+                                let (names, chime) =
+                                    (self.backend.device_names(), self.backend.chime());
+                                let choices = ui::devices::Choices {
+                                    chosen: &mut self.settings.devices,
+                                    names: names.as_ref(),
+                                    chime: &chime,
+                                };
                                 let preview = &self.preview;
-                                ui::devices::show(
+                                let asked = ui::devices::show(
                                     ui,
                                     &mut self.state,
                                     &devices,
                                     preview,
                                     heard,
+                                    choices,
                                     now,
                                 );
+                                if asked.look_for_devices {
+                                    self.backend.look_for_devices();
+                                }
+                                if asked.test_sound {
+                                    self.backend.test_sound();
+                                }
                             }
                             (Door::Open, Screen::Pairing(pairing)) => {
                                 ui::pairing::show(ui, &mut self.state, &pairing, now);
@@ -313,8 +339,8 @@ impl eframe::App for LetoApp {
         self.backend.swap_gamepad_buttons(self.settings.swap_gamepad_buttons);
         if self.settings != self.saved {
             // A change is kept at once: a crash loses none.
-            self.saved = self.settings;
-            settings::save(self.settings);
+            self.saved = self.settings.clone();
+            settings::save(self.settings.clone());
         }
         if open && self.state.screen == Screen::Pcs {
             // Wake up for the next search even if nobody touches the app.
@@ -323,48 +349,48 @@ impl eframe::App for LetoApp {
     }
 }
 
-/// The bar at the top: the logo, and the settings on the right. Where Leto
-/// draws the window's frame, the bar moves the window, and the buttons that
-/// minimize, maximize and close it sit in its top right corner. Returns
-/// whether the person asked to open the settings, or to close them.
-fn top_bar(ui: &mut egui::Ui, settings_open: bool) -> bool {
-    let size = egui::vec2(ui.available_width(), 60.0);
-    let margin = if size.x < 560.0 { 16.0 } else { 32.0 };
-    let bar = Rect::from_min_size(ui.cursor().min, size);
+/// The bar at the top: the logo and nothing else. Where Leto draws the
+/// window's frame, the bar moves the window, and the buttons that minimize,
+/// maximize and close it sit in its top right corner.
+fn top_bar(ui: &mut egui::Ui) {
+    let width = ui.available_width();
+    // The logo is as far from the top of the window as from its left side,
+    // where the pages under it start too.
+    let margin = if width < 560.0 { 16.0 } else { 32.0 };
+    let bar = Rect::from_min_size(ui.cursor().min, egui::vec2(width, margin + LOGO.y + 16.0));
     frame::drag_by(ui, bar, Id::unique("top-bar"));
+    let buttons_width = 3.0 * frame::BUTTON_WIDTH;
     if frame::OWN {
-        // As high as the bar, in its corner, where the pointer stops.
-        let corner = Rect::from_min_max(
-            bar.right_top() - egui::vec2(3.0 * frame::BUTTON_WIDTH, 0.0),
-            bar.max,
+        // In the corner, where the pointer stops, as Windows puts them.
+        let corner = Rect::from_min_size(
+            bar.right_top() - egui::vec2(buttons_width, 0.0),
+            egui::vec2(buttons_width, frame::BUTTON_HEIGHT),
         );
         let layout = Layout::right_to_left(Align::Min);
         // Taking no room from the bar, which goes under them.
         let mut buttons = ui.new_child(UiBuilder::new().max_rect(corner).layout(layout));
-        frame::buttons(&mut buttons, egui::vec2(frame::BUTTON_WIDTH, size.y), 0);
+        frame::buttons(&mut buttons, egui::vec2(frame::BUTTON_WIDTH, frame::BUTTON_HEIGHT), 0);
     }
-    ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
-        ui.add_space(margin);
-        ui.add(
-            egui::Image::new(egui::include_image!("../../../assets/brand/png/leto-logo.png"))
-                .fit_to_exact_size(LOGO),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // Beside the buttons of the frame, where there are some.
-            ui.add_space(if frame::OWN { 3.0 * frame::BUTTON_WIDTH + 8.0 } else { margin - 8.0 });
-            let name = if settings_open { "Close the settings" } else { "Settings" };
-            widgets::icon_button(ui, icons::gear, name).clicked()
-        })
-        .inner
-    })
-    .inner
+    // The line the logo sits on.
+    let line = Rect::from_center_size(
+        pos2(bar.center().x, bar.top() + margin + LOGO.y / 2.0),
+        egui::vec2(width, 36.0),
+    );
+    let mut line_ui =
+        ui.new_child(UiBuilder::new().max_rect(line).layout(Layout::left_to_right(Align::Center)));
+    line_ui.add_space(margin);
+    line_ui.add(
+        egui::Image::new(egui::include_image!("../../../assets/brand/png/leto-logo.png"))
+            .fit_to_exact_size(LOGO),
+    );
+    ui.advance_cursor_after_rect(bar);
 }
 
 /// The name of the screen under the settings, for their back button.
 fn back_to(screen: &Screen) -> &str {
     match screen {
         Screen::Pcs => "PCs",
-        Screen::Devices(_) => "Camera and microphone",
+        Screen::Devices(_) => ui::devices::NAME,
         Screen::Pairing(_) => "Pairing",
         Screen::Apps(view) => &view.host.name,
         Screen::Stream(_) => "Stream",
