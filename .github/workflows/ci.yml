@@ -73,6 +73,10 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # macOS has one local address, 127.0.0.1. A test with both ends of a
+      # WireGuard tunnel on one machine needs another for the tunnel's door.
+      - name: Add local addresses for the doors of a tunnel
+        run: for n in 1 2 3 4; do sudo ifconfig lo0 alias 127.77.0.$n; done
       - name: Tests
         run: cargo xtask test
 

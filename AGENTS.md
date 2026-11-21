@@ -112,6 +112,11 @@ each, and say how to install it when it is missing:
   as the C and C++ compiler for the TLS code and the H.264 codec. Without zig
   that part is skipped on your machine. The pipeline always runs it.
 
+On macOS one test needs a local address the system does not have until it is
+added, and says so when it is missing: `sudo ifconfig lo0 alias 127.77.0.1`.
+It is the test of a PC behind WireGuard, with both ends of the tunnel on one
+machine. The pipeline adds the address before it runs the tests.
+
 The Windows build is not part of `targets`: the Windows job of the pipeline
 builds and tests it for real.
 
