@@ -172,6 +172,20 @@ where
                     }
                     continue;
                 }
+                // Leto: a packet sent earlier met a closed port, and the
+                // system tells it on the next read: Windows as a reset
+                // connection, others as a refused one. Nothing is wrong with
+                // this socket. moonlight-common-c reads on as well, see
+                // `recvUdpSocket` in its PlatformSockets.c.
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    debug!(error = %err, "a packet sent earlier was refused");
+                    continue;
+                }
                 Err(err) => return Err(err.into()),
             };
 

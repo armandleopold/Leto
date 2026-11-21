@@ -918,11 +918,8 @@ fn serve_audio(inner: &Inner, negotiated: Negotiated) {
     let encrypted = negotiated.encryption & ENCRYPT_AUDIO != 0;
     let mut payloader = AudioPayloader::new(
         AudioPayloaderConfig {
-            // A real host always adds recovery packets. moonlight-common's
-            // payloader sizes them wrongly for encrypted sound (at commit
-            // 5a3aa1f) and panics, so they are left out in that case. A
-            // client only needs them when packets are lost.
-            fec: !encrypted,
+            // A real host always adds recovery packets, encrypted or not.
+            fec: true,
             frame_len: frame_bytes,
             encryption: encrypted.then_some((inner.launch.key, inner.launch.key_id)),
         },

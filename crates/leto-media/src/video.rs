@@ -5,6 +5,8 @@
 //! graphics card when it can: that is what makes those codecs worth having,
 //! as the processor alone is too slow for them at the sizes of a stream.
 
+use std::time::{Duration, Instant};
+
 use leto_core::engine::{Codec, Decodable};
 use openh264::{
     OpenH264API,
@@ -12,7 +14,7 @@ use openh264::{
     formats::YUVSource,
 };
 
-use crate::Error;
+use crate::{Error, Planes};
 
 // Media Foundation and Direct3D are reached through their C interfaces.
 #[cfg(windows)]
@@ -52,6 +54,8 @@ pub struct VideoDecoder {
     by: By,
     /// Pictures in a row that did not decode.
     failures: u32,
+    /// A picture on its way to pixels.
+    planes: Planes,
 }
 
 /// Who decodes.
@@ -64,7 +68,7 @@ enum By {
 impl VideoDecoder {
     /// An H.264 decoder on the processor, which works everywhere.
     pub fn new() -> Result<Self, Error> {
-        Ok(Self { codec: Codec::H264, by: By::OpenH264(Software::new()?), failures: 0 })
+        Ok(Self::by(Codec::H264, By::OpenH264(Software::new()?)))
     }
 
     /// A decoder for a stream in `codec`, `width` by `height` at `fps`. On
@@ -120,7 +124,7 @@ impl VideoDecoder {
             return Err(None);
         }
         let decoder = windows::Decoder::new(codec, width, height, fps, hardware).map_err(Some)?;
-        Ok(Self { codec, by: By::Windows(decoder), failures: 0 })
+        Ok(Self::by(codec, By::Windows(decoder)))
     }
 
     #[cfg(not(windows))]
@@ -134,8 +138,24 @@ impl VideoDecoder {
         Err(None)
     }
 
+    fn by(codec: Codec, by: By) -> Self {
+        Self { codec, by, failures: 0, planes: Planes::default() }
+    }
+
     pub const fn codec(&self) -> Codec {
         self.codec
+    }
+
+    /// How long the last picture decoded into planes spent getting out of
+    /// the decoder: copied from the graphics card, for one decoded there,
+    /// waiting for the card to finish it included. Nothing for a picture
+    /// decoded unseen.
+    pub fn copying(&self) -> Duration {
+        match &self.by {
+            By::OpenH264(decoder) => decoder.copying,
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.copying(),
+        }
     }
 
     /// The pictures are decoded on the graphics card.
@@ -148,20 +168,35 @@ impl VideoDecoder {
     }
 
     /// Decodes one picture (an access unit, with start codes for H.264 and
-    /// H.265) into `picture`, reusing its memory.
+    /// H.265) into `planes`, reusing their memory, as the decoder gives it:
+    /// for a graphics card to turn into pixels as it draws it.
     ///
     /// Returns `false` when the data held no picture to show. After an error
     /// the following pictures are unreliable until a keyframe arrives.
+    pub fn decode_planes(&mut self, data: &[u8], planes: &mut Planes) -> Result<bool, Error> {
+        let decoded = match &mut self.by {
+            By::OpenH264(decoder) => decoder.decode(data, Some(planes)),
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.decode(data, Some(planes)),
+        };
+        self.count(decoded)
+    }
+
+    /// Decodes one picture into `picture`, reusing its memory, as
+    /// [`Self::decode_planes`] does, then turns it into pixels here.
     ///
     /// Colours are converted as BT.601 in limited range, which is what Leto
     /// asks hosts to send.
     pub fn decode(&mut self, data: &[u8], picture: &mut Picture) -> Result<bool, Error> {
-        let decoded = match &mut self.by {
-            By::OpenH264(decoder) => decoder.decode(data, Some(picture)),
-            #[cfg(windows)]
-            By::Windows(decoder) => decoder.decode(data, Some(picture)),
+        let mut planes = std::mem::take(&mut self.planes);
+        let decoded = self.decode_planes(data, &mut planes);
+        let shown = match decoded {
+            Ok(true) if planes.to_rgba(picture) => Ok(true),
+            Ok(true) => Err(Error::Video("a decoded picture is smaller than it says".into())),
+            other => other,
         };
-        self.count(decoded)
+        self.planes = planes;
+        shown
     }
 
     /// Decodes one picture without turning it into pixels: for a picture
@@ -202,6 +237,8 @@ impl VideoDecoder {
 /// H.264 by OpenH264, on the processor.
 struct Software {
     decoder: Decoder,
+    /// How long the last picture took to copy out.
+    copying: Duration,
 }
 
 impl Software {
@@ -212,18 +249,25 @@ impl Software {
         let config = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
         let decoder = Decoder::with_api_config(OpenH264API::from_source(), config)
             .map_err(|error| Error::Video(error.to_string()))?;
-        Ok(Self { decoder })
+        Ok(Self { decoder, copying: Duration::ZERO })
     }
 
-    fn decode(&mut self, data: &[u8], picture: Option<&mut Picture>) -> Result<bool, Error> {
+    fn decode(&mut self, data: &[u8], planes: Option<&mut Planes>) -> Result<bool, Error> {
+        self.copying = Duration::ZERO;
         let decoded = self.decoder.decode(data).map_err(|error| Error::Video(error.to_string()))?;
         let Some(decoded) = decoded else { return Ok(false) };
-        if let Some(picture) = picture {
-            let (width, height) = decoded.dimensions();
-            picture.width = width;
-            picture.height = height;
-            picture.rgba.resize(width * height * 4, 0);
-            decoded.write_rgba8(&mut picture.rgba);
+        if let Some(planes) = planes {
+            let start = Instant::now();
+            let (luma, blue, red) = decoded.strides();
+            let copied = planes.copy_i420(
+                decoded.dimensions(),
+                [decoded.y(), decoded.u(), decoded.v()],
+                [luma, blue, red],
+            );
+            if !copied {
+                return Err(Error::Video("a decoded picture is smaller than it says".into()));
+            }
+            self.copying = start.elapsed();
         }
         Ok(true)
     }

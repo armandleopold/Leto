@@ -400,6 +400,11 @@ impl Inner {
                                     started = true;
                                 }
 
+                                // Leto: the decoder learns how many pictures
+                                // wait behind this one.
+                                let waiting =
+                                    self.streams.video.stream(|stream| stream.frames_waiting());
+                                video_decoder.frames_waiting(waiting);
                                 video_decoder.submit_decode_unit(frame.as_ref().into_decode_unit());
                             }
                             VideoStreamEvent::SignalIdr => {

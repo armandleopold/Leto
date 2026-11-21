@@ -98,6 +98,10 @@ pub struct StreamView {
     pub attempt: u64,
     /// The stream is connected. Before that, the PC is starting the app.
     pub connected: bool,
+    /// The stream lost its PC, and Leto is getting it back. It stays
+    /// connected meanwhile: the last picture, the keys and the full screen
+    /// stay as they were.
+    pub reconnecting: bool,
     /// What the PC lets this device play with, known once connected.
     pub input: InputAllowed,
     pub microphone: Mic,
@@ -324,6 +328,7 @@ impl State {
             app: app.clone(),
             attempt: self.attempts,
             connected: false,
+            reconnecting: false,
             input: InputAllowed::ALL,
             // Off at the start of every stream: a PC hears and sees this
             // device only once the person says so.
@@ -592,17 +597,36 @@ impl State {
                 if let Screen::Stream(view) = &mut self.screen
                     && view.attempt == attempt
                 {
+                    // A stream that comes back keeps the microphone the
+                    // person turned on.
+                    let back = std::mem::take(&mut view.reconnecting);
                     view.connected = true;
                     view.input = input;
-                    view.microphone = if microphone { Mic::Off } else { Mic::NotTaken };
+                    view.microphone = match &view.microphone {
+                        Mic::On if back && microphone => Mic::On,
+                        _ if microphone => Mic::Off,
+                        _ => Mic::NotTaken,
+                    };
+                }
+            }
+            Event::Reconnecting { attempt } => {
+                if let Screen::Stream(view) = &mut self.screen
+                    && view.attempt == attempt
+                {
+                    view.reconnecting = true;
                 }
             }
             Event::Camera { attempt, offer } => {
                 if let Screen::Stream(view) = &mut self.screen
                     && view.attempt == attempt
-                    && view.camera == Cam::Unknown
                 {
-                    view.camera = if offer.is_some() { Cam::Off } else { Cam::NotTaken };
+                    // A stream that came back keeps the camera as the person
+                    // left it, when the PC still takes one.
+                    match (offer, &view.camera) {
+                        (None, _) => view.camera = Cam::NotTaken,
+                        (Some(_), Cam::Unknown | Cam::NotTaken) => view.camera = Cam::Off,
+                        (Some(_), Cam::Off | Cam::On | Cam::Failed(_)) => {}
+                    }
                 }
             }
             Event::PlayFailed { attempt, message } => {
@@ -1108,6 +1132,40 @@ mod tests {
         assert_eq!(state.take_requests(), [Request::Leave, Request::Apps(salon.id)]);
         let Screen::Apps(view) = &state.screen else { panic!("{:?}", state.screen) };
         assert_eq!(view.notice, None);
+    }
+
+    #[test]
+    fn a_stream_that_lost_its_pc_stays_on_screen_until_it_is_back() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"), None, Choices::default());
+        state.apply(playing(1, true), 3.0);
+        state.apply(camera_news(1, true), 3.1);
+        state.switch_microphone();
+        state.switch_camera();
+        state.take_requests();
+
+        state.apply(Event::Reconnecting { attempt: 1 }, 20.0);
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(view.connected && view.reconnecting);
+        assert_eq!(state.take_requests(), []);
+        // News of a stream left earlier changes nothing.
+        state.apply(Event::Reconnecting { attempt: 9 }, 21.0);
+
+        // Back: the microphone and the camera the person turned on stay on.
+        state.apply(playing(1, true), 30.0);
+        state.apply(camera_news(1, true), 30.1);
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(view.connected && !view.reconnecting);
+        assert_eq!(view.microphone, Mic::On);
+        assert_eq!(view.camera, Cam::On);
+
+        // Unless the PC that is back takes none.
+        state.apply(Event::Reconnecting { attempt: 1 }, 40.0);
+        state.apply(playing(1, false), 41.0);
+        state.apply(camera_news(1, false), 41.1);
+        assert_eq!(microphone(&state), &Mic::NotTaken);
+        assert_eq!(camera(&state), &Cam::NotTaken);
     }
 
     #[test]

@@ -87,6 +87,19 @@ It is made of three parts that do not reach into each other:
 - `ui/` draws the screens from the state and tells the state what the person
   did.
 
+On Windows the window has no title bar of the system's: Leto's own top bar
+takes its place (`ui/frame.rs`). Dragged, it moves the window, with the
+system's snapping to the sides; double-clicked, it maximizes the window or
+gives the screen back. Its top right corner holds the buttons that minimize,
+maximize and close it, as tall as the bar, and the window's edges resize it.
+egui gives such a window the system's shadow. A stream in a window, rather
+than full screen, has the same three buttons at the end of its bar, which
+moves the window too; its edges are the PC's, for the mouse. `leto.exe`
+carries the app's icon and name as Windows resources, made by
+`apps/leto/build.rs` from `assets/brand/windows/leto.ico`: Explorer, its
+search and the Task Manager show them before the app runs. Elsewhere the
+system draws the frame.
+
 ## A stream
 
 What a shell asks of the engine and what it hears back are the same for all
@@ -104,13 +117,35 @@ crates that know nothing of each other:
    that stream. What arrives is handed over still encoded, to a `VideoSink`
    and an `AudioSink`, on threads that belong to the stream.
 2. The app's backend gives it two sinks built on `leto-media`. The video sink
-   decodes each picture and keeps only the latest one for the window. The
-   audio sink decodes each packet and queues it for the speakers.
+   decodes each picture and keeps only the latest one for the window. A
+   picture that newer ones already wait behind is decoded, since they build
+   on it, but not copied out of the decoder: the engine tells the sink how
+   many wait (a `Leto:` change in the vendored `moonlight-common`, as
+   moonlight-common-c's `LiGetPendingVideoFrames`). A decoder slower than
+   the stream, as at 144 pictures a second in 3840 × 1080, then skips
+   pictures instead of falling further and further behind, which the mouse
+   pointer shows first; one still goes through every 100 ms. The audio sink
+   decodes each packet and queues it for the speakers.
 3. The window picks the latest picture up when it redraws and shows it as
    large as fits, undistorted.
 
 Leaving a stream keeps the app running on the PC, like closing Moonlight. The
 apps screen then offers to resume it or to close it.
+
+A stream that loses its PC while the person watches it is not left. The engine
+says so (`Event::Reconnecting`) and asks the PC for the stream again, after 1,
+2 and 3 seconds and then every 5, until it plays, the person leaves it, or the
+PC answers in a way that asking again will not change (`Event::PlayFailed`).
+A PC that does not answer, or answers as one still busy with the stream it
+lost, is asked again (`service.rs`, `passing`). The window keeps the last
+picture and puts "Connection lost. Reconnecting…" over it, from the moment
+the engine says so or once three seconds pass without a new picture,
+whichever comes first: a PC that goes silent can take the connection ten
+seconds or more to notice. The camera sent to the PC stops with the stream
+and starts again when it is back. The stand-in host's `drop` breaks a stream
+and `busy` makes it refuse new ones, which is how the tests lose a PC. A
+browser that loses its bridge still ends the stream: only the bridge asks a
+PC again.
 
 A stream is made for the screen it is shown on. When the person picks an
 app, the window says what its screen is like (`window::screen`): its pixels
@@ -128,7 +163,7 @@ A screen the owner set for the device on Apollo's side wins. Sunshine ignores th
 its screen's size but not its pace: it gets 60, lying down.
 
 Those are the defaults, and the settings change them, after Moonlight's
-(`settings.rs`, drawn by `ui/settings.rs` behind the cog at the top right).
+(`settings.rs`, drawn by `ui/settings.rs` behind the cog on the list of PCs).
 The person may choose the stream's size and pace instead of the screen's, its
 bit rate (from 0.5 to 150 Mbit/s, as in Moonlight), no screen of its own on
 the PC, the PC's speakers playing too, no optimized game settings, the app
@@ -148,14 +183,16 @@ shortcuts, which it does not let a page have.
 
 The window fills the screen as the stream connects, and gives it back when
 the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
-Moonlight: what the PC sends, what arrives, what is lost, decoded and shown
-per second, how long a picture takes to decode and to make on the PC, and the
-time to the PC and back (`stats.rs`, counted by the backend).
+Moonlight: what the PC sends, what arrives, what is lost, decoded, skipped to
+keep up and shown per second, how long a picture takes to decode, how much of
+that goes to copying it out of the decoder (from the graphics card, waiting
+for the card included), how long the PC takes to make it, and the time to the
+PC and back (`stats.rs`, counted by the backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones
-build on it, but turns only one a second into pixels, which is most of the
-work; the window then draws once a second. While the window is out of sight
+build on it, but hands only one a second on to be drawn, which is most of
+the work; the window then draws once a second. While the window is out of sight
 nothing is decoded, and the PC is asked for a keyframe when it is back. What
 the PC sends stays the same: the protocol has no way to slow a PC down during
 a stream, and Moonlight does not either (it can mute the sound when it loses
@@ -183,8 +220,22 @@ What this first version does, and what it leaves for later:
   Store's video extensions bring H.265 and AV1. What this device decodes is
   found once, in the background as Leto starts: each decoder is started at
   1280 × 720, and the card has to name the codec among its decoder profiles to
-  count as decoding it. The decoded picture comes back from the card in NV12
-  and is turned into RGB on the processor (`convert.rs`).
+  count as decoding it. The decoded picture comes back from the card in NV12,
+  as planes of brightness and colour.
+- Decoded pictures stay in planes (`leto_media::Planes`), from Windows'
+  decoders and OpenH264 alike, and go back to the graphics card as they are
+  when the window draws: `leto_media::Card` puts them in two textures and a
+  small program on the card turns them into pixels, BT.601 in limited range
+  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). That
+  is less than half the bytes of the pixels, and the processor no longer
+  spends 6 ms a picture at 1920 × 1200 making pixels. It needs OpenGL 3.1 or
+  OpenGL ES 3: where the card offers less, or turns the program down, the
+  processor makes the pixels as before. With V-Sync on, each drawing first
+  waits until the card is done with the one before (`glFinish`), so that a
+  picture never waits behind others to reach the screen: the driver would
+  otherwise queue two or three, each a refresh later. The picture still goes
+  from the card to memory and back: drawing it from where the decoder left
+  it would need Direct3D and OpenGL to share it.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.
@@ -202,7 +253,10 @@ What this first version does, and what it leaves for later:
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
-  drifts behind the picture.
+  drifts behind the picture. A PC sends sound all the time, silence included,
+  so a stream that has had none for five seconds, or whose first second of
+  sound did not decode, shows "No sound" in its bar and says why in the log,
+  as speakers that did not open do.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
@@ -248,16 +302,39 @@ passes them on.
   so while a stream has the keyboard `leto-system` listens to the keyboard
   ahead of Windows with a low-level hook, and keeps every key from going
   further while Leto's window is in front. Windows waits for the hook's
-  answer only so long, then hands the key on anyway, so the hook has a
-  thread of its own at a high priority and only decides: another thread
-  tells the window. Windows asks the hook set last first, so Leto sets it
-  each time its window comes in front, and again when a key gets past it to
-  the window; the log then counts the keys and how long they waited, never
-  which. Keys are
-  named by their scan code, the numeric keypad included. A key goes back to
-  whoever got it go down, so nothing stays held on either side, and the Ctrl
-  that AltGr makes up is dropped: the PC makes up its own. Ctrl+Alt+Del and
-  Windows+L stay with Windows, which no program can take. Leto's own
+  answer only so long, then hands the key on anyway and removes the hook
+  without a word, so the hook has a thread of its own at a high priority,
+  only decides and waits for no other thread: another thread tells the
+  window. Windows asks the hook set last first, so Leto sets it each time
+  its window comes in front, again when a key gets past it to the window or
+  reaches it late, and every second besides. The new one is set first, and
+  the old one goes half a second later, since Windows may be handing it a
+  key at that moment. On some computers Windows never calls the hook at all, security
+  software perhaps seeing to it: the keys then reach Leto's window, which
+  takes each from its messages for the stream before acting on it, so that
+  Alt+F4 does not close Leto, and Windows is asked to leave aside the
+  shortcuts programs registered (`RIDEV_NOHOTKEYS`), which it does for a
+  program that reads the keyboard itself: the Start menu is Explorer's, as
+  are Windows+E, Windows+D and the rest. Alt+Tab and Alt+Esc never reach a
+  window: Windows sees them as the Tab or Esc goes down with Alt held. So
+  each time an Alt reaches the window for the stream, Leto tells Windows
+  that it came up again, with a key of its own making (`SendInput`, marked
+  as Leto's): the stream still holds Alt, Windows sees a plain Tab, and the
+  window gets it for the PC. That Alt coming up reaches the window too,
+  where its mark has it dropped, and the low-level hook lets it go its way.
+  Held down, Alt repeats, and Windows hears it go down again, so each repeat
+  is let go of too. For a Tab that comes before that, Leto also registers
+  Alt+Tab and Alt+Esc as its own shortcuts while the stream has the keyboard
+  (`RegisterHotKey`), which a program in front may do, and Windows then
+  tells the window's thread of them instead of switching windows. The log
+  says when Windows did not let Leto have them, another program having them
+  already, or did not take the Alt Leto let go of. The log counts the keys, how
+  long they waited, how many came late and how many reached the window,
+  never which. Keys are named by their scan code, the numeric keypad
+  included. A key goes back to whoever got it go down, so nothing stays held
+  on either side, and the Ctrl that AltGr makes up is dropped: the PC makes
+  up its own. Ctrl+Alt+Del and Windows+L stay with Windows, which no program
+  can take. Leto's own
   shortcuts are found by the letter the layout prints on the key, which
   Windows tells even when Ctrl and Alt held together, AltGr on a French
   layout, change what the key types. The person can keep the system's
@@ -344,11 +421,23 @@ of the device: capturing it, showing it to the person, and sending it to a PC
 that takes one. No Sunshine or Apollo does, and Leto's own host is not written
 yet, so the only PC that takes it today is the stand-in host of the tests.
 
-- **A screen of its own.** "Camera and microphone", reached from the list of
-  PCs, shows what the camera sees and how loud the microphone is, with no PC
-  involved. Both are off at every visit, each has its switch, and leaving the
-  screen lets go of both. While one captures, its icon is lit and a line
-  under it says so.
+- **A screen of its own.** "Camera, microphone and sound", reached from the
+  list of PCs, shows what the camera sees and how loud the microphone is,
+  with no PC involved. Both are off at every visit, each has its switch, and
+  leaving the screen lets go of both. While one captures, its icon is lit and
+  a line under it says so.
+- **Which camera, microphone and sound output.** On the desktop the same
+  screen has a list for each, for a device that has several: a laptop's own
+  camera and one on USB, a headset beside the loudspeakers. A device is
+  chosen by the name the system gives it, kept with the settings
+  (`DeviceChoices`), and "Restore the defaults" leaves it alone. The first
+  choice of each list leaves it to Leto (the first camera with colour) or to
+  the system (its default microphone and output), and so does a device that
+  is not there when it is wanted. The lists are made when the screen opens
+  and again when one is opened, the cameras on their own thread
+  (`leto_media::look_for_cameras`). A camera or microphone at work changes at
+  once, the sound output at the next stream, and a short test sound tells
+  where sound goes. A browser asks the person itself and has no lists.
 - **On the desktop**, `leto-media` reads the camera (`Camera`) through
   nokhwa: Media Foundation on Windows, V4L2 on Linux, nothing on macOS yet.
   It opens the first camera that has colour, because laptops that recognise a

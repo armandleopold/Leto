@@ -124,6 +124,13 @@ pub enum Event<Image = ImageFile> {
         attempt: u64,
         message: String,
     },
+    /// The stream of this attempt lost its PC, and the engine is getting it
+    /// back: it tries again and again until the person leaves. Once it is
+    /// back, [`Event::Playing`] comes again, and [`Event::Camera`] after it;
+    /// [`Event::PlayFailed`] when the PC refuses it for good.
+    Reconnecting {
+        attempt: u64,
+    },
     /// A stream that was playing ended without the person asking.
     StreamEnded {
         attempt: u64,
@@ -168,6 +175,7 @@ impl<Image> Event<Image> {
             }
             Self::Camera { attempt, offer } => Event::Camera { attempt, offer },
             Self::PlayFailed { attempt, message } => Event::PlayFailed { attempt, message },
+            Self::Reconnecting { attempt } => Event::Reconnecting { attempt },
             Self::StreamEnded { attempt, why } => Event::StreamEnded { attempt, why },
             Self::QuitEnded { host, result } => Event::QuitEnded { host, result },
             Self::WakeEnded { host, result } => Event::WakeEnded { host, result },
@@ -588,7 +596,7 @@ mod tests {
     #[test]
     fn news_survives_being_written_down_failures_included() {
         let offer = CameraOffer { max_width: 1920, max_height: 1080, max_fps: 30 };
-        let events: [Event; 8] = [
+        let events: [Event; 9] = [
             Event::Added(Err("The PC did not answer.".into())),
             Event::Playing { attempt: 2, input: InputAllowed::ALL, microphone: true },
             Event::Camera { attempt: 2, offer: Some(offer) },
@@ -598,6 +606,7 @@ mod tests {
                 host: HostId("salon".into()),
                 result: Err(AppsProblem { message: "Pair again.".into(), needs_pairing: true }),
             },
+            Event::Reconnecting { attempt: 2 },
             Event::StreamEnded { attempt: 2, why: StreamEnd::HostError(0x8003_0023) },
             Event::QuitEnded { host: HostId("salon".into()), result: Ok(()) },
         ];

@@ -72,8 +72,9 @@ trait Source {
 
 /// Which pictures a [`Camera`] captures.
 enum Which {
-    /// Those of the system's camera.
-    System,
+    /// Those of the system's camera by this name, or of the first one with
+    /// colour.
+    System(Option<String>),
     /// A test card.
     Card,
     /// What goes wrong with cameras, for the tests.
@@ -97,7 +98,13 @@ impl Camera {
     /// `news` is called on the camera's thread every time there is a picture
     /// to take, and once if the camera gives up.
     pub fn open(news: impl Fn() + Send + 'static) -> Self {
-        Self::start(Which::System, Box::new(news))
+        Self::start(Which::System(None), Box::new(news))
+    }
+
+    /// The same with the camera called `name`, as [`camera_names`] lists
+    /// it. One that is not there is replaced by the first with colour.
+    pub fn open_named(name: Option<String>, news: impl Fn() + Send + 'static) -> Self {
+        Self::start(Which::System(name), Box::new(news))
     }
 
     /// Starts handing out a test card as a camera would hand out what it
@@ -108,7 +115,7 @@ impl Camera {
 
     fn start(which: Which, news: Box<dyn Fn() + Send>) -> Self {
         let shared = Arc::new(Shared::default());
-        if !take_a_turn(Turn { shared: Arc::clone(&shared), which, news }) {
+        if !queue(Job::Capture(Turn { shared: Arc::clone(&shared), which, news })) {
             shared.slot().problem = Some("the system gave no thread to read it on".to_owned());
         }
         Self { shared }
@@ -136,20 +143,71 @@ impl Drop for Camera {
     }
 }
 
-/// Queues `turn` for the thread of the cameras, which starts the first
+/// Work for the thread of the cameras.
+enum Job {
+    Capture(Turn),
+    /// Look at which cameras there are, then call this.
+    Look(Box<dyn Fn() + Send>),
+}
+
+/// The names of the system's cameras, as last looked at.
+static NAMES: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// The names of the system's cameras, as they were last looked at: when a
+/// camera was opened, or [`look_for_cameras`] looked. `None` before that.
+pub fn camera_names() -> Option<Vec<String>> {
+    NAMES.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Looks at which cameras the system has, on the thread of the cameras
+/// once a camera capturing there is let go of, and calls `news` once
+/// [`camera_names`] knows.
+pub fn look_for_cameras(news: impl Fn() + Send + 'static) {
+    if !queue(Job::Look(Box::new(news))) {
+        remember(Vec::new());
+    }
+}
+
+fn remember(names: Vec<String>) {
+    *NAMES.lock().unwrap_or_else(PoisonError::into_inner) = Some(names);
+}
+
+/// Queues `job` for the thread of the cameras, which starts the first
 /// time. `false` when there is no such thread.
-fn take_a_turn(turn: Turn) -> bool {
-    static TURNS: OnceLock<Option<mpsc::Sender<Turn>>> = OnceLock::new();
-    let turns = TURNS.get_or_init(|| {
-        let (turns, waiting) = mpsc::channel::<Turn>();
+fn queue(job: Job) -> bool {
+    static JOBS: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+    let jobs = JOBS.get_or_init(|| {
+        let (jobs, waiting) = mpsc::channel::<Job>();
         let reader = move || {
-            for turn in waiting {
-                turn.run();
+            for job in waiting {
+                match job {
+                    Job::Capture(turn) => turn.run(),
+                    Job::Look(news) => {
+                        // Not Leto's code either.
+                        let looked = catch_unwind(look);
+                        remember(looked.unwrap_or_default());
+                        news();
+                    }
+                }
             }
         };
-        thread::Builder::new().name("camera".to_owned()).spawn(reader).ok().map(|_| turns)
+        thread::Builder::new().name("camera".to_owned()).spawn(reader).ok().map(|_| jobs)
     });
-    turns.as_ref().is_some_and(|turns| turns.send(turn).is_ok())
+    jobs.as_ref().is_some_and(|jobs| jobs.send(job).is_ok())
+}
+
+/// The names of the system's cameras.
+fn look() -> Vec<String> {
+    #[cfg(any(windows, target_os = "linux"))]
+    match device::names() {
+        Ok(names) => names,
+        Err(error) => {
+            log::debug!("the cameras could not be listed: {error}");
+            Vec::new()
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    Vec::new()
 }
 
 impl Turn {
@@ -204,9 +262,9 @@ impl Which {
     fn open(self) -> Result<Box<dyn Source>, Error> {
         match self {
             #[cfg(any(windows, target_os = "linux"))]
-            Self::System => Ok(Box::new(device::Device::open()?)),
+            Self::System(name) => Ok(Box::new(device::Device::open(name.as_deref())?)),
             #[cfg(not(any(windows, target_os = "linux")))]
-            Self::System => {
+            Self::System(_) => {
                 Err(Error::Camera("Leto does not read cameras on this system yet".to_owned()))
             }
             Self::Card => Ok(Box::new(card::Card::new())),

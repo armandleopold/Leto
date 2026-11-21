@@ -336,7 +336,7 @@ impl Listening {
         let frames = Arc::new(AtomicU64::new(0));
         let (session, sent) = (Arc::clone(session), Arc::clone(&frames));
         let mut number = 0u32;
-        let microphone = Microphone::open(move |frame| {
+        let microphone = Microphone::open(None, move |frame| {
             if session.send_microphone(VOICE_FRAME * number, frame) {
                 sent.fetch_add(1, Ordering::Relaxed);
             }
@@ -385,7 +385,7 @@ impl Filming {
             let _ = told.send(());
         };
         let feed = match which {
-            WhichCamera::System => CameraFeed::open(limits, carrier, told),
+            WhichCamera::System => CameraFeed::open(None, limits, carrier, told),
             WhichCamera::Card => CameraFeed::test_card(limits, carrier, told),
         };
         let asked = Instant::now();

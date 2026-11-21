@@ -23,6 +23,14 @@ Each is marked with a comment that starts with `Leto:`.
   `a=rtpmap:98 AV1/90000`, which the commit read as an attribute named
   `rtpmap` and so never recognised. It is recognised now, as
   moonlight-common-c does: `AV1/90000` anywhere in that attribute.
+- `src/stream/std/driver.rs`: a UDP socket reads on when the system reports
+  that a packet it sent met a closed port (a reset connection on Windows, a
+  refused one elsewhere), as moonlight-common-c does. The commit stopped the
+  whole stream on it.
+- `src/stream/proto/audio/payloader.rs`: the recovery packets of encrypted
+  sound are as long as its data packets, as Sunshine and Apollo send them.
+  The commit made them longer and panicked. Only Leto's stand-in host sends
+  sound with this crate.
 
 ## Updating
 

@@ -1,4 +1,5 @@
-//! The microphone: the system's default sound input.
+//! The microphone: the sound input the person chose, or the system's
+//! default one.
 
 use std::sync::{
     Arc, Mutex, PoisonError,
@@ -8,11 +9,11 @@ use std::sync::{
 use cpal::{
     BufferSize, ErrorKind, FromSample, SampleFormat, SizedSample, StreamConfig,
     SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
-    traits::{DeviceTrait, HostTrait, StreamTrait},
+    traits::{DeviceTrait, StreamTrait},
 };
 
 use crate::{
-    Error,
+    Error, endpoints,
     voice::{VOICE_RATE, VoiceEncoder},
 };
 
@@ -42,12 +43,14 @@ struct Capture {
 }
 
 impl Microphone {
-    /// Opens the default input and hands `packet` every frame of it, encoded
-    /// as [`VoiceEncoder`] does, on a thread of the system's.
-    pub fn open(packet: impl FnMut(&[u8]) + Send + 'static) -> Result<Self, Error> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .ok_or_else(|| Error::Microphone("this device has no microphone".to_owned()))?;
+    /// Opens the input named `name`, or the default one, and hands `packet`
+    /// every frame of it, encoded as [`VoiceEncoder`] does, on a thread of
+    /// the system's.
+    pub fn open(
+        name: Option<&str>,
+        packet: impl FnMut(&[u8]) + Send + 'static,
+    ) -> Result<Self, Error> {
+        let device = endpoints::input(name)?;
         // The rate a PC takes when the microphone has it, which most do.
         // Otherwise whatever the microphone prefers, brought to that rate.
         let offered = device.supported_input_configs().map_err(microphone_error)?;

@@ -98,11 +98,17 @@ impl Shared {
 }
 
 impl CameraFeed {
-    /// Starts sending the system's camera through `carrier`, within
-    /// `limits`, and returns at once. `news` is called, on a thread of the
-    /// feed, whenever [`CameraFeed::state`] changes.
-    pub fn open(limits: Limits, carrier: impl Carrier, news: impl Fn() + Send + 'static) -> Self {
-        Self::start(Camera::open, limits, carrier, news)
+    /// Starts sending the system's camera called `name`, or its first one
+    /// with colour, through `carrier`, within `limits`, and returns at once.
+    /// `news` is called, on a thread of the feed, whenever
+    /// [`CameraFeed::state`] changes.
+    pub fn open(
+        name: Option<String>,
+        limits: Limits,
+        carrier: impl Carrier,
+        news: impl Fn() + Send + 'static,
+    ) -> Self {
+        Self::start(move |fresh| Camera::open_named(name, fresh), limits, carrier, news)
     }
 
     /// The same with a test card for a camera, for trying things out where
@@ -116,7 +122,7 @@ impl CameraFeed {
     }
 
     fn start(
-        camera: fn(Box<dyn Fn() + Send>) -> Camera,
+        camera: impl FnOnce(Box<dyn Fn() + Send>) -> Camera + Send + 'static,
         limits: Limits,
         carrier: impl Carrier,
         news: impl Fn() + Send + 'static,

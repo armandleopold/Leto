@@ -87,3 +87,6 @@ web-sys = { version = "0.3", features = [
     "Window",
     "Worklet",
 ] }
+
+[build-dependencies]
+embed-resource = "3"

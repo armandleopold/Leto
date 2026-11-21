@@ -167,6 +167,7 @@ fn main() -> ExitCode {
 
     println!("Pair from a client, then type the PIN it shows here and press Enter.");
     println!("Type \"close\" to close the running app, \"drop\" to break the stream.");
+    println!("Type \"busy\" to start no stream for now, \"free\" to start them again.");
     println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
     println!("Type \"inputs\" to see what the keyboard, mouse and gamepads of the client sent.");
     println!("Type \"voice\" to save what the microphone of the client sent to {VOICE_FILE}.");
@@ -182,6 +183,14 @@ fn main() -> ExitCode {
             "drop" => {
                 host.drop_stream();
                 println!("The stream is broken. The app keeps running.");
+            }
+            "busy" => {
+                host.refuse_streams(true);
+                println!("The host starts no stream for now, and says it is busy.");
+            }
+            "free" => {
+                host.refuse_streams(false);
+                println!("The host starts streams again.");
             }
             "allow" => {
                 host.set_permissions(Some(permission::ALL));

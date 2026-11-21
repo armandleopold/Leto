@@ -46,6 +46,8 @@ fn main() -> eframe::Result {
             .with_title(leto_core::brand::NAME)
             .with_inner_size([960.0, 600.0])
             .with_min_inner_size([480.0, 360.0])
+            // Where Leto draws the frame itself, in its top bar.
+            .with_decorations(!ui::frame::OWN)
             .with_icon(icon),
         // A stream needs Ctrl+C and Ctrl+V as keys, for the PC. Leto's own
         // text fields get them back through `clipboard`.
