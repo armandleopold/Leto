@@ -30,7 +30,7 @@ pub fn page(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 
 /// Secondary text.
 pub fn dim(text: impl Into<String>) -> RichText {
-    RichText::new(text).color(theme::DIM)
+    RichText::new(text).color(theme::dim())
 }
 
 /// The title of a screen.
@@ -40,8 +40,8 @@ pub fn title(ui: &mut Ui, text: &str) {
 
 /// The one button a screen wants pressed.
 pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
-    let button = Button::new(RichText::new(text).color(theme::GROUND))
-        .fill(theme::SUN)
+    let button = Button::new(RichText::new(text).color(theme::on_sun()))
+        .fill(theme::sun())
         .stroke(Stroke::NONE)
         .corner_radius(theme::CONTROL_RADIUS)
         .min_size(vec2(88.0, 40.0));
@@ -80,7 +80,7 @@ pub fn state_button(
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(36.0), sense);
     response.widget_info(|| WidgetInfo::labeled(Role::Button, usable, name));
     if usable && (response.hovered() || response.has_focus()) {
-        ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, theme::SURFACE_HOVER);
+        ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, theme::surface_hover());
     }
     icon(ui.painter(), rect.shrink(rect.width() * 0.27), color);
     let response = response.on_hover_text(name);
@@ -99,9 +99,9 @@ pub fn icon_button_at(ui: &Ui, rect: Rect, id: egui::Id, icon: Icon, name: &str)
 fn paint_icon_button(painter: &Painter, rect: Rect, response: &Response, icon: Icon) {
     let lit = response.hovered() || response.has_focus();
     if lit {
-        painter.rect_filled(rect, theme::CONTROL_RADIUS, theme::SURFACE_HOVER);
+        painter.rect_filled(rect, theme::CONTROL_RADIUS, theme::surface_hover());
     }
-    icon(painter, rect.shrink(rect.width() * 0.27), if lit { theme::MOON } else { theme::DIM });
+    icon(painter, rect.shrink(rect.width() * 0.27), if lit { theme::text() } else { theme::dim() });
 }
 
 /// A switch that turns `on` on or off when clicked. `name` is what it
@@ -117,23 +117,23 @@ pub fn switch(ui: &mut Ui, on: &mut bool, name: &str) -> Response {
     let how_on = ui.ctx().animate_bool_responsive(response.id, *on);
     let lit = response.hovered() || response.has_focus();
     let track = if *on {
-        theme::SUN
+        theme::sun()
     } else if lit {
-        theme::SURFACE_HOVER
+        theme::surface_hover()
     } else {
-        theme::GROUND
+        theme::ground()
     };
     let line = if *on {
-        theme::SUN
+        theme::sun()
     } else if lit {
-        theme::DIM
+        theme::dim()
     } else {
-        theme::LINE
+        theme::line()
     };
     let radius = rect.height() / 2.0;
     ui.painter().rect(rect, radius, track, Stroke::new(1.0, line), egui::StrokeKind::Inside);
     let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
-    let knob = if *on { theme::GROUND } else { theme::DIM };
+    let knob = if *on { theme::on_sun() } else { theme::dim() };
     ui.painter().circle_filled(Pos2::new(x, rect.center().y), radius * 0.62, knob);
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -141,17 +141,17 @@ pub fn switch(ui: &mut Ui, on: &mut bool, name: &str) -> Response {
 /// A button with the back arrow and the name of where it leads.
 pub fn back_button(ui: &mut Ui, to: &str) -> Response {
     let font = FontId::proportional(theme::BODY);
-    let galley = ui.painter().layout_no_wrap(to.to_owned(), font, theme::DIM);
+    let galley = ui.painter().layout_no_wrap(to.to_owned(), font, theme::dim());
     let size = vec2(14.0 + 8.0 + galley.size().x + 12.0, 36.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, format!("Back to {to}")));
     let lit = response.hovered() || response.has_focus();
-    let color = if lit { theme::MOON } else { theme::DIM };
+    let color = if lit { theme::text() } else { theme::dim() };
     if lit {
         ui.painter().rect_filled(
             rect.expand2(vec2(6.0, 0.0)),
             theme::CONTROL_RADIUS,
-            theme::SURFACE,
+            theme::surface(),
         );
     }
     let icon = Rect::from_center_size(rect.left_center() + vec2(7.0, 0.0), Vec2::splat(14.0));
@@ -187,13 +187,13 @@ pub fn line(
 /// A note in a bordered box, with the "i" icon.
 pub fn note(ui: &mut Ui, text: &str) {
     egui::Frame::new()
-        .stroke(Stroke::new(1.0, theme::LINE))
+        .stroke(Stroke::new(1.0, theme::line()))
         .corner_radius(theme::CONTROL_RADIUS)
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-                icons::info(ui.painter(), rect, theme::DIM);
+                icons::info(ui.painter(), rect, theme::dim());
                 ui.add(egui::Label::new(dim(text)).wrap());
             });
         });
@@ -202,7 +202,7 @@ pub fn note(ui: &mut Ui, text: &str) {
 /// A spinner with a line of text, for something that takes a moment.
 pub fn waiting(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {
-        ui.add(egui::Spinner::new().size(16.0).color(theme::SUN));
+        ui.add(egui::Spinner::new().size(16.0).color(theme::sun()));
         ui.label(dim(text));
     });
 }
