@@ -14,8 +14,7 @@ pub const RESOLUTIONS: [[u32; 2]; 4] = [[1280, 720], [1920, 1080], [2560, 1440],
 pub const FRAME_RATES: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
 
 /// A screen as a PC makes one when the window does not know its own.
-const PLAIN: ScreenMode =
-    ScreenMode { width: 1920, height: 1080, refresh_hz: 60, scale_percent: 100 };
+const PLAIN: ScreenMode = ScreenMode { width: 1920, height: 1080, refresh_hz: 60 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -236,12 +235,7 @@ impl Settings {
         // What is not chosen is the screen's, or what a PC makes.
         let base = native.unwrap_or(PLAIN);
         let [width, height] = self.resolution.unwrap_or([base.width, base.height]);
-        Some(ScreenMode {
-            width,
-            height,
-            refresh_hz: self.frame_rate.unwrap_or(base.refresh_hz),
-            scale_percent: base.scale_percent,
-        })
+        Some(ScreenMode { width, height, refresh_hz: self.frame_rate.unwrap_or(base.refresh_hz) })
     }
 
     /// The bit rate a stream gets when the person leaves it to Leto, in
@@ -338,8 +332,7 @@ pub use kept::{load, save};
 mod tests {
     use super::*;
 
-    const NATIVE: ScreenMode =
-        ScreenMode { width: 2560, height: 1600, refresh_hz: 120, scale_percent: 150 };
+    const NATIVE: ScreenMode = ScreenMode { width: 2560, height: 1600, refresh_hz: 120 };
 
     /// A device whose graphics card decodes H.265 and H.264, and that
     /// decodes AV1 on the processor.
@@ -362,19 +355,19 @@ mod tests {
         let sized = Settings { resolution: Some([1920, 1080]), ..Settings::default() };
         assert_eq!(
             sized.screen(Some(NATIVE)),
-            Some(ScreenMode { width: 1920, height: 1080, refresh_hz: 120, scale_percent: 150 })
+            Some(ScreenMode { width: 1920, height: 1080, refresh_hz: 120 })
         );
         let paced = Settings { frame_rate: Some(60), ..Settings::default() };
         assert_eq!(
             paced.screen(Some(NATIVE)),
-            Some(ScreenMode { width: 2560, height: 1600, refresh_hz: 60, scale_percent: 150 })
+            Some(ScreenMode { width: 2560, height: 1600, refresh_hz: 60 })
         );
         // A window that does not know its screen goes by Full HD at 60.
         assert_eq!(paced.screen(None), Some(ScreenMode { refresh_hz: 60, ..PLAIN }));
         let both = Settings { resolution: Some([3840, 2160]), ..paced };
         assert_eq!(
             both.screen(None),
-            Some(ScreenMode { width: 3840, height: 2160, refresh_hz: 60, scale_percent: 100 })
+            Some(ScreenMode { width: 3840, height: 2160, refresh_hz: 60 })
         );
     }
 

@@ -151,9 +151,6 @@ pub struct ScreenMode {
     pub height: u32,
     /// Pictures per second the screen shows.
     pub refresh_hz: u32,
-    /// How large the system draws text and windows on it, in percent: 100
-    /// as designed, 150 half as large again.
-    pub scale_percent: u32,
 }
 
 /// What the person chose for their streams, besides the screen.
@@ -456,12 +453,7 @@ mod tests {
                 host: HostId("salon".into()),
                 app: 1,
                 attempt: 5,
-                screen: Some(ScreenMode {
-                    width: 2560,
-                    height: 1440,
-                    refresh_hz: 144,
-                    scale_percent: 125,
-                }),
+                screen: Some(ScreenMode { width: 2560, height: 1440, refresh_hz: 144 }),
                 choices: Choices {
                     bitrate_kbps: Some(50_000),
                     virtual_display: false,

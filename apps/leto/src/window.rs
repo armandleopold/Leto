@@ -89,17 +89,15 @@ mod desktop {
             (viewport.native_pixels_per_point, viewport.monitor_size)
         });
         let scale = scale.unwrap_or(1.0);
-        let scale_percent = (scale * 100.0).round() as u32;
         if let Some(mode) = display::of_active_window() {
             let display::Mode { width, height, refresh_hz } = mode;
-            return Some(ScreenMode { width, height, refresh_hz, scale_percent });
+            return Some(ScreenMode { width, height, refresh_hz });
         }
         let size = monitor? * scale;
         Some(ScreenMode {
             width: size.x.round() as u32,
             height: size.y.round() as u32,
             refresh_hz: 60,
-            scale_percent,
         })
     }
 }
@@ -307,12 +305,7 @@ mod page {
         let (width, height) = (screen.width().ok()?, screen.height().ok()?);
         let pixels = |points: i32| (f64::from(points) * ratio).round() as u32;
         let (long, short) = (pixels(width.max(height)), pixels(width.min(height)));
-        Some(ScreenMode {
-            width: long,
-            height: short,
-            refresh_hz: 60,
-            scale_percent: (ratio * 100.0).round() as u32,
-        })
+        Some(ScreenMode { width: long, height: short, refresh_hz: 60 })
     }
 
     /// How the mouse moved while the pointer was kept, since the last call.
