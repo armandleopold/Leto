@@ -33,6 +33,15 @@ void main() {
 
 /// BT.601 in limited range, as `convert.rs` has it in 256ths: brightness
 /// goes from 16 to 235, and each colour from 16 to 240 around 128.
+///
+/// A colour serves two pixels across and two down. An encoder puts it where
+/// the left one of the two is, and halfway between the two rows: that is
+/// where H.264, H.265 and AV1 have it unless a stream says otherwise, and
+/// where Sunshine and Apollo make it. A texture has it in the middle of the
+/// two pixels, half a pixel further right. So the colours are read half a
+/// pixel to the right of the brightness, which puts each back under the
+/// pixels it was made from; read at the same place, every edge of colour
+/// would be drawn half a pixel off and smeared over its neighbours.
 const FRAGMENT: &str = r"
 uniform sampler2D luma;
 uniform sampler2D chroma;
@@ -40,7 +49,8 @@ in vec2 place;
 out vec4 colour;
 void main() {
     float y = 1.1641 * (texture(luma, place).r - 16.0 / 255.0);
-    vec2 c = texture(chroma, place).rg - 128.0 / 255.0;
+    vec2 half_a_pixel = vec2(0.5 / float(textureSize(luma, 0).x), 0.0);
+    vec2 c = texture(chroma, place + half_a_pixel).rg - 128.0 / 255.0;
     colour = vec4(
         y + 1.5977 * c.y,
         y - 0.3906 * c.x - 0.8125 * c.y,
