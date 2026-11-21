@@ -38,6 +38,8 @@ ndk-context = "0.1"
 # The phone's cameras are read through the NDK's Camera2, into pictures
 # from its image reader.
 ndk-sys = { version = "0.6", features = ["media"] }
+# The name of a video decoder, looked for so that Android 8 still starts.
+libc = "0.2"
 # The window's input events, where gamepads are told of. The version winit
 # uses, which hands them over.
 android-activity = { version = "0.6", features = ["native-activity"] }
