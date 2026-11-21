@@ -627,6 +627,11 @@ impl Client {
             let mut hosts = self.lock();
             let entry = hosts.get_mut(id).ok_or(Error::UnknownHost)?;
             entry.certificate = Some(server.to_pem().to_string());
+            // The handle that paired is the one that can prove it. A look at
+            // the PCs while the PIN was awaited put another in its place,
+            // made when this device was not paired, and the app then said
+            // that the PC no longer knew this device.
+            entry.handle = Some(Arc::clone(&handle));
             entry.card = card.or(entry.card);
             entry.saved = true;
             entry.summary.paired = true;
@@ -1029,7 +1034,7 @@ impl Client {
     /// Keeps what a host answered, and the address it answered at as the one
     /// to use. A saved host that learns an address is saved again.
     fn record(&self, answer: Answer) -> HostSummary {
-        let Answer { mut summary, handle, local, card, door } = answer;
+        let Answer { mut summary, handle, local, card, door, knew_pairing } = answer;
         let learned = {
             let mut hosts = self.lock();
             let entry = hosts.entry(summary.id.clone()).or_insert_with(|| Entry {
@@ -1041,6 +1046,13 @@ impl Client {
                 saved: false,
                 handle: None,
             });
+            // An answer asked for before this device paired and arriving
+            // after says nothing of the pairing, and its handle cannot
+            // prove it: the pairing and the handle that made it stay.
+            let outdated = entry.certificate.is_some() && !knew_pairing;
+            if outdated {
+                summary.paired = entry.summary.paired;
+            }
             let before = entry.addresses.clone();
             let card_before = entry.card;
             // A card is kept even while the host does not tell it, as when
@@ -1069,8 +1081,10 @@ impl Client {
                 );
             }
             entry.summary = summary.clone();
-            entry.door = door;
-            entry.handle = Some(Arc::new(handle));
+            if !outdated || entry.handle.is_none() {
+                entry.door = door;
+                entry.handle = Some(Arc::new(handle));
+            }
             entry.saved && (entry.addresses != before || entry.card != card_before)
         };
         if learned && let Err(error) = self.persist() {
@@ -1162,6 +1176,8 @@ struct Answer {
     card: Option<wake::Card>,
     /// The door through Leto's tunnel it answered at, if that was the way.
     door: Option<Ipv4Addr>,
+    /// Whether this device was paired with the host when it was asked.
+    knew_pairing: bool,
 }
 
 impl Asker {
@@ -1225,7 +1241,7 @@ impl Asker {
         // further away, for example through a forwarded port.
         let local =
             handle.local_ip().ok().filter(|ip| !ip.is_unspecified()).map(|ip| ip.to_string());
-        Ok(Answer { summary, handle, local, card, door })
+        Ok(Answer { summary, handle, local, card, door, knew_pairing: certificate.is_some() })
     }
 }
 

@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU32, Ordering},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use leto_client::{Client, Error, HostKind, Pin, Reachability};
@@ -143,6 +143,35 @@ fn a_wrong_pin_does_not_spoil_the_next_attempt() {
     assert!(client.pair(&added.id, Pin::from_bytes([4, 3, 2, 1])).is_err());
 
     assert!(pair(&client, &host).paired);
+}
+
+/// The app looks for the PCs every few seconds, also while a PIN is awaited.
+/// What it learned then replaced what the pairing was building on, and the
+/// app said "This PC no longer knows this device." of a PC just paired:
+/// seen on 2026-11-21 with the stand-in host.
+#[test]
+fn looking_for_the_pcs_while_the_pin_is_awaited_does_not_undo_the_pairing() {
+    let settings = Settings::new();
+    let host = FakeHost::start();
+    let client = settings.open();
+    let added = client.add(&host.address()).unwrap();
+    let pin = client.new_pin().unwrap();
+
+    let paired = thread::scope(|scope| {
+        let pairing = scope.spawn(|| client.pair(&added.id, pin));
+        let patience = Instant::now() + Duration::from_secs(30);
+        while !host.awaits_pin() {
+            assert!(Instant::now() < patience, "the host never saw the pairing start");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!client.refresh()[0].paired);
+        host.type_pin(pin);
+        pairing.join().unwrap().unwrap()
+    });
+
+    assert!(paired.paired);
+    assert!(client.hosts()[0].paired);
+    assert_eq!(client.apps(&paired.id).unwrap().len(), 2);
 }
 
 #[test]
