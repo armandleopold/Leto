@@ -113,6 +113,38 @@ fn a_wrong_pin_is_reported_and_pairs_nothing() {
     assert!(matches!(client.apps(&added.id), Err(Error::NotPaired)));
 }
 
+/// Sunshine and Apollo keep an attempt that never got its PIN, and would go
+/// on with its certificate when another device pairs: Armand's phone and
+/// laptop were refused that way on 2026-11-21.
+#[test]
+fn an_attempt_left_without_its_pin_does_not_spoil_the_next_one() {
+    let host = FakeHost::start_with(Options {
+        pin_patience: Duration::from_millis(300),
+        ..Options::default()
+    });
+    let (first, second) = (Settings::new(), Settings::new());
+
+    let left = first.open();
+    let added = left.add(&host.address()).unwrap();
+    assert!(left.pair(&added.id, left.new_pin().unwrap()).is_err());
+
+    let client = second.open();
+    assert!(pair(&client, &host).paired);
+    assert_eq!(host.paired_clients(), 1);
+}
+
+#[test]
+fn a_wrong_pin_does_not_spoil_the_next_attempt() {
+    let settings = Settings::new();
+    let host = FakeHost::start();
+    let client = settings.open();
+    let added = client.add(&host.address()).unwrap();
+    host.type_pin(Pin::from_bytes([1, 2, 3, 4]));
+    assert!(client.pair(&added.id, Pin::from_bytes([4, 3, 2, 1])).is_err());
+
+    assert!(pair(&client, &host).paired);
+}
+
 #[test]
 fn the_apps_of_an_unpaired_host_are_out_of_reach() {
     let settings = Settings::new();

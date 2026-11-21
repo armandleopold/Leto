@@ -17,8 +17,9 @@ use crate::{
         client::blocking_client::RequestClient,
         launch::{ClientStreamRequest, LaunchEndpoint},
         pair::{
-            PairEndpoint, PairPin, PairingCryptoBackend,
+            PairEndpoint, PairPin, PairRequest, PairingCryptoBackend,
             client::{ClientPairing, ClientPairingOutput},
+            phase2::PairPhase2Request,
         },
         resume::ResumeEndpoint,
         server_info::{
@@ -293,6 +294,20 @@ where
         };
 
         let mut client = Client::with_defaults_long_timeout()?;
+
+        // Leto: Sunshine and Apollo keep a pairing that never got its PIN,
+        // under the unique id every Moonlight client shares, and a later
+        // pairing then goes on with the certificate of that earlier one, so
+        // its last step is refused. A step out of order makes them drop it;
+        // with nothing to drop they answer that the id is unknown.
+        let _ = client.send_http::<PairEndpoint>(
+            client_info.clone(),
+            &http_address,
+            &PairRequest::Phase2(PairPhase2Request {
+                device_name: device_name.clone(),
+                encrypted_challenge: vec![0; 16],
+            }),
+        );
 
         let mut pairing = ClientPairing::new(
             client_identifier.clone(),
