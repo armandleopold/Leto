@@ -1207,11 +1207,14 @@ impl ControlPacket {
                 ControlPacket::ControllerState {
                     controller_number, ..
                 } => (
-                    // moonlight has todo to send them Unreliable and sequenced, so we do that
+                    // Leto: sent reliably, as moonlight-common-c does today. Its
+                    // todo is to send them unreliable and sequenced, which upstream
+                    // did here, but a state that is lost is then never sent again: a
+                    // button let go stays held on the PC until the gamepad moves.
                     // https://github.com/moonlight-stream/moonlight-common-c/blob/7b026e77be62175104640e7e722b758df6d3d0d7/src/InputStream.c#L1072-L1076
                     EnetChannel::controller(*controller_number as u8)
                         .unwrap_or(EnetChannel::CHANNEL_GAMEPAD_BASE),
-                    PacketKind::Sequenced,
+                    PacketKind::Reliable,
                 ),
                 ControlPacket::ControllerTouch { .. } => {
                     // TODO: see if it's batchable: https://github.com/moonlight-stream/moonlight-common-c/blob/f900dd4767759c7b9d0e93bcea666b55c69ea62f/src/InputStream.c#L1501-L1503

@@ -366,7 +366,9 @@ passes them on.
   for Leto's own text fields when no stream has the keyboard.
 - **Gamepads** are followed by one thread of the backend (`backend/gamepad.rs`,
   on [gilrs](https://gitlab.com/gilrs-project/gilrs)). Each stream hears of
-  every gamepad once, then of each change. Buttons are named by place: A is
+  every gamepad once, then of each change, sent reliably as Moonlight sends
+  it: a change that was lost would leave a button held on the PC until the
+  next one. Buttons are named by place: A is
   the lowest of the four. A browser says nothing when a button moves, so the
   web build looks at the gamepads itself, 125 times a second while a stream is
   connected (`backend/web/gamepad.rs`). What a PC is told is decided once for

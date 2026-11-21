@@ -13,7 +13,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, Read, Write},
-    net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -319,6 +319,7 @@ impl Session {
     pub fn stop(&mut self, tell_client: bool) {
         self.inner.terminate.store(tell_client, Ordering::SeqCst);
         self.inner.stop.store(true, Ordering::SeqCst);
+        self.inner.wake_microphone();
         if let Some(rtsp) = self.rtsp.take() {
             let _ = rtsp.join();
         }
@@ -340,6 +341,22 @@ impl Drop for Session {
 // ---------------------------------------------------------------------------
 
 impl Inner {
+    /// Lets the thread that waits for the microphone see that `stop` was
+    /// set, by sending its socket a packet of the host's own: for whoever
+    /// set `stop`, after setting it.
+    fn wake_microphone(&self) {
+        let Ok(mut here) = self.microphone.local_addr() else { return };
+        if here.ip().is_unspecified() {
+            // The port is open on every address of this computer, and this
+            // is the one that always exists.
+            here.set_ip(match here {
+                SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+                SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+            });
+        }
+        let _ = self.microphone.send_to(&[0], here);
+    }
+
     /// Whether the host takes the microphone of this client, which settled
     /// on `encryption`. Like the Apollo microphone fork, it refuses one that
     /// would travel in clear.
@@ -702,6 +719,7 @@ fn serve_control(inner: &Inner, negotiated: Negotiated) {
                     if peer == Some(id) {
                         inner.client_left.store(true, Ordering::SeqCst);
                         inner.stop.store(true, Ordering::SeqCst);
+                        inner.wake_microphone();
                     }
                 }
             }
@@ -952,20 +970,17 @@ fn serve_microphone(inner: &Inner, negotiated: Negotiated) {
         return;
     }
     let socket = &inner.microphone;
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
+    // Waited for without a limit: on Windows a socket that is read with one
+    // loses packets now and then while the computer is busy. Whoever sets
+    // `stop` wakes this socket afterwards.
+    let _ = socket.set_read_timeout(None);
     let Ok(mut decoder) = OpusDecoder::new(MICROPHONE_RATE, 1) else { return };
     let mut packet = [0u8; 2048];
     let mut samples = vec![0f32; MICROPHONE_FRAME];
     lock(&inner.hands).voice = Some(0.0);
 
     while !inner.stop.load(Ordering::SeqCst) {
-        let Ok((length, _)) = socket.recv_from(&mut packet) else {
-            // Nothing for a moment: the meter falls back.
-            if let Some(voice) = &mut lock(&inner.hands).voice {
-                *voice *= 0.5;
-            }
-            continue;
-        };
+        let Ok((length, _)) = socket.recv_from(&mut packet) else { continue };
         let Some(frame) = open_microphone_packet(&inner.launch, &packet[..length]) else {
             continue;
         };
@@ -974,9 +989,13 @@ fn serve_microphone(inner: &Inner, negotiated: Negotiated) {
         inner.microphone_packets.fetch_add(1, Ordering::SeqCst);
 
         let loudness = loudness(decoded);
-        if let Some(voice) = &mut lock(&inner.hands).voice {
+        {
+            let now = Instant::now();
+            let mut hands = lock(&inner.hands);
             // Up at once, down slowly: easier to follow by eye.
-            *voice = loudness.max(*voice * 0.85);
+            let before = hands.voice_at(now).unwrap_or_default();
+            hands.voice = Some(loudness.max(before * 0.85));
+            hands.voice_heard = Some(now);
         }
         let mut heard = lock(&inner.heard);
         heard.extend(decoded);

@@ -31,9 +31,14 @@ Each is marked with a comment that starts with `Leto:`.
   sound are as long as its data packets, as Sunshine and Apollo send them.
   The commit made them longer and panicked. Only Leto's stand-in host sends
   sound with this crate.
+- `src/stream/proto/control/packet.rs`: the state of a gamepad is sent
+  reliably, as moonlight-common-c sends it. The commit sent it unreliable
+  and sequenced, so a state lost on the way was never sent again, and a
+  button let go stayed held on the PC until the gamepad moved again.
 
 ## Updating
 
 Copy `src/` from a newer commit, apply the changes above again, and compare
-its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself,
-Leto can go back to taking the crate with git.
+its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself
+and sends the state of a gamepad reliably, Leto can go back to taking the
+crate with git.
