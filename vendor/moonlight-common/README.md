@@ -43,6 +43,14 @@ Each is marked with a comment that starts with `Leto:`.
   50 ms old, and the way to the host and back, which is measured from that
   stamp, came out longer whenever something was sent: 9 ms on the loopback
   interface with the mouse moving, where it is under 1 ms.
+- `src/stream/proto/enet.rs` (`RoundTrip`, `acknowledged_sent_times`) and
+  `src/stream/proto/control/peer.rs`: the way to a peer and back is a mean
+  that keeps its fractions, made from the acknowledgements as they arrive.
+  ENet's own, which the commit reported, is in whole milliseconds and moves
+  by an eighth of each difference, rounded down: once raised, it comes down
+  to 7 ms above the truth and stays, so a host 1 ms away read 8 ms. Its
+  tests are at the end of `enet.rs`; like the rest of this crate's, they
+  do not build here (the crate's test helper needs what Leto leaves out).
 
 ## Updating
 

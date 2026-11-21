@@ -802,7 +802,8 @@ fn statistics_lines(
         lines.push(("On the PC", format!("{took:.1} ms to capture and encode")));
     }
     if let Some(round_trip) = round_trip {
-        lines.push(("Network", format!("{} ms there and back", round_trip.as_millis())));
+        let milliseconds = round_trip.as_secs_f64() * 1000.0;
+        lines.push(("Network", format!("{milliseconds:.1} ms there and back")));
     }
     lines
 }
@@ -1555,7 +1556,7 @@ mod tests {
         statistics.update(Some(counts), 70, 10.5);
         assert_eq!(statistics.rates, None);
         statistics.update(Some(counts), 72, 11.0);
-        let lines = statistics_lines(&statistics, Some(counts), Some(Duration::from_millis(3)));
+        let lines = statistics_lines(&statistics, Some(counts), Some(Duration::from_micros(3400)));
         let said: Vec<_> = lines.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         assert_eq!(
             said,
@@ -1569,7 +1570,7 @@ mod tests {
                 "Skipped: 72.0 per second, to keep up".to_owned(),
                 "Shown: 72.0 per second".to_owned(),
                 "On the PC: 5.0 ms to capture and encode".to_owned(),
-                "Network: 3 ms there and back".to_owned(),
+                "Network: 3.4 ms there and back".to_owned(),
             ]
         );
         // A backend that counts nothing says so.

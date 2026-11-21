@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     convert::Infallible,
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -75,7 +75,110 @@ pub enum EnetEvent {
     },
 }
 
+/// Leto: the commands of ENet by their number, as they cross the network:
+/// how long each is, and where it says how much data follows it.
+/// From `protocol.h` of ENet.
+fn command_layout(number: u8) -> Option<(usize, Option<usize>)> {
+    Some(match number {
+        // An acknowledgement.
+        1 => (8, None),
+        2 => (48, None),
+        3 => (44, None),
+        4 => (8, None),
+        5 => (4, None),
+        6 => (6, Some(4)),
+        7 | 9 => (8, Some(6)),
+        8 | 12 => (24, Some(6)),
+        10 => (12, None),
+        11 => (16, None),
+        _ => return None,
+    })
+}
+
+/// Leto: the times at which what `datagram` acknowledges was sent, as the
+/// sender stamped them: the low 16 bits of its clock in milliseconds.
+/// Nothing for a datagram that is compressed or does not read as ENet's.
+fn acknowledged_sent_times(datagram: &[u8]) -> Vec<u16> {
+    const SENT_TIME: u16 = 1 << 15;
+    const COMPRESSED: u16 = 1 << 14;
+    const ACKNOWLEDGE: u8 = 1;
+
+    let word = |at: usize| {
+        Some(u16::from_be_bytes([
+            *datagram.get(at)?,
+            *datagram.get(at + 1)?,
+        ]))
+    };
+    let mut times = Vec::new();
+    let Some(peer) = word(0) else {
+        return times;
+    };
+    if peer & COMPRESSED != 0 {
+        return times;
+    }
+    let mut at = if peer & SENT_TIME != 0 { 4 } else { 2 };
+    while let Some(command) = datagram.get(at) {
+        let number = command & 0x0f;
+        let Some((size, data_length_at)) = command_layout(number) else {
+            break;
+        };
+        if at + size > datagram.len() {
+            break;
+        }
+        if number == ACKNOWLEDGE
+            && let Some(sent) = word(at + 6)
+        {
+            times.push(sent);
+        }
+        let data = match data_length_at.map(|offset| word(at + offset)) {
+            None => 0,
+            Some(Some(length)) => usize::from(length),
+            Some(None) => break,
+        };
+        at += size + data;
+    }
+    times
+}
+
+/// Leto: the way to a peer and back, as a mean that follows what is
+/// measured.
+///
+/// ENet keeps one too, in whole milliseconds: each measure moves it by an
+/// eighth of the difference, rounded down. A difference under 8 ms moves
+/// it by nothing, so once a few slow answers have raised it, it comes down
+/// to 7 ms above the truth and stays there: a host 1 ms away reads 8 ms
+/// for the rest of the stream. This mean weighs each measure as ENet does
+/// and keeps the fractions.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct RoundTrip {
+    milliseconds: Option<f32>,
+}
+
+impl RoundTrip {
+    /// One more measure, in milliseconds.
+    fn measured(&mut self, milliseconds: u16) {
+        let measure = f32::from(milliseconds);
+        self.milliseconds = Some(match self.milliseconds {
+            Some(mean) => mean + (measure - mean) / 8.0,
+            None => measure,
+        });
+    }
+
+    fn mean(self) -> Option<Duration> {
+        self.milliseconds
+            .map(|milliseconds| Duration::from_secs_f32(milliseconds / 1000.0))
+    }
+}
+
+/// Leto: a measure longer than this is not one: the stamp it comes from
+/// was not this host's, or is from another turn of the 16-bit clock.
+const LONGEST_ROUND_TRIP_MS: u16 = 10_000;
+
 pub struct EnetHost {
+    /// Leto: when ENet's clock started, and the way to each peer and back
+    /// as its acknowledgements tell it. See [`RoundTrip`].
+    start: Instant,
+    round_trips: HashMap<SocketAddr, RoundTrip>,
     last_now: Arc<Mutex<Instant>>,
     pub(crate) enet: Host<Io<SocketAddr>>,
     events: VecDeque<EnetEvent>,
@@ -117,10 +220,18 @@ impl EnetHost {
         .unwrap();
 
         Self {
+            start: now,
+            round_trips: HashMap::new(),
             last_now,
             enet,
             events: Default::default(),
         }
+    }
+
+    /// Leto: the way to the peer at `addr` and back, when it acknowledged
+    /// something already. See [`RoundTrip`].
+    pub fn round_trip(&self, addr: SocketAddr) -> Option<Duration> {
+        self.round_trips.get(&addr)?.mean()
     }
 
     pub fn connect(
@@ -177,6 +288,16 @@ impl EnetHost {
     }
 
     pub fn handle_receive(&mut self, now: Instant, addr: SocketAddr, data: &[u8]) {
+        // Leto: each acknowledgement says when what it answers was sent, by
+        // the clock ENet stamped it with: the milliseconds since `start`.
+        let clock = ((now - self.start).as_millis() % u128::from(u32::MAX)) as u16;
+        for sent in acknowledged_sent_times(data) {
+            let took = clock.wrapping_sub(sent);
+            if took <= LONGEST_ROUND_TRIP_MS {
+                self.round_trips.entry(addr).or_default().measured(took);
+            }
+        }
+
         self.enet
             .socket_mut()
             .inbound
@@ -310,5 +431,82 @@ impl<A: Address + 'static> Socket for Io<A> {
         } else {
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An acknowledgement of something sent at `sent`.
+    fn acknowledgement(sent: u16) -> Vec<u8> {
+        let mut command = vec![1, 0xff, 0, 1, 0, 7];
+        command.extend(sent.to_be_bytes());
+        command
+    }
+
+    #[test]
+    fn acknowledgements_are_found_among_the_other_commands() {
+        // The peer and the time the datagram was sent at.
+        let mut datagram = vec![0x80, 0x01, 0x12, 0x34];
+        datagram.extend(acknowledgement(1000));
+        // A ping, then five bytes sent reliably, with the flag that asks
+        // for an acknowledgement.
+        datagram.extend([5, 0xff, 0, 2]);
+        datagram.extend([0x86, 0, 0, 3, 0, 5, 1, 2, 3, 4, 5]);
+        datagram.extend(acknowledgement(1003));
+        // Three bytes sent unreliably, and one more acknowledgement.
+        datagram.extend([7, 1, 0, 0, 0, 9, 0, 3, 9, 9, 9]);
+        datagram.extend(acknowledgement(65_535));
+        assert_eq!(acknowledged_sent_times(&datagram), [1000, 1003, 65_535]);
+
+        // Without the time the datagram was sent at.
+        let mut datagram = vec![0x00, 0x01];
+        datagram.extend(acknowledgement(7));
+        assert_eq!(acknowledged_sent_times(&datagram), [7]);
+    }
+
+    #[test]
+    fn what_does_not_read_as_enet_acknowledges_nothing() {
+        assert_eq!(acknowledged_sent_times(&[]), []);
+        assert_eq!(acknowledged_sent_times(&[0x80]), []);
+        // Compressed.
+        let mut datagram = vec![0x40, 0x01];
+        datagram.extend(acknowledgement(7));
+        assert_eq!(acknowledged_sent_times(&datagram), []);
+        // An acknowledgement cut short, a command nobody knows, and data
+        // that says it is longer than the datagram.
+        assert_eq!(acknowledged_sent_times(&[0, 1, 1, 0xff, 0, 1, 0, 7, 0]), []);
+        assert_eq!(
+            acknowledged_sent_times(&[0, 1, 13, 0, 0, 1, 0, 7, 0, 7]),
+            []
+        );
+        let mut datagram = vec![0, 1, 6, 0, 0, 3, 0xff, 0xff, 1, 2];
+        datagram.extend(acknowledgement(7));
+        assert_eq!(acknowledged_sent_times(&datagram), []);
+    }
+
+    #[test]
+    fn the_mean_comes_down_where_enets_stays_seven_milliseconds_above() {
+        // A slow start, then a host 1 ms away.
+        let measures = [40_u16, 60, 35]
+            .into_iter()
+            .chain(std::iter::repeat_n(1, 200));
+        let mut enet = None::<u32>;
+        let mut ours = RoundTrip::default();
+        for measure in measures {
+            // ENet's rule, in whole milliseconds.
+            let measure_ms = u32::from(measure);
+            enet = Some(match enet {
+                Some(mean) if measure_ms >= mean => mean + (measure_ms - mean) / 8,
+                Some(mean) => mean - (mean - measure_ms) / 8,
+                None => measure_ms,
+            });
+            ours.measured(measure);
+        }
+        assert_eq!(enet, Some(8));
+        let ours = ours.mean().expect("a mean");
+        assert!(ours < Duration::from_micros(1100), "{ours:?}");
+        assert!(ours >= Duration::from_millis(1), "{ours:?}");
     }
 }
