@@ -31,8 +31,11 @@ Progress:
 - Done: a stream feels like Moonlight's. It fills the screen as it
   connects; on Windows every key goes to the PC, the Windows key, Alt+Tab
   and Alt+F4 too; Ctrl+Alt+Shift+Z gives the keyboard and the mouse back and
-  Ctrl+Alt+Shift+S shows the statistics. The PC is asked for a screen of its
-  own just like this device's, in size and pace, which Apollo makes. A window another one hides or covers shows one picture a second, or
+  Ctrl+Alt+Shift+S shows the statistics. The pointer is this device's own,
+  as smooth as the mouse, and the PC is asked to leave its own out of the
+  pictures. The PC is asked for a screen of its own just like this device's,
+  in size and pace, which Apollo makes. A window another one hides or covers
+  shows one picture a second, or
   none. See [architecture.md](architecture.md#a-stream).
 - Done: the same in the browser. `leto-cli bridge` serves the web client and
   relays the stream, which the browser decodes itself. See
@@ -63,7 +66,8 @@ Progress:
 - Done: the settings, behind the cog on the list of PCs, after Moonlight's:
   size, pictures per second and bit rate of the stream, full screen, V-Sync,
   the PC's screen of its own, its speakers and game settings, closing the app
-  when leaving, the system's shortcuts, the mouse buttons and wheel, gamepad
+  when leaving, the system's shortcuts, whose pointer shows, the mouse
+  buttons and wheel, gamepad
   buttons, silence in the background and statistics. Leto keeps them. See
   [architecture.md](architecture.md#a-stream).
 - Done: decoding on the graphics card on Windows, and AV1 and H.265 with it.

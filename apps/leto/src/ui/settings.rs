@@ -232,6 +232,10 @@ fn hands_and_more(ui: &mut Ui, settings: &mut Settings, decodable: Decodable) {
                     });
             });
         }
+        let about = "The pointer moves here at once and the PC stops drawing its own. It keeps the shape of an arrow. Off, the PC draws its pointer in the picture.";
+        row(ui, "This device's pointer", about, SWITCH_WIDTH, |ui| {
+            widgets::switch(ui, &mut settings.local_pointer, "This device's pointer");
+        });
         let about = "The left button clicks right on the PC, and the right one left.";
         row(ui, "Swap the mouse buttons", about, SWITCH_WIDTH, |ui| {
             widgets::switch(ui, &mut settings.swap_mouse_buttons, "Swap the mouse buttons");

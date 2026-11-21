@@ -10,6 +10,7 @@ use std::{
         Arc, Mutex, OnceLock, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -43,6 +44,10 @@ use moonlight_common::{
 
 /// How long to wait for a keyframe before asking the host again.
 const KEYFRAME_PATIENCE: Duration = Duration::from_secs(1);
+/// How long what was sent last gets to leave before a stream is left:
+/// stopping drops what still waits to go out, such as the keys let go of
+/// and the pointer the PC is asked to draw again.
+const LAST_WORDS: Duration = Duration::from_millis(100);
 
 /// The largest picture H.264 carries at a pace worth watching (its level
 /// 5.2), and the one asked for when a screen is larger: as much of the
@@ -367,9 +372,13 @@ impl Session {
         self.stream.is_stopped()
     }
 
-    /// Leaves the stream. The app keeps running on the PC.
+    /// Leaves the stream, once what was sent last has had a moment to
+    /// reach the PC. The app keeps running on the PC.
     pub fn stop(self) {
-        // Dropping does it.
+        // Leaving is not an ending to report, even while the last words go.
+        self.leaving.store(true, Ordering::SeqCst);
+        thread::sleep(LAST_WORDS);
+        // Dropping does the rest.
     }
 
     /// What the owner of the PC lets this device do with keyboard, mouse and
