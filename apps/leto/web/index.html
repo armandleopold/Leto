@@ -3,8 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#151312" />
-    <meta name="color-scheme" content="dark" />
+    <!-- The page under the app wears the look the app will: see theme.rs. -->
+    <meta name="theme-color" content="#151312" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#F2EDE4" media="(prefers-color-scheme: light)" />
+    <meta name="color-scheme" content="dark light" />
     <title>Leto</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="favicon.ico" sizes="32x32" />
@@ -38,6 +40,17 @@
         color: #a8a298;
         font: 16px/1.4 system-ui, sans-serif;
         text-align: center;
+      }
+
+      @media (prefers-color-scheme: light) {
+        html,
+        body {
+          background: #f2ede4;
+        }
+
+        #leto_status {
+          color: #625c54;
+        }
       }
     </style>
   </head>

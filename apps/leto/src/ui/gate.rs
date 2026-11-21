@@ -28,12 +28,12 @@ pub fn reaching(ui: &mut Ui, failed: bool) {
         ui.spacing_mut().item_spacing.y = 8.0;
         if !failed {
             ui.add_space(24.0);
-            ui.add(egui::Spinner::new().size(22.0).color(theme::SUN));
+            ui.add(egui::Spinner::new().size(22.0).color(theme::sun()));
             ui.label(widgets::dim("Reaching the bridge…"));
             return;
         }
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-        icons::monitor(ui.painter(), rect, theme::LINE);
+        icons::monitor(ui.painter(), rect, theme::line());
         ui.label(RichText::new("The bridge does not answer").size(20.0));
         centred(
             ui,
@@ -47,7 +47,7 @@ pub fn reaching(ui: &mut Ui, failed: bool) {
             // Centred as a pair: the spinner and what it is about.
             let text = "Trying again…";
             let font = FontId::proportional(theme::BODY);
-            let width = ui.painter().layout_no_wrap(text.to_owned(), font, theme::DIM).size().x;
+            let width = ui.painter().layout_no_wrap(text.to_owned(), font, theme::dim()).size().x;
             ui.add_space(((ui.available_width() - width - 24.0) / 2.0).max(0.0));
             widgets::waiting(ui, text);
         });
@@ -76,7 +76,7 @@ pub fn code(ui: &mut Ui, form: &mut Form, refused: bool, checking: bool) -> Opti
         let field = ui.add_enabled(
             !checking,
             egui::TextEdit::singleline(&mut form.code)
-                .hint_text(widgets::dim("1234 5678").size(CODE_SIZE).color(theme::LINE))
+                .hint_text(widgets::dim("1234 5678").size(CODE_SIZE).color(theme::line()))
                 .font(FontId::proportional(CODE_SIZE))
                 .align(Align2::CENTER_CENTER)
                 .desired_width(230.0_f32.min(ui.available_width() - 24.0))
@@ -89,7 +89,7 @@ pub fn code(ui: &mut Ui, form: &mut Form, refused: bool, checking: bool) -> Opti
 
         ui.add_space(12.0);
         if checking {
-            ui.add(egui::Spinner::new().size(22.0).color(theme::SUN));
+            ui.add(egui::Spinner::new().size(22.0).color(theme::sun()));
         } else {
             let pressed = ui
                 .add_enabled_ui(complete, |ui| widgets::primary_button(ui, "Continue").clicked())
@@ -106,7 +106,7 @@ pub fn code(ui: &mut Ui, form: &mut Form, refused: bool, checking: bool) -> Opti
             ui.add_space(6.0);
             let problem = "That is not the code. The bridge draws a new one after a few wrong \
                            tries: look again where it runs.";
-            centred(ui, RichText::new(problem).color(theme::PROBLEM));
+            centred(ui, RichText::new(problem).color(theme::problem()));
         }
         ui.add_space(14.0);
         centred(

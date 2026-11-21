@@ -216,6 +216,8 @@ impl eframe::App for LetoApp {
         }
 
         let streaming = matches!((&door, &self.state.screen), (Door::Open, Screen::Stream(_)));
+        // Light or dark as the system asks, and dark around a stream.
+        theme::follow(ui, streaming);
         match (&door, self.state.screen.clone()) {
             // A stream takes the whole window: no bar, no margins.
             (Door::Open, Screen::Stream(view)) => {
@@ -285,7 +287,7 @@ impl eframe::App for LetoApp {
             (door, screen) => {
                 self.player.clear(ui.ctx());
                 self.backend.place_picture(None);
-                let ground = egui::Frame::new().fill(theme::GROUND);
+                let ground = egui::Frame::new().fill(theme::ground());
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
                     // Escape closes the settings, as their back button does.
@@ -449,10 +451,13 @@ fn top_bar(ui: &mut egui::Ui) {
     let mut line_ui =
         ui.new_child(UiBuilder::new().max_rect(line).layout(Layout::left_to_right(Align::Center)));
     line_ui.add_space(margin);
-    line_ui.add(
-        egui::Image::new(egui::include_image!("../../../assets/brand/png/leto-logo.png"))
-            .fit_to_exact_size(LOGO),
-    );
+    // The moon of the logo is ivory by night and ink by day.
+    let logo = if theme::by_day() {
+        egui::include_image!("../../../assets/brand/png/leto-logo-on-light.png")
+    } else {
+        egui::include_image!("../../../assets/brand/png/leto-logo.png")
+    };
+    line_ui.add(egui::Image::new(logo).fit_to_exact_size(LOGO));
     ui.advance_cursor_after_rect(bar);
 }
 
@@ -472,7 +477,7 @@ fn out_of_order(ui: &mut egui::Ui, problem: &Unavailable) {
     ui.add_space((ui.available_height() * 0.16).clamp(16.0, 120.0));
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-        icons::monitor(ui.painter(), rect, theme::LINE);
+        icons::monitor(ui.painter(), rect, theme::line());
         ui.add_space(6.0);
         ui.label(RichText::new(problem.title).size(20.0));
         ui.scope(|ui| {
