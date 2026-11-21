@@ -166,6 +166,10 @@ pub struct Options {
     /// with a `port`. Without it every other port is any free one, so that
     /// many hosts run side by side.
     pub real_ports: bool,
+    /// Never give up on a client that went silent, where a host gives up
+    /// after seconds: such a host sees a client leave only when the client
+    /// says so.
+    pub waits_for_goodbye: bool,
 }
 
 impl Options {
@@ -198,6 +202,7 @@ impl Default for Options {
             encodes: Codecs::of(Codec::H264),
             answer_after: Duration::ZERO,
             real_ports: false,
+            waits_for_goodbye: false,
         }
     }
 }
@@ -851,6 +856,7 @@ fn launch(
         microphone: shared.options.microphone,
         camera: shared.cameras.clone(),
         encodes: shared.options.encodes,
+        waits_for_goodbye: shared.options.waits_for_goodbye,
     };
 
     playing.screen_asked = Some(ScreenAsked {

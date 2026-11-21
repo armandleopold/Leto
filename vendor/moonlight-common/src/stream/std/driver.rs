@@ -48,6 +48,25 @@ where
         self.stream_condvar.notify_all();
         res
     }
+    /// Leto: runs `f` on the stream and sends what the stream then has to
+    /// send, here and now, on the caller's thread: the threads that send
+    /// are about to be stopped, and would leave it unsent.
+    #[instrument(level = Level::TRACE, skip(self, f))]
+    pub fn last_words<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut Stream) -> R,
+    {
+        let mut guard = self.stream.lock().expect("lock stream failed");
+        let res = f(&mut guard);
+        while let Some(transmit) = guard.poll_transmit() {
+            if let Err(err) = self.socket.send_to(&transmit.data, transmit.destination) {
+                debug!(error = ?err, "the last words did not leave");
+                break;
+            }
+        }
+        res
+    }
+
     #[instrument(level = Level::TRACE, skip(self, f))]
     pub fn stream<F, R>(&self, f: F) -> R
     where

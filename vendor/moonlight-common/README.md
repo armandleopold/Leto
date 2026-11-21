@@ -35,6 +35,12 @@ Each is marked with a comment that starts with `Leto:`.
   reliably, as moonlight-common-c sends it. The commit sent it unreliable
   and sequenced, so a state lost on the way was never sent again, and a
   button let go stayed held on the PC until the gamepad moved again.
+- `src/stream/std/mod.rs`, `src/stream/std/driver.rs` (`last_words`),
+  `src/stream/proto/control/stream.rs` (`disconnect_now`): a stream that is
+  stopped tells the host that the client leaves, in one packet sent before
+  the threads stop, as moonlight-common-c does (`enet_peer_disconnect_now`).
+  The commit said nothing, so the host went on streaming to nobody until it
+  gave up on the silence, seconds to a minute later.
 
 ## Updating
 

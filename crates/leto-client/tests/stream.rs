@@ -15,8 +15,8 @@ use std::{
 };
 
 use leto_client::{
-    Client, Counter, Decoded, Ended, Error, HostKind, HostSummary, Permission, StreamSettings,
-    Tally, VideoFrame, VideoSetup, VideoSink,
+    Client, Counter, Decoded, Ended, Error, HostKind, HostSummary, Permission, Session,
+    StreamSettings, Tally, VideoFrame, VideoSetup, VideoSink,
     engine::{Codec, Codecs},
 };
 use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, Options, permission};
@@ -207,8 +207,8 @@ fn leaving_keeps_the_app_running_and_playing_again_resumes_it() {
     wait_for_stream(&first);
     session.stop();
 
-    // Nobody tells the host: it has to miss the client, which takes it
-    // seconds at best.
+    // The host is told. Were that one packet lost, it would have to miss
+    // the client, which takes it seconds at best.
     let start = Instant::now();
     while !host.stream_report().is_some_and(|report| report.client_left) {
         assert!(start.elapsed() < CLIENT_MISSED_WITHIN, "the host never noticed the client left");
@@ -225,6 +225,32 @@ fn leaving_keeps_the_app_running_and_playing_again_resumes_it() {
     let tally = wait_for_stream(&second);
     assert!(tally.keyframes >= 1, "a resumed stream starts with a keyframe");
     session.stop();
+}
+
+#[test]
+fn a_client_that_leaves_tells_the_host() {
+    let stopped: fn(Session) = Session::stop;
+    let dropped: fn(Session) = drop;
+    for (how, leave) in [("stopped", stopped), ("dropped", dropped)] {
+        let settings = Settings::new();
+        // This host never gives up on a silent client: it knows that one
+        // left only because the client said so.
+        let host = FakeHost::start_with(Options { waits_for_goodbye: true, ..Options::default() });
+        let client = settings.open();
+        let paired = pair(&client, &host);
+        let counter = Counter::default();
+
+        let session =
+            client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+        wait_for_stream(&counter);
+        assert!(!host.stream_report().unwrap().client_left);
+        leave(session);
+
+        wait_for(&format!("the host to hear that a {how} stream is left"), || {
+            host.stream_report().is_some_and(|report| report.client_left)
+        });
+        assert_eq!(host.running_app(), Some(1), "the app keeps running");
+    }
 }
 
 #[test]

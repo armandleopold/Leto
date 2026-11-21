@@ -109,11 +109,18 @@ pub(crate) struct Launch {
     pub camera: Option<Arc<Cameras>>,
     /// The codecs the host says it encodes.
     pub encodes: Codecs,
+    /// Never give up on a client that went silent.
+    pub waits_for_goodbye: bool,
 }
+
+/// How long a host that [waits for a goodbye](Launch::waits_for_goodbye)
+/// goes on asking a silent client: longer than any test.
+const FOR_EVER: Duration = Duration::from_secs(24 * 3600);
 
 /// How long the host may take to say that a client left
 /// ([`StreamReport::client_left`]) when the client went away without a word,
-/// which is how a client built on the protocol library leaves.
+/// as one that crashed or lost its network does. A client that leaves says
+/// so, and the host knows at once.
 ///
 /// The host is told nothing: it gives up on a client that stopped answering.
 /// It looks at that each time its wait for an answer runs out, and doubles
@@ -699,6 +706,9 @@ fn serve_control(inner: &Inner, negotiated: Negotiated) {
                         packets: packets.clone(),
                     };
                     if host.configure_peer(id, config).is_ok() {
+                        if inner.launch.waits_for_goodbye {
+                            host.set_peer_timeout(id, FOR_EVER, FOR_EVER, FOR_EVER);
+                        }
                         peer = Some(id);
                         inner.connected.store(true, Ordering::SeqCst);
                     }
