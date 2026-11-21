@@ -36,9 +36,17 @@ Each is marked with a comment that starts with `Leto:`.
   and sequenced, so a state lost on the way was never sent again, and a
   button let go stayed held on the PC until the gamepad moved again.
 
+- `src/stream/std/driver.rs` and `src/stream/std/mod.rs`: the control
+  connection is told the time before the application sends over it
+  (`stream_mut_now`). The commit only told it when a packet arrived or a
+  timeout fired, so a message sent in between was stamped with a time up to
+  50 ms old, and the way to the host and back, which is measured from that
+  stamp, came out longer whenever something was sent: 9 ms on the loopback
+  interface with the mouse moving, where it is under 1 ms.
+
 ## Updating
 
 Copy `src/` from a newer commit, apply the changes above again, and compare
-its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself
-and sends the state of a gamepad reliably, Leto can go back to taking the
-crate with git.
+its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself,
+sends the state of a gamepad reliably and stamps what is sent with the time
+it is sent at, Leto can go back to taking the crate with git.
