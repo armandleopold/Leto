@@ -23,9 +23,14 @@ Each is marked with a comment that starts with `Leto:`.
   `a=rtpmap:98 AV1/90000`, which the commit read as an attribute named
   `rtpmap` and so never recognised. It is recognised now, as
   moonlight-common-c does: `AV1/90000` anywhere in that attribute.
+- `src/stream/proto/control/packet.rs`: the state of a gamepad is sent
+  reliably, as moonlight-common-c sends it. The commit sent it unreliable
+  and sequenced, so a state lost on the way was never sent again, and a
+  button let go stayed held on the PC until the gamepad moved again.
 
 ## Updating
 
 Copy `src/` from a newer commit, apply the changes above again, and compare
-its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself,
-Leto can go back to taking the crate with git.
+its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself
+and sends the state of a gamepad reliably, Leto can go back to taking the
+crate with git.
