@@ -83,16 +83,28 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 fn free_port() -> u16 {
     loop {
         let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
-        // Ports end at 65535, and Windows hands out the last ones too: one
-        // that near the end has no twenty-one above it.
-        if port >= 65_000 {
-            continue;
-        }
-        let around = [port - 5, port + 13, port + 21];
-        if around.iter().all(|port| TcpListener::bind(("127.0.0.1", *port)).is_ok()) {
+        if has_room(port) {
             return port;
         }
     }
+}
+
+/// Whether every port a host at `port` uses is free right now, each over
+/// what the host uses it for: HTTPS, Leto's own API and RTSP over TCP, and
+/// over UDP the pictures, control, the sound and the microphone, which the
+/// host only opens once a stream starts. Another program's socket there,
+/// which Windows hands out from the same range, is otherwise found then:
+/// "Failed to start the stream" (os error 10013).
+fn has_room(port: u16) -> bool {
+    // Ports end at 65535, and Windows hands out the last ones too: one
+    // that near the end has no twenty-one above it.
+    if !(5..65_000).contains(&port) {
+        return false;
+    }
+    let tcp = [port - 5, port + 13, port + 21];
+    let udp = [port + 9, port + 10, port + 11, port + 13];
+    tcp.iter().all(|port| TcpListener::bind(("127.0.0.1", *port)).is_ok())
+        && udp.iter().all(|port| UdpSocket::bind(("127.0.0.1", *port)).is_ok())
 }
 
 fn public_key(private: &str) -> String {
@@ -209,6 +221,18 @@ fn a_pc_behind_wireguard_is_found_paired_and_streamed_through_leto_s_tunnel() {
     assert!(client.tunnel().is_none());
     assert!(!settings.0.join("wireguard.conf").exists());
     assert!(client.add(&home.address()).is_err());
+}
+
+#[test]
+fn a_port_has_no_room_while_another_program_has_one_of_the_ports_above_it() {
+    let port = free_port();
+    // What the pictures of a stream would be sent from, taken by another.
+    let taken = UdpSocket::bind(("127.0.0.1", port + 9)).unwrap();
+    assert!(!has_room(port));
+    drop(taken);
+    assert!(has_room(port));
+    // And no room at the very end of the ports, or at their start.
+    assert!(!has_room(65_530) && !has_room(3));
 }
 
 #[test]
