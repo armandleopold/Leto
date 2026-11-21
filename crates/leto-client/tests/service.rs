@@ -709,8 +709,8 @@ fn a_service_that_goes_away_leaves_its_stream() {
     }
     assert!(host.stream_report().is_some_and(|report| !report.client_left));
 
-    // Nobody tells the host: it has to miss the client, which takes it
-    // seconds at best.
+    // The host is told. Were that one packet lost, it would have to miss
+    // the client, which takes it seconds at best.
     drop(desk);
     let start = Instant::now();
     while !host.stream_report().is_some_and(|report| report.client_left) {
