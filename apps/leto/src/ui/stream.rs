@@ -10,12 +10,12 @@ use egui::{
 };
 use std::time::Duration;
 
-use leto_core::{engine::Codec, input::Input, model::HostId};
+use leto_core::{engine::Codec, input::Input};
 
 use super::{card::OnCard, frame, icons, widgets};
 use crate::{
     backend::{Filming, Picture},
-    input::{Controls, Shortcut, hides_its_pointer},
+    input::{Controls, PC_POINTER_KEYS, Shortcut, hides_its_pointer},
     settings::Settings,
     state::{Cam, Mic, State, StreamView},
     stats::{Counts, Rates},
@@ -153,11 +153,6 @@ pub struct Player {
     arrived: Option<(u64, f64)>,
     /// The statistics over the picture, while they show.
     statistics: Option<Statistics>,
-    /// The PCs that leave their own pointer out of the pictures, because
-    /// Leto asked them to while this device's pointer shows instead. A PC
-    /// keeps doing so until asked again, even after a stream that ended
-    /// without Leto leaving it, so this outlives the stream.
-    hiding_pointer: Vec<HostId>,
     /// The window is closing: the stream is left without closing the app
     /// on the PC, whatever the settings say.
     closing: bool,
@@ -294,20 +289,21 @@ impl Player {
             window::keep_pointer(ctx, false);
         }
         window::keep_keyboard(false);
-        let hiding_pointer = std::mem::take(&mut self.hiding_pointer);
-        *self = Self { hiding_pointer, ..Self::default() };
+        *self = Self::default();
     }
 
     /// Leaves the stream at the next frame, because the window is closing.
     pub fn leave_to_close(&mut self) {
         self.closing = true;
     }
+}
 
-    /// Whether the PC of `view` leaves its pointer out of the pictures, as
-    /// far as Leto knows.
-    fn pc_hides_pointer(&self, view: &StreamView) -> bool {
-        self.hiding_pointer.contains(&view.host.id)
-    }
+/// Whether the PC of `view` leaves its pointer out of the pictures, as far
+/// as Leto knows: it asked for that, and has not asked the pointer back.
+/// What Leto asked outlives the stream, and Leto itself: see
+/// [`Settings::pointers_left_out`].
+fn pc_hides_pointer(settings: &Settings, view: &StreamView) -> bool {
+    settings.pointers_left_out.contains(&view.host.id)
 }
 
 /// What the backend says of a stream besides its pictures: its sound, and
@@ -500,8 +496,11 @@ pub fn show(
         && hides_its_pointer(view.host.kind)
         && view.input.keyboard
         && view.input.mouse;
-    let whose = choice.then_some(settings.local_pointer);
-    overlay(ui, window, view, player, status, whose, &mut asked);
+    let pointers = Pointers {
+        whose: choice.then_some(settings.local_pointer),
+        pc_hides: pc_hides_pointer(settings, view),
+    };
+    overlay(ui, window, view, player, status, pointers, &mut asked);
     player.over.extend(player.bar);
     if view.connected {
         let arrived = status.counts.map_or(player.shown, |counts| counts.received);
@@ -585,12 +584,12 @@ pub fn show(
         && view.input.mouse
         && !player.game_mouse
         && !asked.leave;
-    if view.connected && hide != player.pc_hides_pointer(view) {
+    if view.connected && hide != pc_hides_pointer(settings, view) {
         player.controls.switch_pc_pointer();
         if hide {
-            player.hiding_pointer.push(view.host.id.clone());
+            settings.pointers_left_out.push(view.host.id.clone());
         } else {
-            player.hiding_pointer.retain(|host| *host != view.host.id);
+            settings.pointers_left_out.retain(|host| *host != view.host.id);
         }
     }
     if asked.keyboard {
@@ -710,18 +709,28 @@ fn mouse(ui: &Ui, player: &mut Player, place: Rect) -> bool {
     clicked
 }
 
+/// The two pointers a stream can show.
+#[derive(Clone, Copy)]
+struct Pointers {
+    /// Whether the pointer on the pictures is this device's, where there
+    /// is a choice.
+    whose: Option<bool>,
+    /// The PC leaves its own out of the pictures, as far as Leto knows.
+    pc_hides: bool,
+}
+
 /// Everything drawn over the picture: the bar, the grip that opens it, and
-/// the pointer of this device, or its absence. `whose` says whether the
-/// pointer on the pictures is this device's, where there is a choice.
+/// the pointer of this device, or its absence.
 fn overlay(
     ui: &Ui,
     window: Rect,
     view: &StreamView,
     player: &mut Player,
     status: Status<'_>,
-    whose: Option<bool>,
+    pointers: Pointers,
     asked: &mut Asked,
 ) {
+    let Pointers { whose, pc_hides } = pointers;
     let has_picture = player.surface.is_some();
     let (now, idle, pointer) = ui.input(|input| {
         (input.time, input.pointer.time_since_last_movement(), input.pointer.hover_pos())
@@ -799,7 +808,7 @@ fn overlay(
     if !view.connected || !has_picture {
         return;
     }
-    let pc_draws_pointer = !player.pc_hides_pointer(view);
+    let pc_draws_pointer = !pc_hides;
     if game_mouse || (pointer.is_some() && !on_bar && !player.released && pc_draws_pointer) {
         // The PC draws its own pointer in the picture, or the game mouse
         // has none.
@@ -1341,14 +1350,16 @@ fn bar_note(view: &StreamView, hands: Hands, timed: bool, news: Option<News>) ->
         Some(News::Pointer(true)) => {
             return said(format!(
                 "This device's pointer shows: it moves at once and keeps the shape of an arrow. \
-                 {} shows the pointer of {host}, with its shapes.",
+                 {} shows the pointer of {host}, with its shapes. Two pointers at once? \
+                 {PC_POINTER_KEYS} takes that of {host} away.",
                 Shortcut::Pointer.keys()
             ));
         }
         Some(News::Pointer(false)) => {
             return said(format!(
                 "The pointer of {host} shows, as {host} draws it in the picture. {} shows this \
-                 device's pointer.",
+                 device's pointer. No pointer at all? {PC_POINTER_KEYS} brings that of {host} \
+                 back.",
                 Shortcut::Pointer.keys()
             ));
         }
@@ -1389,10 +1400,18 @@ fn note(view: &StreamView, hands: Hands) -> Note {
         ),
         (true, true) => {
             let mut text = if hands == Hands::GameMouse {
-                format!(
+                let mut text = format!(
                     "Game mouse on: the mouse turns the view. {} gives the pointer back.",
                     Shortcut::GameMouse.keys()
-                )
+                );
+                if hides_its_pointer(view.host.kind) {
+                    // The PC draws the only pointer there is now, unless
+                    // Leto is wrong about what the PC does with it.
+                    text.push_str(&format!(
+                        " No pointer in the picture? {PC_POINTER_KEYS} brings that of {host} back."
+                    ));
+                }
+                text
             } else {
                 format!(
                     "Keyboard and mouse now go to {host}. {} gives them back, {} leaves.",
@@ -1621,7 +1640,7 @@ mod tests {
         // Connected: the PC is asked once, and this device's pointer shows
         // from the next frame.
         assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 1);
-        assert!(player.pc_hides_pointer(&view));
+        assert!(pc_hides_pointer(&settings, &view));
         let (heard, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
         assert_eq!(switches(&heard), 0);
         assert_eq!(shown, CursorIcon::Default);
@@ -1647,7 +1666,33 @@ mod tests {
         // Leaving, here because the window closes, has the PC draw it again.
         player.leave_to_close();
         assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, None).0), 1);
-        assert!(!player.pc_hides_pointer(&view));
+        assert!(!pc_hides_pointer(&settings, &view));
+    }
+
+    #[test]
+    fn what_was_asked_of_the_pcs_pointer_is_remembered_when_leto_starts_again() {
+        let ctx = egui::Context::default();
+        let mut settings = quiet(true);
+        let view = view(InputAllowed::ALL);
+        let mut player = Player::default();
+        player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+        let middle = Some(pos2(480.0, 270.0));
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 1);
+
+        // Leto is closed without leaving the stream, as when it is killed:
+        // the PC still leaves its pointer out. Started again, with what it
+        // saved, Leto does not ask the PC to switch, which would bring the
+        // PC's pointer back under this device's.
+        let mut settings = Settings::from_saved(&settings.to_saved());
+        let mut player = Player::default();
+        player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 0);
+        assert!(pc_hides_pointer(&settings, &view));
+
+        // The game mouse then gets the PC's pointer, not none at all.
+        player.game_mouse = true;
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 1);
+        assert!(!pc_hides_pointer(&settings, &view));
     }
 
     /// Presses Ctrl+Alt+Shift+P and lets go of it all.
@@ -1677,7 +1722,7 @@ mod tests {
         player.picture(&ctx, Picture::Behind([1920, 1080]), None);
         let middle = Some(pos2(480.0, 270.0));
         assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 1);
-        assert!(player.pc_hides_pointer(&view));
+        assert!(pc_hides_pointer(&settings, &view));
 
         // The PC draws its pointer again, shapes and all, and this device
         // hides its own over the picture.
@@ -1685,7 +1730,7 @@ mod tests {
         let (heard, _) = frame(&ctx, &view, &mut player, &mut settings, middle);
         assert!(!settings.local_pointer, "the choice is the setting's");
         assert_eq!(switches(&heard), 1);
-        assert!(!player.pc_hides_pointer(&view));
+        assert!(!pc_hides_pointer(&settings, &view));
         assert_eq!(player.talks_of, Some(Told::Pointer), "the bar says whose pointer shows");
         let (heard, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
         assert_eq!(switches(&heard), 0);
@@ -1696,7 +1741,7 @@ mod tests {
         let (heard, _) = frame(&ctx, &view, &mut player, &mut settings, middle);
         assert!(settings.local_pointer);
         assert_eq!(switches(&heard), 1);
-        assert!(player.pc_hides_pointer(&view));
+        assert!(pc_hides_pointer(&settings, &view));
         let (_, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
         assert_eq!(shown, CursorIcon::Default);
     }
@@ -1834,7 +1879,8 @@ mod tests {
         let said = note(&view(InputAllowed::ALL), Hands::GameMouse);
         assert_eq!(
             said.text,
-            "Game mouse on: the mouse turns the view. Ctrl+Alt+Shift+M gives the pointer back."
+            "Game mouse on: the mouse turns the view. Ctrl+Alt+Shift+M gives the pointer back. \
+             No pointer in the picture? Ctrl+Alt+Shift+N brings that of Salon back."
         );
     }
 

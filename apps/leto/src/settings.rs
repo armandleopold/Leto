@@ -5,7 +5,10 @@
 //! an update that adds one, is its default; a saved file that cannot be
 //! read is all defaults.
 
-use leto_core::engine::{Choices, Codec, Codecs, Decodable, ScreenMode, bitrate_for};
+use leto_core::{
+    engine::{Choices, Codec, Codecs, Decodable, ScreenMode, bitrate_for},
+    model::HostId,
+};
 use serde::{Deserialize, Serialize};
 
 /// The picture sizes offered besides the screen's own, as in Moonlight.
@@ -55,6 +58,12 @@ pub struct Settings {
     /// mouse at once: the PC hears where it goes and is asked not to draw
     /// its own, where it can be.
     pub local_pointer: bool,
+    /// Not a choice: the PCs Leto asked to leave their own pointer out of
+    /// the pictures, while this device's shows instead. A PC only switches,
+    /// and stays as it is for every device until it is asked again, even
+    /// after a stream that ended without Leto leaving it. Kept here so that
+    /// Leto still knows what it asked once it was closed and started again.
+    pub pointers_left_out: Vec<HostId>,
     pub swap_mouse_buttons: bool,
     /// The wheel scrolls the other way on the PC.
     pub reverse_scroll: bool,
@@ -163,6 +172,7 @@ impl Default for Settings {
             quit_on_leave: false,
             capture_shortcuts: Capture::Always,
             local_pointer: true,
+            pointers_left_out: Vec::new(),
             swap_mouse_buttons: false,
             reverse_scroll: false,
             swap_gamepad_buttons: false,

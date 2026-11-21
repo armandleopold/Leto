@@ -28,6 +28,11 @@ pub const fn hides_its_pointer(kind: HostKind) -> bool {
 /// The letter of [`hides_its_pointer`]'s shortcut.
 const POINTER_SWITCH: char = 'N';
 
+/// That shortcut, in words. Leto passes it on when the person presses it:
+/// the PC only switches, for every device at once, so what Leto believes of
+/// the PC's pointer can be wrong, and this puts it right.
+pub const PC_POINTER_KEYS: &str = "Ctrl+Alt+Shift+N";
+
 /// What Leto keeps for itself while a stream has the keyboard. Each is its
 /// letter pressed with Ctrl, Alt and Shift held, as in Moonlight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
