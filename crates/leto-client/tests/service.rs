@@ -359,6 +359,105 @@ fn an_app_closed_on_the_pc_ends_the_stream_with_news() {
     assert_eq!(why, StreamEnd::AppClosed);
 }
 
+#[test]
+fn a_lost_stream_comes_back_by_itself_while_the_person_watches_it() {
+    let host = FakeHost::start();
+    let desk = Desk::new();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
+    desk.wait(|event| matches!(event, Event::Playing { attempt: 2, .. }).then_some(()));
+
+    // The PC loses the stream, and keeps the app running; it is busy a
+    // moment, as a PC that has not yet noticed the client is gone.
+    host.refuse_streams(true);
+    host.drop_stream();
+    desk.wait(|event| match event {
+        Event::Reconnecting { attempt: 2 } => Some(()),
+        Event::StreamEnded { why, .. } => panic!("the stream ended: {why:?}"),
+        _ => None,
+    });
+    wait_for("what is left of the lost stream to go", || desk.service.streaming().is_none());
+    host.refuse_streams(false);
+    desk.wait(|event| match event {
+        Event::Playing { attempt: 2, .. } => Some(()),
+        Event::PlayFailed { message, .. } => panic!("{message}"),
+        _ => None,
+    });
+    assert_eq!(desk.service.streaming(), Some(2));
+    wait_for("the stream to connect again", || {
+        host.stream_report().is_some_and(|report| report.connected)
+    });
+    assert_eq!(host.running_app(), Some(1));
+}
+
+#[test]
+fn a_lost_stream_is_no_longer_asked_for_once_the_person_leaves() {
+    let host = FakeHost::start();
+    let desk = Desk::new();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
+    desk.wait(|event| matches!(event, Event::Playing { attempt: 2, .. }).then_some(()));
+
+    host.refuse_streams(true);
+    host.drop_stream();
+    desk.wait(|event| matches!(event, Event::Reconnecting { attempt: 2 }).then_some(()));
+    desk.service.ask(Request::Leave);
+    host.refuse_streams(false);
+
+    // Longer than the first waits before asking again.
+    let quiet_until = Instant::now() + Duration::from_secs(5);
+    while let Some(left) = quiet_until.checked_duration_since(Instant::now()) {
+        match desk.news.recv_timeout(left) {
+            Ok(Event::Playing { .. } | Event::PlayFailed { .. } | Event::StreamEnded { .. }) => {
+                panic!("news of a stream the person left")
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert_eq!(desk.service.streaming(), None);
+}
+
+#[test]
+fn a_lost_stream_the_pc_no_longer_lets_this_device_watch_ends_with_words() {
+    let host = FakeHost::start();
+    let desk = Desk::new();
+    let id = desk.pair(&host);
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
+    desk.wait(|event| matches!(event, Event::Playing { attempt: 2, .. }).then_some(()));
+
+    host.refuse_streams(true);
+    host.drop_stream();
+    desk.wait(|event| matches!(event, Event::Reconnecting { attempt: 2 }).then_some(()));
+    // Meanwhile the owner of the PC forgot this device: asking again would
+    // never change that.
+    host.forget_clients();
+    let message = desk.wait(|event| match event {
+        Event::PlayFailed { attempt: 2, message } => Some(message),
+        Event::Playing { attempt: 2, .. } => panic!("the stream came back"),
+        _ => None,
+    });
+    assert!(message.contains("Pair again"), "{message}");
+}
+
 /// Waits until `done` says so.
 fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     let start = Instant::now();
