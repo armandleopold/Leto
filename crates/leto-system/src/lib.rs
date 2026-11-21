@@ -15,11 +15,11 @@
 pub mod bars;
 #[cfg(target_os = "android")]
 pub mod camera;
-#[cfg(target_os = "android")]
-pub mod gamepad;
 pub mod clipboard;
 pub mod clock;
 pub mod display;
+#[cfg(target_os = "android")]
+pub mod gamepad;
 pub mod keyboard;
 pub mod orientation;
 pub mod pane;
