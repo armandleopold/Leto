@@ -324,6 +324,9 @@ pub struct Session {
     sideways_wheel: bool,
     /// The host takes the microphone of this device.
     microphone: bool,
+    /// The stream waits a few milliseconds at a time, in the engine, in the
+    /// decoders and in the sound: the system counts them finely meanwhile.
+    _clock: leto_system::clock::Fine,
 }
 
 impl Session {
@@ -335,6 +338,8 @@ impl Session {
         audio: impl AudioSink,
         ended: impl FnOnce(Ended) + Send + 'static,
     ) -> Result<Self, moonlight_common::error::Error> {
+        // Before the first wait of the stream.
+        let clock = leto_system::clock::fine();
         let control = Arc::new(Control::default());
         let leaving = Arc::new(AtomicBool::new(false));
         let input_allowed = input_allowed(config.apollo_permissions.as_ref());
@@ -364,7 +369,7 @@ impl Session {
         if control.keyframe_wanted_early.swap(false, Ordering::SeqCst) {
             control.request_keyframe();
         }
-        Ok(Self { stream, leaving, input_allowed, sideways_wheel, microphone })
+        Ok(Self { stream, leaving, input_allowed, sideways_wheel, microphone, _clock: clock })
     }
 
     /// Whether the stream has ended, by either side.

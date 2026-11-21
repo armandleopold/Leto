@@ -96,6 +96,9 @@ pub struct Player {
     surface: Option<Surface>,
     /// Where the window lets pictures shown behind it through.
     hole: Option<Rect>,
+    /// The size of the pictures and of what they were last drawn on, both
+    /// in pixels: the same when a pixel of the PC is one of this screen.
+    drawn: Option<([usize; 2], [u32; 2])>,
     /// The stream screen made the window fill the screen, so leaving the
     /// stream gives the window back.
     filled_screen: bool,
@@ -220,6 +223,12 @@ impl Player {
     /// showing them: the hole the window leaves, in points.
     pub fn hole(&self) -> Option<Rect> {
         self.hole
+    }
+
+    /// The size of the pictures and of what they were last drawn on, both
+    /// in pixels.
+    pub const fn drawn(&self) -> Option<([usize; 2], [u32; 2])> {
+        self.drawn
     }
 
     /// Takes the keyboard away from the interface, for the PC: while a
@@ -347,6 +356,8 @@ pub fn show(
         }
         (place, size)
     });
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    player.drawn = picture.map(|(place, size)| (size, on_screen(place, pixels_per_point)));
     if picture.is_none() {
         ui.painter().rect_filled(window, 0, Color32::BLACK);
         asked.leave |= waiting(ui, window, view, status.picture_problem);
@@ -1255,6 +1266,15 @@ fn fit(picture: Vec2, window: Rect) -> Rect {
     Rect::from_center_size(window.center(), picture * scale)
 }
 
+/// How many pixels of the screen `place` covers, across and down, as the
+/// window's drawing rounds its edges.
+fn on_screen(place: Rect, pixels_per_point: f32) -> [u32; 2] {
+    let across =
+        (place.max.x * pixels_per_point).round() - (place.min.x * pixels_per_point).round();
+    let down = (place.max.y * pixels_per_point).round() - (place.min.y * pixels_per_point).round();
+    [across.max(0.0) as u32, down.max(0.0) as u32]
+}
+
 /// What is left of `window` around `place`: above, below, left and right.
 fn around(place: Rect, window: Rect) -> [Rect; 4] {
     [
@@ -1331,6 +1351,18 @@ mod tests {
     fn a_picture_with_no_size_is_no_reason_to_divide_by_zero() {
         let window = Rect::from_min_size(pos2(0.0, 0.0), vec2(960.0, 540.0));
         assert_eq!(fit(vec2(0.0, 0.0), window), window);
+    }
+
+    #[test]
+    fn a_picture_that_fills_a_scaled_screen_covers_each_of_its_pixels() {
+        // A screen of 3840 by 1080 that Windows scales by 125 %.
+        let window = Rect::from_min_size(pos2(0.0, 0.0), vec2(3072.0, 864.0));
+        let place = fit(vec2(3840.0, 1080.0), window);
+        assert_eq!(on_screen(place, 1.25), [3840, 1080]);
+        // A window a little smaller shows it smaller, and the log can tell.
+        let window = Rect::from_min_size(pos2(8.0, 40.0), vec2(3056.0, 816.0));
+        let place = fit(vec2(3840.0, 1080.0), window);
+        assert_eq!(on_screen(place, 1.25), [3626, 1020]);
     }
 
     fn view(input: InputAllowed) -> StreamView {

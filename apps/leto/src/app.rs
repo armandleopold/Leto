@@ -1,5 +1,7 @@
 //! The app's single window: a top bar and one screen at a time.
 
+use std::time::Duration;
+
 use egui::{Align, Id, Layout, Rect, RichText, Sense, UiBuilder, Vec2, pos2};
 use leto_core::{brand, platform::Platform};
 
@@ -7,6 +9,7 @@ use crate::{
     backend::{Backend, Door, Pace, Unavailable},
     settings::{self, Settings},
     state::{Cam, Device, Devices, Event, Mic, Screen, State, Trial},
+    stats::{self, Counts, Rates, TOLD_EVERY},
     theme,
     ui::{
         self,
@@ -53,6 +56,8 @@ pub struct LetoApp {
     /// App time at which the window closes, once the stream it was closed
     /// on has been left.
     closes_at: Option<f64>,
+    /// When the log was last told how the stream does, and the counts then.
+    told: Option<(f64, Counts)>,
 }
 
 impl LetoApp {
@@ -75,6 +80,7 @@ impl LetoApp {
             settings,
             settings_open: false,
             closes_at: None,
+            told: None,
         }
     }
 }
@@ -253,6 +259,8 @@ impl eframe::App for LetoApp {
                     self.state.camera_failed(problem);
                     None
                 });
+                let (counts, round_trip) = (self.backend.counts(), self.backend.round_trip());
+                self.tell_the_log(now, counts, round_trip);
                 // The stream screen paints its own ground: on the web the
                 // pictures show through the window.
                 let inputs = egui::CentralPanel::default()
@@ -263,8 +271,8 @@ impl eframe::App for LetoApp {
                             picture_problem: picture_problem.as_deref(),
                             voice,
                             film,
-                            counts: self.backend.counts(),
-                            round_trip: self.backend.round_trip(),
+                            counts,
+                            round_trip,
                         };
                         let settings = &self.settings;
                         ui::stream::show(
@@ -283,6 +291,7 @@ impl eframe::App for LetoApp {
                 self.backend.place_picture(self.player.hole());
             }
             (door, screen) => {
+                self.told = None;
                 self.player.clear(ui.ctx());
                 self.backend.place_picture(None);
                 let ground = egui::Frame::new().fill(theme::GROUND);
@@ -415,6 +424,28 @@ impl eframe::App for LetoApp {
         if open && self.state.screen == Screen::Pcs {
             // Wake up for the next search even if nobody touches the app.
             ui.ctx().request_repaint_after_secs(1.0);
+        }
+    }
+}
+
+impl LetoApp {
+    /// Tells the log now and then how the stream does, at `now`: the numbers
+    /// the statistics show over the picture, for whoever reads the log of a
+    /// stream that was slow.
+    fn tell_the_log(&mut self, now: f64, counts: Option<Counts>, round_trip: Option<Duration>) {
+        let Some(counts) = counts else { return };
+        let Some((then, before)) = self.told else {
+            self.told = Some((now, counts));
+            return;
+        };
+        // A new stream counts from nothing again.
+        if counts.received < before.received {
+            self.told = Some((now, counts));
+        } else if now - then >= TOLD_EVERY {
+            if let Some(rates) = Rates::between(&before, &counts, 0, now - then) {
+                log::debug!("{}{}", rates.told(round_trip), stats::drawn(self.player.drawn()));
+            }
+            self.told = Some((now, counts));
         }
     }
 }

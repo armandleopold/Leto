@@ -129,7 +129,8 @@ builds and tests it for real.
   goes in `backend/`, and `ui/` only draws. See `docs/architecture.md`.
 - What the app asks of the operating system beyond what egui does (the
   keyboard below the window, the mode of a screen) goes in `leto-system`,
-  and the app asks for it through `window.rs`.
+  and the app asks for it through `window.rs`. The engine asks it for one
+  thing, a clock that counts finely while a stream runs.
 - `leto-client` hands a stream over still encoded and `leto-media` decodes
   it. Neither depends on the other, outside the tests of `leto-client`: the
   app's backend joins them. The camera goes the other way under the same
