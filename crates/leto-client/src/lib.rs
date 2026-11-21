@@ -61,8 +61,8 @@ use moonlight_common::{
 };
 pub use service::{Service, Shell};
 pub use session::{
-    AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings, Tally,
-    VideoFrame, VideoSetup, VideoSink,
+    Arrived, AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings,
+    Tally, VideoFrame, VideoSetup, VideoSink,
 };
 use store::{Identity, Saved, SavedAddress, SavedHost, Store};
 use transport::Transport;

@@ -398,6 +398,82 @@ fn a_lost_stream_comes_back_by_itself_while_the_person_watches_it() {
 }
 
 #[test]
+fn a_stream_that_brings_no_picture_is_asked_for_again() {
+    let host = FakeHost::start();
+    let desk = Desk::new();
+    let id = desk.pair(&host);
+    // The first stream connects and brings nothing to see.
+    host.send_no_pictures(1);
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
+    desk.wait(|event| matches!(event, Event::Playing { attempt: 2, .. }).then_some(()));
+    assert_eq!(host.streams_started(), 1);
+
+    // Nobody leaves it: Leto gives it up by itself, and asks again.
+    desk.wait(|event| match event {
+        Event::Reconnecting { attempt: 2 } => Some(()),
+        Event::StreamEnded { why, .. } => panic!("the stream ended: {why:?}"),
+        _ => None,
+    });
+    assert_eq!(desk.service.shell().counter.tally().frames, 0);
+    desk.wait(|event| match event {
+        Event::Playing { attempt: 2, .. } => Some(()),
+        Event::PlayFailed { message, .. } => panic!("{message}"),
+        _ => None,
+    });
+    wait_for("the pictures of the second stream", || {
+        desk.service.shell().counter.tally().frames > 0
+    });
+    assert_eq!(host.streams_started(), 2);
+    assert_eq!(host.running_app(), Some(1));
+}
+
+#[test]
+fn a_pc_that_never_brings_a_picture_is_not_asked_for_ever() {
+    let host = FakeHost::start();
+    let desk = Desk::new();
+    let id = desk.pair(&host);
+    host.send_no_pictures(u32::MAX);
+    desk.service.ask(Request::Play {
+        host: id,
+        app: 1,
+        attempt: 2,
+        screen: None,
+        choices: Choices::default(),
+    });
+    // Asked for, then asked for again twice.
+    for _ in 0..3 {
+        desk.wait(|event| match event {
+            Event::Playing { attempt: 2, .. } => Some(()),
+            Event::PlayFailed { message, .. } => panic!("{message}"),
+            Event::StreamEnded { why, .. } => panic!("the stream ended: {why:?}"),
+            _ => None,
+        });
+    }
+    wait_for("the third stream", || host.streams_started() == 3);
+    // The third one is left to wait: it stays, and no fourth is asked for,
+    // however long after. A slow machine can only make this pass.
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(host.streams_started(), 3);
+    assert_eq!(desk.service.streaming(), Some(2));
+    // Once the PC has pictures, they are shown.
+    host.send_no_pictures(0);
+    host.drop_stream();
+    desk.wait(|event| match event {
+        Event::Playing { attempt: 2, .. } => Some(()),
+        Event::PlayFailed { message, .. } => panic!("{message}"),
+        _ => None,
+    });
+    wait_for("the pictures at last", || desk.service.shell().counter.tally().frames > 0);
+    assert_eq!(host.streams_started(), 4);
+}
+
+#[test]
 fn a_lost_stream_is_no_longer_asked_for_once_the_person_leaves() {
     let host = FakeHost::start();
     let desk = Desk::new();

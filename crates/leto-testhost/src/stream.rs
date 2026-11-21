@@ -111,6 +111,8 @@ pub(crate) struct Launch {
     pub encodes: Codecs,
     /// Never give up on a client that went silent.
     pub waits_for_goodbye: bool,
+    /// Bring no pictures: the rest of the stream is as ever.
+    pub blank: bool,
 }
 
 /// How long a host that [waits for a goodbye](Launch::waits_for_goodbye)
@@ -926,7 +928,8 @@ fn serve_video(inner: &Inner, negotiated: Negotiated) {
         let keyframe = inner.wants_keyframe.swap(false, Ordering::SeqCst);
         let hands = *lock(&inner.hands);
         let seen = inner.launch.camera.as_ref().and_then(|cameras| cameras.seen());
-        if let Some(frame) = card.next(keyframe, hands, seen.as_deref()) {
+        let frame = card.next(keyframe, hands, seen.as_deref());
+        if let Some(frame) = frame.filter(|_| !inner.launch.blank) {
             let kind = if frame.keyframe { ServerFrameType::Idr } else { ServerFrameType::PFrame };
             // Video time counts in ninetieths of a millisecond.
             let timestamp = (number * 90_000 / u64::from(negotiated.fps)) as u32;

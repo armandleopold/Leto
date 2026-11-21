@@ -506,8 +506,12 @@ pub fn show(
     if view.connected {
         let arrived = status.counts.map_or(player.shown, |counts| counts.received);
         if seems_lost(view, picture.is_some(), arrived, now, &mut player.arrived) {
-            let sign = connection_lost(ui.ctx(), window, player.bar);
-            player.over.push(sign);
+            // Before the first picture, the middle of the window says that
+            // the stream is asked for again.
+            if picture.is_some() {
+                let sign = connection_lost(ui.ctx(), window, player.bar);
+                player.over.push(sign);
+            }
         } else if picture.is_some()
             && let Some((_, since)) = player.arrived
         {
@@ -971,7 +975,11 @@ pub(super) fn meter(level: f32) -> f32 {
 /// What is shown until the first picture, or why none comes. Returns true
 /// when the person gives up waiting.
 fn waiting(ui: &mut Ui, window: Rect, view: &StreamView, problem: Option<&str>) -> bool {
-    let text = if view.connected {
+    let text = if view.connected && view.reconnecting {
+        // The stream connected and brought nothing to see, or was lost
+        // before it did: Leto asks for it again by itself.
+        format!("No picture yet. Asking {} for the stream again…", view.host.name)
+    } else if view.connected {
         "Waiting for the first picture…".to_owned()
     } else {
         format!("Starting {} on {}…", view.app.title, view.host.name)

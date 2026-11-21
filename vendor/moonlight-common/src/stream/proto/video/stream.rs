@@ -43,6 +43,19 @@ pub enum VideoStreamEvent {
     SignalIdr,
 }
 
+/// Leto: what arrived of the video so far, for a client that says why no
+/// picture comes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VideoArrivals {
+    /// Packets that came from the host.
+    pub packets: u64,
+    /// Whole pictures handed on to be decoded.
+    pub pictures: u64,
+    /// How many times the host was asked for a keyframe because no picture
+    /// came in time.
+    pub keyframes_asked: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct VideoStreamConfig {
     pub addr: SocketAddr,
@@ -63,6 +76,8 @@ pub struct VideoStream {
     frames_first_seen: HashMap<FrameIndex, Instant>,
     idr_deadline: Instant,
     events: VecDeque<VideoStreamEvent>,
+    /// Leto: see [`VideoArrivals`].
+    arrivals: VideoArrivals,
 }
 
 impl VideoStream {
@@ -90,6 +105,7 @@ impl VideoStream {
             last_frame: now,
             idr_deadline: now + IDR_REQUEST_TIMEOUT,
             events: Default::default(),
+            arrivals: VideoArrivals::default(),
         }
     }
 
@@ -99,6 +115,11 @@ impl VideoStream {
             .iter()
             .filter(|event| matches!(event, VideoStreamEvent::OnFrame(_)))
             .count()
+    }
+
+    /// Leto: what arrived so far.
+    pub fn arrivals(&self) -> VideoArrivals {
+        self.arrivals
     }
 
     fn do_idr_request(&mut self) -> Result<(), Error> {
@@ -112,6 +133,7 @@ impl VideoStream {
             info!(now = ?self.last_now, waiting_for_idr_since = ?self.idr_deadline, "requesting idr and unsyncing video stream");
 
             self.events.push_back(VideoStreamEvent::SignalIdr);
+            self.arrivals.keyframes_asked += 1;
         }
 
         Ok(())
@@ -186,6 +208,7 @@ impl VideoStream {
                 .take_frame(frame_index)
                 .expect("VideoStream::update, take_frame");
             self.events.push_back(VideoStreamEvent::OnFrame(frame));
+            self.arrivals.pictures += 1;
 
             return Ok(());
         }
@@ -261,6 +284,7 @@ impl UdpStream for VideoStream {
 
             self.first_packet = Some(now);
         }
+        self.arrivals.packets += 1;
 
         self.depayloader.handle_packet(receive.data)?;
 
