@@ -40,7 +40,7 @@ step "Pair"
 if ! pin=$(screen pin 4-pin | tail -1); then
   screen tap 4-pc Salon || fail "the stand-in PC is not listed"
   sleep 6
-  pin=$(screen pin 5-pin | tail -1)
+  pin=$(screen pin 5-pin | tail -1) || fail "no PIN on the screen"
 fi
 echo "PIN read: $pin"
 echo "$pin" >&3
@@ -75,7 +75,7 @@ done_
 # whoever reads only the log.
 step "Screenshots, small, as base64 JPEG"
 for shot in shots/*.png; do
-  case "$shot" in *.flipped.png) continue ;; esac
+  case "$shot" in *.flipped.png|*.digits.png) continue ;; esac
   echo "=== $shot"
   convert "$shot" -resize 480x -quality 60 jpg:- | base64 -w 0
   echo

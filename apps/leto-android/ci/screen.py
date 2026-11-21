@@ -52,6 +52,32 @@ def words(path):
     return found
 
 
+def pin(path):
+    """The PIN: the tallest group of four digits on the screen.
+
+    Its digits sit in boxes outlined in the accent colour, which tesseract
+    reads as more digits; a threshold keeps only the light digits, and the
+    clock and status icons are smaller.
+    """
+    light = path + ".digits.png"
+    subprocess.run(
+        ["convert", path, "-alpha", "off", "-colorspace", "Gray", "-threshold", "70%",
+         "-negate", light], check=True
+    )
+    read = subprocess.run(
+        ["tesseract", light, "-", "--psm", "11", "-c", "tessedit_char_whitelist=0123456789",
+         "tsv"],
+        capture_output=True, text=True, check=True,
+    )
+    groups = []
+    for line in read.stdout.splitlines()[1:]:
+        cells = line.split("\t")
+        if len(cells) >= 12 and re.fullmatch(r"\d{4}", cells[11].strip()):
+            groups.append((int(cells[9]), cells[11].strip()))
+    print("four digits read:", groups)
+    return max(groups)[1] if groups else None
+
+
 # Leto's accent, the fill of its main buttons (`leto_core::brand`).
 ACCENT = "#FF6B35"
 
@@ -92,18 +118,14 @@ def main():
         subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=True)
         print(f"tapped the main button at {x},{y}")
         return 0
+    if command == "pin":
+        code = pin(path)
+        if code is None:
+            return 1
+        print(code)
+        return 0
     found = words(path)
     print("read:", " ".join(word for word, _, _ in found))
-    if command == "pin":
-        for word, _, _ in found:
-            if re.fullmatch(r"\d{4}", word):
-                print(word)
-                return 0
-        digits = [word for word, _, _ in found if re.fullmatch(r"\d", word)]
-        if len(digits) >= 4:
-            print("".join(digits[:4]))
-            return 0
-        return 1
     # tap: the first of the words, where the others follow it.
     for index, (word, x, y) in enumerate(found):
         following = [w for w, _, _ in found[index : index + len(wanted)]]
