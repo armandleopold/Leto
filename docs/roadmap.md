@@ -33,7 +33,9 @@ Progress:
   and Alt+F4 too; Ctrl+Alt+Shift+Z gives the keyboard and the mouse back and
   Ctrl+Alt+Shift+S shows the statistics. The pointer is this device's own,
   as smooth as the mouse, and the PC is asked to leave its own out of the
-  pictures. The PC is asked for a screen of its own just like this device's,
+  pictures; Ctrl+Alt+Shift+P or a button of the bar shows the PC's own
+  instead, with its shapes, and back. The pointer reaches the far edges of
+  the PC's screen. The PC is asked for a screen of its own just like this device's,
   in size and pace, which Apollo makes. A window another one hides or covers
   shows one picture a second, or
   none. See [architecture.md](architecture.md#a-stream).

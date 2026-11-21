@@ -109,6 +109,36 @@ pub fn mouse(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([at(rect, 0.5, 0.2), at(rect, 0.5, 0.42)], stroke);
 }
 
+/// The arrow of a pointer, as wide and high as `rect`.
+fn arrow(rect: Rect) -> Vec<Pos2> {
+    [
+        (0.16, 0.02),
+        (0.16, 0.84),
+        (0.38, 0.64),
+        (0.54, 0.98),
+        (0.68, 0.91),
+        (0.53, 0.59),
+        (0.82, 0.59),
+    ]
+    .into_iter()
+    .map(|(x, y)| at(rect, x, y))
+    .collect()
+}
+
+/// A pointer: this device's own.
+pub fn pointer(painter: &Painter, rect: Rect, color: Color32) {
+    painter.add(egui::Shape::closed_line(arrow(rect), stroke(rect, color)));
+}
+
+/// A pointer inside a picture: the one the PC draws.
+pub fn pointer_in_picture(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let picture = Rect::from_min_max(at(rect, 0.0, 0.08), at(rect, 1.0, 0.92));
+    painter.rect_stroke(picture, rect.width() * 0.1, stroke, StrokeKind::Inside);
+    let inside = Rect::from_min_max(at(rect, 0.3, 0.26), at(rect, 0.78, 0.74));
+    painter.add(egui::Shape::convex_polygon(arrow(inside), color, egui::Stroke::NONE));
+}
+
 /// A camera: its body, and the lens that sticks out to the right.
 pub fn camera(painter: &Painter, rect: Rect, color: Color32) {
     let stroke = stroke(rect, color);

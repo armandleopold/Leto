@@ -171,6 +171,8 @@ enum Hands {
 enum Told {
     Microphone,
     Camera,
+    /// Whose pointer shows on the pictures.
+    Pointer,
 }
 
 impl Player {
@@ -300,7 +302,7 @@ pub fn show(
     state: &mut State,
     view: &StreamView,
     player: &mut Player,
-    settings: &Settings,
+    settings: &mut Settings,
     status: Status<'_>,
 ) -> Vec<Input> {
     let window = ui.max_rect();
@@ -382,11 +384,12 @@ pub fn show(
                 Some(Shortcut::Camera) => asked.camera = true,
                 Some(Shortcut::Statistics) => asked.statistics = true,
                 Some(Shortcut::Release) => asked.release = true,
+                Some(Shortcut::Pointer) => asked.pointer = true,
                 None => {}
             }
         }
-        if let Some((place, size)) = picture {
-            let clicked = mouse(ui, player, place, size);
+        if let Some((place, _)) = picture {
+            let clicked = mouse(ui, player, place);
             if player.released {
                 // A click on the picture gives the keyboard and the mouse
                 // back to the PC, as in Moonlight. The PC hears nothing of
@@ -446,7 +449,14 @@ pub fn show(
         }
     }
 
-    overlay(ui, window, view, player, status, now, &mut asked);
+    // Whose pointer shows, where there is a choice: the PC can leave its
+    // own out of the pictures and hears both keyboard and mouse.
+    let choice = view.connected
+        && hides_its_pointer(view.host.kind)
+        && view.input.keyboard
+        && view.input.mouse;
+    let whose = choice.then_some(settings.local_pointer);
+    overlay(ui, window, view, player, status, whose, &mut asked);
     if view.connected {
         let arrived = status.counts.map_or(player.shown, |counts| counts.received);
         if seems_lost(view, picture.is_some(), arrived, now, &mut player.arrived) {
@@ -486,6 +496,13 @@ pub fn show(
         player.controls.mute(player.released);
         player.bar_until = Some(now + BAR_RETURNS);
         player.talks_of = None;
+    }
+    if asked.pointer && choice {
+        // Kept, like the switch of the settings: the next stream starts
+        // with the pointer this one ended with.
+        settings.local_pointer = !settings.local_pointer;
+        player.bar_until = Some(now + BAR_RETURNS);
+        player.talks_of = Some(Told::Pointer);
     }
     if asked.statistics {
         player.statistics = match player.statistics {
@@ -551,11 +568,13 @@ struct Asked {
     statistics: bool,
     /// Give the keyboard and the mouse back to this device, or to the PC.
     release: bool,
+    /// Show the other pointer: this device's, or the PC's own.
+    pointer: bool,
 }
 
 /// Passes what the mouse did on to the controls. Returns whether a button
 /// was pressed on the picture.
-fn mouse(ui: &Ui, player: &mut Player, place: Rect, size: [usize; 2]) -> bool {
+fn mouse(ui: &Ui, player: &mut Player, place: Rect) -> bool {
     let game_mouse = player.game_mouse;
     // What happens on the bar is for the bar.
     let bar = player.bar.filter(|_| !game_mouse).map(|bar| bar.expand(BAR_MARGIN));
@@ -571,12 +590,13 @@ fn mouse(ui: &Ui, player: &mut Player, place: Rect, size: [usize; 2]) -> bool {
 
     ui.input(|input| {
         let mut pointer = input.pointer.latest_pos();
+        let scale = input.pixels_per_point;
         for event in &input.events {
             match event {
                 Event::PointerMoved(at) => {
                     pointer = Some(*at);
                     if !game_mouse && !on_bar(*at) {
-                        controls.pointer_at(*at, place, size);
+                        controls.pointer_at(*at, place, scale);
                     }
                 }
                 Event::MouseMoved(delta) if game_mouse => controls.moved(*delta),
@@ -587,7 +607,7 @@ fn mouse(ui: &Ui, player: &mut Player, place: Rect, size: [usize; 2]) -> bool {
                     if !game_mouse {
                         // The click lands where the pointer is, even if the
                         // PC has not heard of it moving there.
-                        controls.pointer_at(*pos, place, size);
+                        controls.pointer_at(*pos, place, scale);
                     }
                     controls.button(*button, true);
                     clicked = true;
@@ -606,19 +626,21 @@ fn mouse(ui: &Ui, player: &mut Player, place: Rect, size: [usize; 2]) -> bool {
 }
 
 /// Everything drawn over the picture: the bar, the grip that opens it, and
-/// the pointer of this device, or its absence.
+/// the pointer of this device, or its absence. `whose` says whether the
+/// pointer on the pictures is this device's, where there is a choice.
 fn overlay(
     ui: &Ui,
     window: Rect,
     view: &StreamView,
     player: &mut Player,
     status: Status<'_>,
-    now: f64,
+    whose: Option<bool>,
     asked: &mut Asked,
 ) {
     let has_picture = player.surface.is_some();
-    let (idle, pointer) =
-        ui.input(|input| (input.pointer.time_since_last_movement(), input.pointer.hover_pos()));
+    let (now, idle, pointer) = ui.input(|input| {
+        (input.time, input.pointer.time_since_last_movement(), input.pointer.hover_pos())
+    });
     // With the game mouse the pointer is hidden and going nowhere: it opens
     // nothing.
     let game_mouse = player.hands() == Hands::GameMouse;
@@ -646,15 +668,17 @@ fn overlay(
             game_mouse: player.game_mouse && !player.released,
             voice: status.voice.map(meter),
             film: status.film,
+            local_pointer: whose,
             windowed: frame::OWN && !window::fills_screen(ui.ctx()),
             last: player.bar,
             note: bar_note(
                 view,
                 player.hands(),
                 timed,
-                player.talks_of.map(|told| match told {
-                    Told::Microphone => News::Microphone(status.voice.is_some()),
-                    Told::Camera => News::Camera(status.film),
+                player.talks_of.and_then(|told| match told {
+                    Told::Microphone => Some(News::Microphone(status.voice.is_some())),
+                    Told::Camera => Some(News::Camera(status.film)),
+                    Told::Pointer => whose.map(News::Pointer),
                 }),
             ),
             opacity,
@@ -928,6 +952,9 @@ struct Bar<'a> {
     voice: Option<f32>,
     /// How the camera is doing, while it captures.
     film: Option<Filming>,
+    /// Whether this device's pointer shows on the pictures and not the
+    /// PC's own, where there is a choice.
+    local_pointer: Option<bool>,
     /// The stream is in a window whose frame Leto draws: the bar moves it,
     /// and has its buttons.
     windowed: bool,
@@ -977,6 +1004,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                             let has_camera = content.view.camera != Cam::Unknown;
                             let others = if narrow { 210.0 } else { 330.0 }
                                 + if has_camera { 44.0 } else { 0.0 }
+                                + if content.local_pointer.is_some() { 44.0 } else { 0.0 }
                                 + if windowed { 3.0 * 36.0 + 17.0 } else { 0.0 };
                             names(ui, content.view, (window.width() - others).clamp(80.0, 360.0));
                             if let Some([width, height]) = content.picture.filter(|_| !narrow) {
@@ -991,6 +1019,9 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 asked.microphone |=
                                     microphone_switch(ui, content.view, content.voice);
                                 asked.camera |= camera_switch(ui, content.view, content.film);
+                            }
+                            if let Some(local) = content.local_pointer.filter(|_| usable) {
+                                asked.pointer |= pointer_switch(ui, content.view, local);
                             }
                             if usable {
                                 let mouse = format!(
@@ -1029,6 +1060,26 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
         })
         .response
         .rect
+}
+
+/// The switch between this device's pointer and the PC's own, which shows
+/// the one on the pictures now: `local` for this device's. Returns whether
+/// the person pressed it.
+fn pointer_switch(ui: &mut Ui, view: &StreamView, local: bool) -> bool {
+    let host = &view.host.name;
+    let keys = Shortcut::Pointer.keys();
+    let (icon, name): (fn(&egui::Painter, Rect, Color32), _) = if local {
+        (
+            icons::pointer,
+            format!("This device's pointer shows. Show the pointer of {host} ({keys})"),
+        )
+    } else {
+        (
+            icons::pointer_in_picture,
+            format!("The pointer of {host} shows. Show this device's pointer ({keys})"),
+        )
+    };
+    widgets::icon_button(ui, icon, &name).clicked()
 }
 
 /// The switch of the microphone, which also shows what the microphone
@@ -1101,6 +1152,8 @@ enum News {
     Microphone(bool),
     /// The camera, and how it is doing while it captures.
     Camera(Option<Filming>),
+    /// The pointer on the pictures, and whether it is this device's.
+    Pointer(bool),
 }
 
 /// The app and the PC on one line, cut short if the window is narrow.
@@ -1171,6 +1224,20 @@ fn bar_note(view: &StreamView, hands: Hands, timed: bool, news: Option<News>) ->
             }
             _ => {}
         },
+        Some(News::Pointer(true)) => {
+            return said(format!(
+                "This device's pointer shows: it moves at once and keeps the shape of an arrow. \
+                 {} shows the pointer of {host}, with its shapes.",
+                Shortcut::Pointer.keys()
+            ));
+        }
+        Some(News::Pointer(false)) => {
+            return said(format!(
+                "The pointer of {host} shows, as {host} draws it in the picture. {} shows this \
+                 device's pointer.",
+                Shortcut::Pointer.keys()
+            ));
+        }
         None => {}
     }
     timed.then(|| note(view, hands))
@@ -1373,7 +1440,7 @@ mod tests {
         ctx: &egui::Context,
         view: &StreamView,
         player: &mut Player,
-        settings: &Settings,
+        settings: &mut Settings,
         pointer: Option<Pos2>,
     ) -> (Vec<Input>, CursorIcon) {
         let mut state = State::new();
@@ -1410,7 +1477,7 @@ mod tests {
     #[test]
     fn the_pc_hides_its_pointer_while_this_devices_pointer_shows() {
         let ctx = egui::Context::default();
-        let settings = quiet(true);
+        let mut settings = quiet(true);
         let view = view(InputAllowed::ALL);
         let mut player = Player::default();
         player.picture(&ctx, Picture::Behind([1920, 1080]), None);
@@ -1418,9 +1485,9 @@ mod tests {
 
         // Connected: the PC is asked once, and this device's pointer shows
         // from the next frame.
-        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, middle).0), 1);
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 1);
         assert!(player.pc_hides_pointer(&view));
-        let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+        let (heard, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
         assert_eq!(switches(&heard), 0);
         assert_eq!(shown, CursorIcon::Default);
         assert!(
@@ -1431,21 +1498,111 @@ mod tests {
         // The game mouse has no pointer here: the PC draws its own again,
         // and hides it once more when the pointer is back.
         player.game_mouse = true;
-        let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+        let (heard, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
         assert_eq!(switches(&heard), 1);
         assert_eq!(shown, CursorIcon::None);
         player.game_mouse = false;
-        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, middle).0), 1);
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 1);
 
         // A stream that ended without leaving it left the PC hiding its
         // pointer: the next stream to that PC does not switch it back on.
         player.clear(&ctx);
-        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, None).0), 0);
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, None).0), 0);
 
         // Leaving, here because the window closes, has the PC draw it again.
         player.leave_to_close();
-        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, None).0), 1);
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, None).0), 1);
         assert!(!player.pc_hides_pointer(&view));
+    }
+
+    /// Presses Ctrl+Alt+Shift+P and lets go of it all.
+    fn press_the_pointer_shortcut(player: &mut Player) {
+        let held = [PcKey::LEFT_CTRL, PcKey::LEFT_ALT, PcKey::LEFT_SHIFT];
+        for modifier in held {
+            player.controls.stroke(Some(modifier), None, true);
+        }
+        for down in [true, false] {
+            player.strokes.push(KeyStroke::Window { printed: Key::P, place: None, down });
+        }
+        for modifier in held {
+            player.strokes.push(KeyStroke::System(window::Stroke {
+                key: modifier,
+                letter: None,
+                down: false,
+            }));
+        }
+    }
+
+    #[test]
+    fn the_pointer_is_switched_during_a_stream_and_the_choice_is_kept() {
+        let ctx = egui::Context::default();
+        let mut settings = quiet(true);
+        let view = view(InputAllowed::ALL);
+        let mut player = Player::default();
+        player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+        let middle = Some(pos2(480.0, 270.0));
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &mut settings, middle).0), 1);
+        assert!(player.pc_hides_pointer(&view));
+
+        // The PC draws its pointer again, shapes and all, and this device
+        // hides its own over the picture.
+        press_the_pointer_shortcut(&mut player);
+        let (heard, _) = frame(&ctx, &view, &mut player, &mut settings, middle);
+        assert!(!settings.local_pointer, "the choice is the setting's");
+        assert_eq!(switches(&heard), 1);
+        assert!(!player.pc_hides_pointer(&view));
+        assert_eq!(player.talks_of, Some(Told::Pointer), "the bar says whose pointer shows");
+        let (heard, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
+        assert_eq!(switches(&heard), 0);
+        assert_eq!(shown, CursorIcon::None);
+
+        // And back.
+        press_the_pointer_shortcut(&mut player);
+        let (heard, _) = frame(&ctx, &view, &mut player, &mut settings, middle);
+        assert!(settings.local_pointer);
+        assert_eq!(switches(&heard), 1);
+        assert!(player.pc_hides_pointer(&view));
+        let (_, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
+        assert_eq!(shown, CursorIcon::Default);
+    }
+
+    #[test]
+    fn there_is_no_pointer_to_switch_where_the_pc_always_draws_its_own() {
+        let ctx = egui::Context::default();
+        let no_mouse = InputAllowed { mouse: false, ..InputAllowed::ALL };
+        for (kind, input) in
+            [(HostKind::GameStream, InputAllowed::ALL), (HostKind::Apollo, no_mouse)]
+        {
+            let mut view = view(input);
+            view.host.kind = kind;
+            let mut player = Player::default();
+            player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+            let mut settings = quiet(true);
+            frame(&ctx, &view, &mut player, &mut settings, None);
+
+            press_the_pointer_shortcut(&mut player);
+            let (heard, _) = frame(&ctx, &view, &mut player, &mut settings, None);
+            assert!(settings.local_pointer, "{kind:?}: nothing to choose, nothing changed");
+            assert_eq!(switches(&heard), 0);
+            assert_eq!(player.talks_of, None);
+        }
+    }
+
+    #[test]
+    fn the_bar_says_whose_pointer_shows_and_how_to_show_the_other() {
+        let view = view(InputAllowed::ALL);
+        let said = |local| {
+            bar_note(&view, Hands::Pointer, true, Some(News::Pointer(local)))
+                .expect("a line about the pointer")
+        };
+        assert!(said(true).text.starts_with("This device's pointer shows"), "{:?}", said(true));
+        assert!(said(false).text.starts_with("The pointer of Salon shows"), "{:?}", said(false));
+        for local in [true, false] {
+            assert!(said(local).text.contains(Shortcut::Pointer.keys()));
+            assert!(!said(local).problem);
+        }
+        // Once said, the bar that opens under the pointer says nothing.
+        assert_eq!(bar_note(&view, Hands::Pointer, false, Some(News::Pointer(true))), None);
     }
 
     #[test]
@@ -1463,10 +1620,10 @@ mod tests {
             view.host.kind = kind;
             let mut player = Player::default();
             player.picture(&ctx, Picture::Behind([1920, 1080]), None);
-            let settings = quiet(local_pointer);
+            let mut settings = quiet(local_pointer);
             let middle = Some(pos2(480.0, 270.0));
             for _ in 0..2 {
-                let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+                let (heard, shown) = frame(&ctx, &view, &mut player, &mut settings, middle);
                 assert_eq!(switches(&heard), 0, "{kind:?}, {input:?}");
                 assert_eq!(shown, CursorIcon::None, "{kind:?}, {input:?}");
             }

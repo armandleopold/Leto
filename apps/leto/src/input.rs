@@ -47,6 +47,8 @@ pub enum Shortcut {
     /// Z: give the keyboard and the mouse back to this device, or take them
     /// again for the PC.
     Release,
+    /// P: show this device's pointer on the pictures, or the PC's own.
+    Pointer,
 }
 
 impl Shortcut {
@@ -61,6 +63,7 @@ impl Shortcut {
             'C' => Some(Self::Camera),
             'S' => Some(Self::Statistics),
             'Z' => Some(Self::Release),
+            'P' => Some(Self::Pointer),
             _ => None,
         }
     }
@@ -75,6 +78,7 @@ impl Shortcut {
             Self::Camera => "Ctrl+Alt+Shift+C",
             Self::Statistics => "Ctrl+Alt+Shift+S",
             Self::Release => "Ctrl+Alt+Shift+Z",
+            Self::Pointer => "Ctrl+Alt+Shift+P",
         }
     }
 }
@@ -313,22 +317,33 @@ impl Controls {
         self.muted = mute;
     }
 
-    /// The pointer is at `pointer`, over a picture of `size` pixels drawn at
-    /// `place`. Outside the picture counts as its nearest edge.
-    pub fn pointer_at(&mut self, pointer: Pos2, place: Rect, size: [usize; 2]) {
-        let (Ok(width), Ok(height)) = (i16::try_from(size[0]), i16::try_from(size[1])) else {
+    /// The pointer is at `pointer`, over a picture drawn at `place`, in a
+    /// window that makes `scale` pixels of a point. Outside the picture
+    /// counts as its nearest edge.
+    ///
+    /// The PC is told which pixel of the window the pointer is on, counted
+    /// from the picture's corner, and the last pixel the picture covers
+    /// here is the far edge of the PC's screen: the size told is one less
+    /// than the pixels counted. A pointer cannot be further than on that
+    /// pixel, and a PC told "1079 of 1080" stops one row short of the edge,
+    /// where a taskbar that hides itself never comes out. Moonlight tells
+    /// the same: its window's pixels (moonlight-qt), out of one less
+    /// (moonlight-common-c, `inputSendThreadProc`).
+    pub fn pointer_at(&mut self, pointer: Pos2, place: Rect, scale: f32) {
+        // Two pixels at least: one would be both edges.
+        let pixels = |points: f32| {
+            i16::try_from((points * scale).round() as i32).ok().filter(|pixels| *pixels >= 2)
+        };
+        let (Some(width), Some(height)) = (pixels(place.width()), pixels(place.height())) else {
             return;
         };
-        if width <= 0 || height <= 0 || place.width() <= 0.0 || place.height() <= 0.0 {
-            return;
-        }
-        let across = ((pointer.x - place.left()) / place.width()).clamp(0.0, 1.0);
-        let down = ((pointer.y - place.top()) / place.height()).clamp(0.0, 1.0);
+        let (last_x, last_y) = (width - 1, height - 1);
+        let on = |points: f32, last: i16| (points * scale).round().clamp(0.0, f32::from(last));
         self.push(Input::MousePosition {
-            x: (across * f32::from(width)).round() as i16,
-            y: (down * f32::from(height)).round() as i16,
-            width,
-            height,
+            x: on(pointer.x - place.left(), last_x) as i16,
+            y: on(pointer.y - place.top(), last_y) as i16,
+            width: last_x,
+            height: last_y,
         });
     }
 
@@ -649,7 +664,7 @@ mod tests {
         controls.pointer_at(
             pos2(10.0, 10.0),
             Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0)),
-            [100, 100],
+            1.0,
         );
         controls.wheel(MouseWheelUnit::Line, vec2(0.0, 1.0));
         assert_eq!(controls.stroke(Some(letter('W')), Some('Z'), true), Some(Shortcut::Release));
@@ -756,29 +771,52 @@ mod tests {
 
     #[test]
     fn the_pointer_is_placed_on_the_picture_not_on_the_window() {
-        // A 1920 × 1080 picture drawn at half size with black above it.
+        // A picture drawn 960 by 540 points with black above it, in a window
+        // that makes two pixels of a point: 1920 by 1080 pixels.
         let place = Rect::from_min_size(pos2(0.0, 100.0), vec2(960.0, 540.0));
-        let size = [1920, 1080];
         let at = |pointer| {
             let mut controls = Controls::default();
-            controls.pointer_at(pointer, place, size);
+            controls.pointer_at(pointer, place, 2.0);
             match controls.take()[..] {
-                [Input::MousePosition { x, y, width: 1920, height: 1080 }] => (x, y),
+                [Input::MousePosition { x, y, width: 1919, height: 1079 }] => (x, y),
                 ref other => panic!("{other:?}"),
             }
         };
         assert_eq!(at(pos2(480.0, 370.0)), (960, 540));
         assert_eq!(at(pos2(0.0, 100.0)), (0, 0));
-        assert_eq!(at(pos2(960.0, 640.0)), (1920, 1080));
         // In the black around the picture: its nearest edge.
         assert_eq!(at(pos2(240.0, 20.0)), (480, 0));
-        assert_eq!(at(pos2(-50.0, 900.0)), (0, 1080));
+        assert_eq!(at(pos2(-50.0, 900.0)), (0, 1079));
+        assert_eq!(at(pos2(960.0, 640.0)), (1919, 1079));
 
         // No picture, no position.
         let mut controls = Controls::default();
-        controls.pointer_at(pos2(10.0, 10.0), place, [0, 0]);
-        controls.pointer_at(pos2(10.0, 10.0), Rect::ZERO, size);
+        controls.pointer_at(pos2(10.0, 10.0), place, 0.0);
+        controls.pointer_at(pos2(10.0, 10.0), Rect::ZERO, 2.0);
         assert_eq!(controls.take(), []);
+    }
+
+    #[test]
+    fn the_last_pixel_of_the_picture_is_the_far_edge_of_the_pcs_screen() {
+        // A picture that fills a screen of 3840 by 1080 pixels: the pointer
+        // goes no further than the pixel 3839, 1079, and a taskbar that
+        // hides at the bottom of the PC's screen waits for the last row.
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let place = Rect::from_min_size(pos2(0.0, 0.0), vec2(3840.0, 1080.0) / scale);
+            let mut controls = Controls::default();
+            controls.pointer_at(pos2(3839.0, 1079.0) / scale, place, scale);
+            let [Input::MousePosition { x, y, width, height }] = controls.take()[..] else {
+                panic!("one position");
+            };
+            assert_eq!((x, y), (width, height), "at {scale} pixels a point");
+            assert_eq!((width, height), (3839, 1079));
+
+            // The first pixel is the near edge, as it was.
+            controls.pointer_at(pos2(0.0, 0.0), place, scale);
+            let [Input::MousePosition { x: 0, y: 0, .. }] = controls.take()[..] else {
+                panic!("the corner");
+            };
+        }
     }
 
     #[test]
@@ -786,14 +824,14 @@ mod tests {
         let place = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0));
         let mut controls = Controls::default();
         for x in [10.0, 20.0, 30.0] {
-            controls.pointer_at(pos2(x, 50.0), place, [100, 100]);
+            controls.pointer_at(pos2(x, 50.0), place, 1.0);
         }
         controls.button(PointerButton::Primary, true);
-        controls.pointer_at(pos2(40.0, 50.0), place, [100, 100]);
-        controls.pointer_at(pos2(60.0, 50.0), place, [100, 100]);
+        controls.pointer_at(pos2(40.0, 50.0), place, 1.0);
+        controls.pointer_at(pos2(60.0, 50.0), place, 1.0);
         controls.button(PointerButton::Primary, false);
 
-        let position = |x| Input::MousePosition { x, y: 50, width: 100, height: 100 };
+        let position = |x| Input::MousePosition { x, y: 50, width: 99, height: 99 };
         assert_eq!(
             controls.take(),
             [
