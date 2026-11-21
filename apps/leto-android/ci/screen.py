@@ -119,7 +119,9 @@ ACCENT = "#FF6B35"
 
 
 def accent(path):
-    """The centre of the largest patch of the accent colour, if any."""
+    """The centre of the largest button of the accent colour, if any: a
+    patch wider than tall, so that the logo's round sun on the first
+    start's splash is not taken for one."""
     listing = subprocess.run(
         ["convert", path, "-alpha", "off", "-fuzz", "15%", "-fill", "white", "-opaque", ACCENT,
          "-fill", "black", "+opaque", "white",
@@ -132,6 +134,10 @@ def accent(path):
     for line in listing.splitlines()[1:]:
         fields = line.split()
         if len(fields) < 5 or "255,255,255" not in fields[-1]:
+            continue
+        size = fields[1].split("+")[0]
+        w, h = (int(v) for v in size.split("x"))
+        if w < 2 * h:
             continue
         x, y = (float(v) for v in fields[2].split(","))
         area = int(fields[3])
