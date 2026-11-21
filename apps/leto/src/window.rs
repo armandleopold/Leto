@@ -94,11 +94,12 @@ mod desktop {
             return Some(ScreenMode { width, height, refresh_hz });
         }
         let size = monitor? * scale;
-        Some(ScreenMode {
-            width: size.x.round() as u32,
-            height: size.y.round() as u32,
-            refresh_hz: 60,
-        })
+        let (width, height) = (size.x.round() as u32, size.y.round() as u32);
+        // A phone held upright streams on its side: it turns to landscape
+        // for a stream, and the PC is asked for a landscape screen.
+        #[cfg(target_os = "android")]
+        let (width, height) = (width.max(height), width.min(height));
+        Some(ScreenMode { width, height, refresh_hz: 60 })
     }
 }
 

@@ -20,6 +20,9 @@ fn android_main(activity: leto::AndroidApp) {
     // goes to Android's log, when this is set.
     // SAFETY: no other thread of the app runs yet.
     unsafe { std::env::set_var("RUST_LOG", "info") };
+    // A panic's log says where it happened.
+    // SAFETY: as above.
+    unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // Without it Android drops the multicast answers PCs announce
     // themselves with, and only PCs typed in by hand would show.
     let lock = wifi::MulticastLock::take(&activity);

@@ -11,6 +11,7 @@ read from the picture with tesseract.
 """
 
 import os
+import glob
 import re
 import subprocess
 import sys
@@ -52,11 +53,44 @@ def words(path):
     return found
 
 
-def pin(path):
-    """The PIN: four large light glyphs side by side, read one by one.
+FONT = "Ubuntu-Light.ttf"
+SIDE = (24, 36)
 
-    Read as a whole, the boxes around the digits make tesseract see other
-    digits, so each digit is cut out and read on its own.
+
+def font():
+    """The font the app draws text with: egui's own, in cargo's sources."""
+    found = sorted(glob.glob(os.path.expanduser(
+        f"~/.cargo/registry/src/*/epaint_default_fonts-*/fonts/{FONT}")))
+    if not found:
+        raise SystemExit(f"{FONT} is not in cargo's sources")
+    return found[-1]
+
+
+def pixels(command):
+    """An image, from an ImageMagick command, as SIDE light-or-dark pixels."""
+    raw = subprocess.run(
+        command + ["-trim", "+repage", "-resize", f"{SIDE[0]}x{SIDE[1]}!",
+                   "-threshold", "50%", "-depth", "8", "gray:-"],
+        capture_output=True, check=True,
+    ).stdout
+    return [b > 127 for b in raw]
+
+
+def models():
+    """Each digit as the app's font draws it."""
+    path = font()
+    return {
+        d: pixels(["convert", "-background", "black", "-fill", "white", "-font", path,
+                   "-pointsize", "200", f"label:{d}"])
+        for d in "0123456789"
+    }
+
+
+def pin(path):
+    """The PIN: four large light glyphs side by side.
+
+    Tesseract took the app's thin 5 for a 3, so each digit is cut out and
+    matched against the ten digits drawn in the app's own font.
     """
     light = path + ".digits.png"
     subprocess.run(
@@ -84,33 +118,19 @@ def pin(path):
         # A PIN digit is about a twelfth of the screen's width tall.
         if width * 0.06 < h < width * 0.15 and w < h:
             glyphs.append((y, x, w, h))
+    known = None
     # The four whose tops line up, left to right.
     for top, *_ in sorted(glyphs):
         row = sorted((g for g in glyphs if abs(g[0] - top) < width * 0.02), key=lambda g: g[1])
         if len(row) != 4:
             continue
+        known = known or models()
         code = ""
         for y, x, w, h in row:
-            pad = h // 4
-            read = subprocess.run(
-                ["convert", light, "-crop", f"{w + 2 * pad}x{h + 2 * pad}+{x - pad}+{y - pad}",
-                 "+repage", "-negate", "-bordercolor", "white", "-border", "20", "png:-"],
-                capture_output=True, check=True,
-            ).stdout
-            # Read as a word, which tesseract does better than as one
-            # character; as a line when that finds nothing.
-            for mode in ("8", "7"):
-                digit = subprocess.run(
-                    ["tesseract", "-", "-", "--psm", mode, "-c",
-                     "tessedit_char_whitelist=0123456789"],
-                    input=read, capture_output=True, check=True,
-                ).stdout.decode().strip()
-                if digit:
-                    break
-            code += digit[:1]
+            seen = pixels(["convert", light, "-crop", f"{w}x{h}+{x}+{y}", "+repage"])
+            code += min(known, key=lambda d: sum(a != b for a, b in zip(known[d], seen)))
         print("digits read:", code)
-        if re.fullmatch(r"\d{4}", code):
-            return code
+        return code
     return None
 
 
@@ -119,7 +139,9 @@ ACCENT = "#FF6B35"
 
 
 def accent(path):
-    """The centre of the largest patch of the accent colour, if any."""
+    """The centre of the largest button of the accent colour, if any: a
+    patch wider than tall, so that the logo's round sun on the first
+    start's splash is not taken for one."""
     listing = subprocess.run(
         ["convert", path, "-alpha", "off", "-fuzz", "15%", "-fill", "white", "-opaque", ACCENT,
          "-fill", "black", "+opaque", "white",
@@ -132,6 +154,10 @@ def accent(path):
     for line in listing.splitlines()[1:]:
         fields = line.split()
         if len(fields) < 5 or "255,255,255" not in fields[-1]:
+            continue
+        size = fields[1].split("+")[0]
+        w, h = (int(v) for v in size.split("x"))
+        if w < 2 * h:
             continue
         x, y = (float(v) for v in fields[2].split(","))
         area = int(fields[3])

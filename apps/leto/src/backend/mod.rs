@@ -10,6 +10,8 @@ mod flow;
 #[cfg(not(target_arch = "wasm32"))]
 mod gamepad;
 #[cfg(not(target_arch = "wasm32"))]
+mod leave;
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod pads;
 #[cfg(not(target_arch = "wasm32"))]

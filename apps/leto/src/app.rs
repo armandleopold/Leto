@@ -259,6 +259,8 @@ impl eframe::App for LetoApp {
         if open {
             self.state.tick(now);
         }
+        // A phone turns to landscape for a stream, as the PC's screen is.
+        leto_system::orientation::landscape(matches!(self.state.screen, Screen::Stream(_)));
 
         // The devices chosen are used from the next moment, and the page
         // that chooses them starts with the ones there are now.

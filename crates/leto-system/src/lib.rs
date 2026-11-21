@@ -13,11 +13,15 @@
 #![allow(unsafe_code)]
 
 pub mod bars;
+#[cfg(target_os = "android")]
+pub mod camera;
 pub mod clipboard;
 pub mod clock;
 pub mod display;
 pub mod keyboard;
+pub mod orientation;
 pub mod pane;
+pub mod permission;
 
 #[cfg(target_os = "android")]
 mod java;

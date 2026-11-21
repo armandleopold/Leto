@@ -132,7 +132,10 @@ pub fn apk() -> Result<(), String> {
         let copy = libraries.join(name);
         fs::copy(&library, &copy).map_err(|e| format!("copying {}: {e}", library.display()))?;
         // The NDK's C++ library comes with its symbols: half its size.
-        run(Command::new(sdk.tool("llvm-strip")).arg("--strip-unneeded").arg(&copy))?;
+        // Leto's keeps the names of its functions, which a panic's
+        // backtrace in the log is read with.
+        let keep = if name == "libleto_android.so" { "--strip-debug" } else { "--strip-unneeded" };
+        run(Command::new(sdk.tool("llvm-strip")).arg(keep).arg(&copy))?;
     }
 
     // The manifest and the icon.
