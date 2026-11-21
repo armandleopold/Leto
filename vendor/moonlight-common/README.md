@@ -44,6 +44,12 @@ Each is marked with a comment that starts with `Leto:`.
   the threads stop, as moonlight-common-c does (`enet_peer_disconnect_now`).
   The commit said nothing, so the host went on streaming to nobody until it
   gave up on the silence, seconds to a minute later.
+- `src/stream/proto/video/stream.rs` (`VideoArrivals`, `arrivals`) and
+  `src/stream/std/mod.rs` (`video_arrivals`): the video stream counts the
+  packets that came from the host, the whole pictures it handed on, and the
+  times it asked for a keyframe because none came. Leto reads them to say
+  why a stream has no picture, and to ask for it again. The commit kept no
+  such count.
 - `src/stream/std/driver.rs` and `src/stream/std/mod.rs`: the control
   connection is told the time before the application sends over it
   (`stream_mut_now`). The commit only told it when a packet arrived or a

@@ -28,7 +28,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -250,6 +250,11 @@ struct Shared {
     cameras: Option<Arc<camera::Cameras>>,
     /// Starts no stream for now: see [`FakeHost::refuse_streams`].
     busy: AtomicBool,
+    /// How many of the next streams bring no pictures: see
+    /// [`FakeHost::send_no_pictures`].
+    blank: AtomicU32,
+    /// How many streams were started so far.
+    streams: AtomicU64,
     stop: AtomicBool,
 }
 
@@ -327,6 +332,8 @@ impl FakeHost {
             https_port: https.local_addr().unwrap().port(),
             cameras,
             busy: AtomicBool::new(false),
+            blank: AtomicU32::new(0),
+            streams: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         });
 
@@ -462,6 +469,17 @@ impl FakeHost {
     /// has not noticed yet that the client it streamed to is gone.
     pub fn refuse_streams(&self, refused: bool) {
         self.shared.busy.store(refused, Ordering::SeqCst);
+    }
+
+    /// The next `streams` streams connect and bring no pictures, as from a
+    /// PC whose screen is not ready to be captured. The ones after do.
+    pub fn send_no_pictures(&self, streams: u32) {
+        self.shared.blank.store(streams, Ordering::SeqCst);
+    }
+
+    /// How many streams the host started so far.
+    pub fn streams_started(&self) -> u64 {
+        self.shared.streams.load(Ordering::SeqCst)
     }
 
     /// The host's owner stops letting devices send their camera, or lets
@@ -878,7 +896,12 @@ fn launch(
         camera: shared.cameras.clone(),
         encodes: shared.options.encodes,
         waits_for_goodbye: shared.options.waits_for_goodbye,
+        blank: shared
+            .blank
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
+            .is_ok(),
     };
+    shared.streams.fetch_add(1, Ordering::SeqCst);
 
     playing.screen_asked = Some(ScreenAsked {
         mode: query.get("mode").map(|mode| (*mode).to_owned()),

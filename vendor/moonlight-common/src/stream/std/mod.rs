@@ -32,7 +32,7 @@ use crate::{
             },
             crypto::CryptoBackend,
             microphone::foundation::FoundationMicStream,
-            video::stream::{VideoStream, VideoStreamEvent},
+            video::stream::{VideoArrivals, VideoStream, VideoStreamEvent},
         },
         std::driver::SyncUdpDriver,
         video::VideoDecoder,
@@ -260,6 +260,11 @@ impl MoonlightStream {
         info!("started moonlight stream");
 
         Ok(Self { inner })
+    }
+
+    /// Leto: what arrived of the video so far.
+    pub fn video_arrivals(&self) -> VideoArrivals {
+        self.inner.streams.video.stream(|stream| stream.arrivals())
     }
 
     pub fn estimated_rtt(&self) -> Result<EstimatedRttInfo, Error> {

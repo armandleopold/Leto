@@ -171,6 +171,20 @@ and `busy` makes it refuse new ones, which is how the tests lose a PC. A
 browser that loses its bridge still ends the stream: only the bridge asks a
 PC again.
 
+A stream that connects and brings no picture is given up and asked for again
+the same way, as a person does by leaving it and starting it once more
+(`service.rs`, `first_picture`). A PC sends a picture as soon as a stream
+starts, so four seconds without one is not a slow start. The log says what
+came instead: how many packets of video, and how many times the PC was asked
+for a picture to start from, which tells a PC that sends nothing from
+pictures that never arrive whole. Twice in a row at most: after that the
+stream waits, since a PC with nothing to show has nothing more for being
+asked again. The window says "No picture yet. Asking the PC for the stream
+again…" meanwhile. The counts come from the vendored engine
+(`VideoArrivals`). The stand-in host's `blank` makes its next stream bring
+no pictures. Why Apollo sometimes sends none is not known: it was seen twice
+on one PC, and the second stream had its picture each time.
+
 A stream is made for the screen it is shown on. When the person picks an
 app, the window says what its screen is like (`window::screen`): its pixels
 and its pace as Windows reports them (`leto_system::display`), elsewhere as

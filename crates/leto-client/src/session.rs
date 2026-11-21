@@ -377,6 +377,22 @@ impl Session {
         self.stream.is_stopped()
     }
 
+    /// What arrived of the pictures so far, whatever became of them after.
+    pub fn arrived(&self) -> Arrived {
+        let arrivals = self.stream.video_arrivals();
+        Arrived {
+            packets: arrivals.packets,
+            pictures: arrivals.pictures,
+            keyframes_asked: arrivals.keyframes_asked,
+        }
+    }
+
+    /// Gives the stream up as if its PC were lost: whoever started it hears
+    /// [`Ended::ConnectionLost`]. The PC is told that this device leaves.
+    pub fn give_up(&self) {
+        self.stream.stop();
+    }
+
     /// Leaves the stream, once what was sent last has had a moment to
     /// reach the PC. The app keeps running on the PC.
     pub fn stop(self) {
@@ -465,6 +481,18 @@ impl Session {
         }
         self.stream.send_input_raw(packet).map_err(refusal)
     }
+}
+
+/// What arrived of the pictures of a stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Arrived {
+    /// Packets of video that came from the PC.
+    pub packets: u64,
+    /// Whole pictures put together from them.
+    pub pictures: u64,
+    /// How many times the PC was asked for a picture to start from, because
+    /// none came in time.
+    pub keyframes_asked: u64,
 }
 
 impl Drop for Session {

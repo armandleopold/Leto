@@ -9,7 +9,7 @@ use std::{
     iter,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -39,6 +39,16 @@ const AGAIN_AFTER: [Duration; 4] = [
     Duration::from_secs(3),
     Duration::from_secs(5),
 ];
+
+/// How long a stream that connected may take to bring its first picture
+/// before it is asked for again. A PC sends one as soon as a stream starts:
+/// the streams measured had theirs within a second and a half.
+const FIRST_PICTURE_PATIENCE: Duration = Duration::from_secs(4);
+
+/// How many times in a row a stream without a first picture is asked for
+/// again by itself. After that it waits: a PC that has nothing to show has
+/// nothing more for being asked again.
+const FIRST_PICTURE_TRIES: u32 = 2;
 
 /// How often a lost stream, waiting to be asked for again, checks that the
 /// person still wants it.
@@ -74,6 +84,8 @@ struct Watching {
     /// The PC the stream comes from.
     host: Option<HostId>,
     session: Option<Session>,
+    /// How many streams connected so far: each has its number.
+    connected: u64,
     /// The way of this device's camera to that PC, while it sends one, and
     /// its number.
     camera: Option<(u64, CameraLink)>,
@@ -165,7 +177,17 @@ impl<S: Shell> Service<S> {
                 // A screen this device knows is filled as it is, unless the
                 // person chose otherwise.
                 let settings = StreamSettings::chosen(screen, choices);
-                let stream = Stream { client, shell, watching, host, app, attempt, settings };
+                let without_picture = AtomicU32::new(0);
+                let stream = Stream {
+                    client,
+                    shell,
+                    watching,
+                    host,
+                    app,
+                    attempt,
+                    settings,
+                    without_picture,
+                };
                 play(&Arc::new(stream));
             }
             Request::Leave => {
@@ -386,6 +408,8 @@ struct Stream<S: Shell> {
     app: u32,
     attempt: u64,
     settings: StreamSettings,
+    /// How many times in a row it connected and brought no picture.
+    without_picture: AtomicU32,
 }
 
 /// Why a stream did not start.
@@ -421,7 +445,7 @@ fn play<S: Shell>(stream: &Arc<Stream<S>>) {
 
 /// Asks the PC for `stream`, and tells once it plays.
 fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
-    let Stream { client, shell, watching, host, app, attempt, settings } = &**stream;
+    let Stream { client, shell, watching, host, app, attempt, settings, .. } = &**stream;
     let attempt = *attempt;
     let (video, audio) = shell.sinks().map_err(NotStarted::Shell)?;
     let ended = {
@@ -443,6 +467,8 @@ fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
     let (input, microphone) = (session.input_allowed(), session.takes_microphone());
     let before = watching.session.replace(session);
     watching.host = Some(host.clone());
+    watching.connected += 1;
+    let number = watching.connected;
     drop(watching);
     // Winding down a stream waits for its threads, and one of them may be
     // waiting to say that it ended.
@@ -457,7 +483,64 @@ fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
         });
         shell.tell(Event::Camera { attempt, offer });
     }
+    let waiting = {
+        let stream = Arc::clone(stream);
+        thread::Builder::new()
+            .name("leto: first picture".to_owned())
+            .spawn(move || first_picture(&stream, number))
+    };
+    if let Err(error) = waiting {
+        log::error!("could not start a worker thread: {error}");
+    }
     Ok(())
+}
+
+/// Waits for the first picture of the stream that connected as `number`,
+/// and says in the log what came from the PC when none does. A stream that
+/// stays without one is given up and asked for again, as the person would
+/// by leaving it and starting it once more.
+fn first_picture<S: Shell>(stream: &Stream<S>, number: u64) {
+    let since = Instant::now();
+    let mut waits = true;
+    loop {
+        let waited = since.elapsed();
+        let watching = lock(&stream.watching);
+        if watching.wanted != Some(stream.attempt) || watching.connected != number {
+            return;
+        }
+        let Some(session) = watching.session.as_ref().filter(|session| !session.is_over()) else {
+            return;
+        };
+        let arrived = session.arrived();
+        if arrived.pictures > 0 {
+            log::info!(
+                "the first picture came {:.1} s after the stream connected, in {} packets",
+                waited.as_secs_f32(),
+                arrived.packets
+            );
+            stream.without_picture.store(0, Ordering::SeqCst);
+            return;
+        }
+        if waits && waited >= FIRST_PICTURE_PATIENCE {
+            waits = false;
+            let again = stream.without_picture.fetch_add(1, Ordering::SeqCst) < FIRST_PICTURE_TRIES;
+            log::warn!(
+                "no picture {:.0} s after the stream connected: {} packets of video came from \
+                 the PC, which was asked {} times for a picture to start from; the stream {}",
+                waited.as_secs_f32(),
+                arrived.packets,
+                arrived.keyframes_asked,
+                if again { "is asked for again" } else { "waits on" }
+            );
+            if again {
+                // Heard as a lost stream, which is asked for again.
+                session.give_up();
+                return;
+            }
+        }
+        drop(watching);
+        thread::sleep(STILL_WANTED_EVERY);
+    }
 }
 
 /// `stream` ended without the person asking. A stream that lost its PC
