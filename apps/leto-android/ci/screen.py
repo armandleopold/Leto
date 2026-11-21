@@ -30,11 +30,18 @@ def words(path):
     """Every word tesseract reads, with the centre of its box."""
     # The app is light text on a dark ground: tesseract reads dark on light.
     flipped = path + ".flipped.png"
-    subprocess.run(["convert", path, "-negate", "-colorspace", "Gray", flipped], check=True)
-    table = subprocess.run(
+    # Android's screenshots have an alpha channel, which -negate would turn
+    # to fully transparent.
+    subprocess.run(
+        ["convert", path, "-alpha", "off", "-negate", "-colorspace", "Gray", flipped], check=True
+    )
+    read = subprocess.run(
         ["tesseract", flipped, "-", "--psm", "11", "tsv"],
         capture_output=True, text=True, check=True,
-    ).stdout
+    )
+    table = read.stdout
+    if read.stderr.strip():
+        print("tesseract:", read.stderr.strip())
     found = []
     for line in table.splitlines()[1:]:
         cells = line.split("\t")
@@ -52,7 +59,7 @@ ACCENT = "#FF6B35"
 def accent(path):
     """The centre of the largest patch of the accent colour, if any."""
     listing = subprocess.run(
-        ["convert", path, "-fuzz", "15%", "-fill", "white", "-opaque", ACCENT,
+        ["convert", path, "-alpha", "off", "-fuzz", "15%", "-fill", "white", "-opaque", ACCENT,
          "-fill", "black", "+opaque", "white",
          "-define", "connected-components:verbose=true",
          "-define", "connected-components:area-threshold=200",

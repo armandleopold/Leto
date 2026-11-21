@@ -36,9 +36,12 @@ sleep 8
 done_
 
 step "Pair"
-screen tap 4-pc Salon || fail "the stand-in PC is not listed"
-sleep 6
-pin=$(screen pin 5-pin | tail -1)
+# Adding a PC goes on to pairing with it; otherwise it is in the list.
+if ! pin=$(screen pin 4-pin | tail -1); then
+  screen tap 4-pc Salon || fail "the stand-in PC is not listed"
+  sleep 6
+  pin=$(screen pin 5-pin | tail -1)
+fi
 echo "PIN read: $pin"
 echo "$pin" >&3
 sleep 10
