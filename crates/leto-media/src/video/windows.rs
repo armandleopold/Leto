@@ -6,7 +6,8 @@
 //! for H.265 and AV1 from the Store's video extensions. They are
 //! synchronous: a picture goes in, and comes out decoded on the same
 //! thread. Given a Direct3D 11 device they decode on the graphics card, and
-//! the picture is read back from it.
+//! the picture is read back from it, or stays there for the window to draw
+//! when it is asked to (see `kept.rs`).
 
 use std::{
     cell::Cell,
@@ -52,6 +53,7 @@ use windows::{
 use crate::{
     Error,
     convert::{Nv12, Planes},
+    kept::windows::Keeper,
 };
 
 /// The size a decoder is tried at, to know that it works.
@@ -115,6 +117,14 @@ pub struct Decoder {
     /// How long the last call spent getting its pictures out of the
     /// decoder: from the graphics card, for one decoded there.
     copying: Duration,
+    /// Pictures a second, as the stream said.
+    fps: u32,
+    /// Pictures decoded on the card are to stay there.
+    keep: bool,
+    /// What leaves them there, once the first was.
+    keeper: Option<Keeper>,
+    /// The card did not keep a picture: none is asked of it again.
+    keeps_none: bool,
 }
 
 // SAFETY: every object in it was made in the multithreaded apartment, where
@@ -177,6 +187,10 @@ impl Decoder {
             time: 0,
             step: 10_000_000 / i64::from(fps.max(1)),
             copying: Duration::ZERO,
+            fps,
+            keep: false,
+            keeper: None,
+            keeps_none: false,
         };
         decoder.choose_output()?;
         // SAFETY: plain messages to the decoder, which is ready for them.
@@ -196,6 +210,17 @@ impl Decoder {
     /// the decoder, waiting for the graphics card to finish it included.
     pub const fn copying(&self) -> Duration {
         self.copying
+    }
+
+    /// Leaves the pictures decoded on the graphics card there from now on,
+    /// for the window to draw from, or reads them back as before.
+    pub const fn keep_on_card(&mut self, keep: bool) {
+        self.keep = keep;
+    }
+
+    /// Whether the next picture stays on the graphics card.
+    pub const fn keeps(&self) -> bool {
+        self.keep && !self.keeps_none && self.card.is_some()
     }
 
     /// Decodes one picture, and copies it into `planes` when they are given.
@@ -266,9 +291,10 @@ impl Decoder {
             match result {
                 Ok(()) => {
                     if let (Some(sample), Some(planes)) = (sample, planes.as_deref_mut()) {
-                        // Reading waits for the card to finish the picture.
                         let start = Instant::now();
-                        shown |= self.read(&sample, planes)?;
+                        // Reading waits for the card to finish the picture,
+                        // which one that stays there does not.
+                        shown |= self.leave(&sample, planes) || self.read(&sample, planes)?;
                         self.copying += start.elapsed();
                     }
                 }
@@ -344,6 +370,39 @@ impl Decoder {
             if width > 0 && height > 0 {
                 self.shown =
                     ((width as usize).min(self.coded.0), (height as usize).min(self.coded.1));
+            }
+        }
+    }
+
+    /// Leaves the picture in `sample` on the graphics card, and says in
+    /// `planes` where. `false` when pictures do not stay there: this one is
+    /// to be read.
+    fn leave(&mut self, sample: &IMFSample, planes: &mut Planes) -> bool {
+        if !self.keeps() {
+            return false;
+        }
+        let Some((device, _)) = &self.card else { return false };
+        let kept = match &mut self.keeper {
+            Some(keeper) => keeper.keep(device, sample, self.shown, self.fps),
+            None => Keeper::new(device).and_then(|mut keeper| {
+                let kept = keeper.keep(device, sample, self.shown, self.fps);
+                self.keeper = Some(keeper);
+                kept
+            }),
+        };
+        match kept {
+            Ok(kept) => {
+                planes.keep(kept, self.shown.0, self.shown.1);
+                true
+            }
+            Err(error) => {
+                log::warn!(
+                    "pictures do not stay on the graphics card, and are read from it as before: {}",
+                    error.message()
+                );
+                self.keeps_none = true;
+                self.keeper = None;
+                false
             }
         }
     }
@@ -672,6 +731,47 @@ mod tests {
         }
         assert!(shown);
         assert_colours(&picture);
+    }
+
+    #[test]
+    fn a_picture_decoded_on_the_card_stays_there_when_asked_or_is_read_as_before() {
+        if !decodable().hardware.contains(Codec::H264) {
+            eprintln!("no graphics card decodes H.264 here: no picture can stay on one");
+            return;
+        }
+        let mut decoder = Decoder::new(Codec::H264, WIDTH as u32, HEIGHT as u32, 30, true)
+            .expect("the decoder Windows said it has starts");
+        let pictures = pictures(16);
+        let (first, then) = pictures.split_at(8);
+        let decode = |decoder: &mut Decoder, pictures: &[Vec<u8>]| {
+            let mut planes = Planes::default();
+            let mut shown = false;
+            for data in pictures {
+                shown |= decoder.decode(data, Some(&mut planes)).expect("a picture decodes");
+            }
+            assert!(shown, "pictures come out");
+            assert_eq!((planes.width, planes.height), (WIDTH, HEIGHT));
+            planes
+        };
+        let in_planes = |planes: &Planes| {
+            let mut picture = Picture::default();
+            assert!(planes.kept.is_none() && planes.to_rgba(&mut picture));
+            assert_colours(&picture);
+        };
+
+        decoder.keep_on_card(true);
+        let planes = decode(&mut decoder, first);
+        if decoder.keeps() {
+            // It is on the card, and nowhere else.
+            assert!(planes.kept.is_some());
+            assert!(planes.luma.is_empty() && planes.chroma.is_empty());
+        } else {
+            // The card would not keep it, and it was read as before.
+            in_planes(&planes);
+        }
+        decoder.keep_on_card(false);
+        assert!(!decoder.keeps());
+        in_planes(&decode(&mut decoder, then));
     }
 
     #[test]

@@ -189,6 +189,10 @@ impl Player {
                 if let Some(card) = card.filter(|card| card.works()) {
                     card.show(planes);
                     self.surface = Some(Surface::Card(card.clone(), size));
+                } else if planes.kept.is_some() {
+                    // It stayed on a card that no longer draws: there are
+                    // no pixels of it, and the next one comes in planes.
+                    return;
                 } else {
                     self.pixels(ctx, pixels(&planes));
                 }
@@ -804,6 +808,7 @@ fn statistics_lines(
         lines.push(("Video", format!("{width} × {height}, {fps} per second, {codec}")));
     }
     let decoder = match counts.on_graphics_card {
+        Some(true) if counts.kept_on_card => "On the graphics card, where the pictures stay",
         Some(true) => "On the graphics card",
         Some(false) => "In software, on the processor",
         None => DECODER,
@@ -827,7 +832,9 @@ fn statistics_lines(
         },
     ));
     if let Some(took) = rates.copying_ms {
-        lines.push(("Copied out", format!("{took:.1} ms of that for each picture shown")));
+        // A picture that stays on the card is made into pixels there.
+        let name = if counts.kept_on_card { "Left on the card" } else { "Copied out" };
+        lines.push((name, format!("{took:.1} ms of that for each picture shown")));
     }
     if rates.skipped > 0.0 {
         lines.push(("Skipped", format!("{}, to keep up", per_second(rates.skipped))));
@@ -1762,6 +1769,17 @@ mod tests {
                 "On the PC: 5.0 ms to capture and encode".to_owned(),
                 "Network: 3 ms there and back".to_owned(),
             ]
+        );
+        // Pictures that stay on the card are not copied out of it.
+        let kept = Counts { kept_on_card: true, ..counts };
+        let lines = statistics_lines(&statistics, Some(kept), None);
+        assert_eq!(
+            lines[1],
+            ("Decoder", "On the graphics card, where the pictures stay".to_owned())
+        );
+        assert_eq!(
+            lines[5],
+            ("Left on the card", "7.0 ms of that for each picture shown".to_owned())
         );
         // A backend that counts nothing says so.
         assert_eq!(statistics_lines(&statistics, None, None).len(), 1);
