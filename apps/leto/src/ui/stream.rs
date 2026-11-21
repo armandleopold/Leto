@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use leto_core::{engine::Codec, input::Input, model::HostId};
 
-use super::{icons, widgets};
+use super::{frame, icons, widgets};
 use crate::{
     backend::{Filming, Picture},
     input::{Controls, Shortcut, hides_its_pointer},
@@ -601,6 +601,8 @@ fn overlay(
             game_mouse: player.game_mouse && !player.released,
             voice: status.voice.map(meter),
             film: status.film,
+            windowed: frame::OWN && !window::fills_screen(ui.ctx()),
+            last: player.bar,
             note: bar_note(
                 view,
                 player.hands(),
@@ -829,6 +831,11 @@ struct Bar<'a> {
     voice: Option<f32>,
     /// How the camera is doing, while it captures.
     film: Option<Filming>,
+    /// The stream is in a window whose frame Leto draws: the bar moves it,
+    /// and has its buttons.
+    windowed: bool,
+    /// Where the bar was in the frame before, if it showed.
+    last: Option<Rect>,
     note: Option<Note>,
     opacity: f32,
 }
@@ -852,6 +859,11 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
         .interactable(usable)
         .show(ctx, |ui| {
             ui.set_opacity(content.opacity);
+            let windowed = usable && content.windowed;
+            if let Some(last) = content.last.filter(|_| windowed) {
+                // Under what the bar holds, which stays pressable.
+                frame::drag_by(ui, last, Id::unique("stream-bar-drag"));
+            }
             egui::Frame::new()
                 .fill(Color32::from_black_alpha(225))
                 .stroke(Stroke::new(1.0, theme::LINE))
@@ -867,7 +879,8 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                             // Room for the names once everything else has its own.
                             let has_camera = content.view.camera != Cam::Unknown;
                             let others = if narrow { 210.0 } else { 330.0 }
-                                + if has_camera { 44.0 } else { 0.0 };
+                                + if has_camera { 44.0 } else { 0.0 }
+                                + if windowed { 3.0 * 36.0 + 17.0 } else { 0.0 };
                             names(ui, content.view, (window.width() - others).clamp(80.0, 360.0));
                             if let Some([width, height]) = content.picture.filter(|_| !narrow) {
                                 let size = format!("{width} × {height}");
@@ -899,6 +912,10 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 };
                                 asked.fill |=
                                     widgets::icon_button(ui, icons::expand, &fill).clicked();
+                            }
+                            if windowed {
+                                ui.separator();
+                                frame::buttons(ui, Vec2::splat(36.0), theme::CONTROL_RADIUS);
                             }
                         })
                         .response

@@ -2,6 +2,7 @@
 
 pub mod apps;
 pub mod devices;
+pub mod frame;
 pub mod gate;
 pub mod icons;
 pub mod pairing;

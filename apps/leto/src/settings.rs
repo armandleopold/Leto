@@ -17,7 +17,7 @@ pub const FRAME_RATES: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
 const PLAIN: ScreenMode =
     ScreenMode { width: 1920, height: 1080, refresh_hz: 60, scale_percent: 100 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     // The picture.
@@ -71,6 +71,22 @@ pub struct Settings {
     pub codec: Option<Codec>,
     /// The statistics show from the start of every stream.
     pub statistics: bool,
+
+    /// The camera, microphone and speakers of this device that Leto uses,
+    /// chosen on their own page.
+    pub devices: DeviceChoices,
+}
+
+/// The camera, microphone and speakers Leto uses, by the names the system
+/// gives them. `None` is the system's default: for a camera, its first one
+/// with colour. One that is gone is replaced by the default, and comes
+/// back when it does.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceChoices {
+    pub camera: Option<String>,
+    pub microphone: Option<String>,
+    pub speakers: Option<String>,
 }
 
 /// Who decodes the pictures of a stream.
@@ -146,6 +162,7 @@ impl Default for Settings {
             decoder: Decoder::Automatic,
             codec: None,
             statistics: false,
+            devices: DeviceChoices::default(),
         }
     }
 }
@@ -173,6 +190,13 @@ impl Capture {
 }
 
 impl Settings {
+    /// What "Restore the defaults" leaves: every default, and the camera,
+    /// microphone and sound output chosen, which have a page of their own
+    /// and are this device's, not a matter of taste.
+    pub fn defaults(&self) -> Self {
+        Self { devices: self.devices.clone(), ..Self::default() }
+    }
+
     /// The screen a stream is made for, from `native`, this screen when the
     /// window knows it, and what the PC is told besides, for a device that
     /// decodes `decodable`.
@@ -235,8 +259,8 @@ impl Settings {
         })
     }
 
-    pub fn to_saved(self) -> String {
-        serde_json::to_string_pretty(&self).unwrap_or_default()
+    pub fn to_saved(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
     }
 }
 
@@ -383,14 +407,14 @@ mod tests {
         assert_eq!(automatic.codecs(DEVICE), DEVICE.hardware);
         assert_eq!(automatic.codecs(Decodable::SOFTWARE), Codecs::of(Codec::H264));
         // AV1 only decodes on the processor here, so it takes being chosen.
-        let av1 = Settings { codec: Some(Codec::Av1), ..automatic };
+        let av1 = Settings { codec: Some(Codec::Av1), ..automatic.clone() };
         assert_eq!(av1.codecs(DEVICE), Codecs::of(Codec::Av1).with(Codec::H264));
         // A codec chosen on another device, that this one cannot decode.
         assert_eq!(av1.codecs(Decodable::SOFTWARE), Codecs::of(Codec::H264));
-        let h264 = Settings { codec: Some(Codec::H264), ..automatic };
+        let h264 = Settings { codec: Some(Codec::H264), ..automatic.clone() };
         assert_eq!(h264.codecs(DEVICE), Codecs::of(Codec::H264));
         // The processor alone gets H.264, unless something else is chosen.
-        let software = Settings { decoder: Decoder::Software, ..automatic };
+        let software = Settings { decoder: Decoder::Software, ..automatic.clone() };
         assert_eq!(software.codecs(DEVICE), Codecs::of(Codec::H264));
         let h265 = Settings { codec: Some(Codec::H265), ..software };
         assert_eq!(h265.codecs(DEVICE), Codecs::of(Codec::H265).with(Codec::H264));
@@ -413,6 +437,14 @@ mod tests {
     }
 
     #[test]
+    fn restoring_the_defaults_keeps_the_devices_chosen() {
+        let devices = DeviceChoices { camera: Some("USB Camera".to_owned()), ..Default::default() };
+        let chosen = Settings { statistics: true, devices: devices.clone(), ..Settings::default() };
+        assert_eq!(chosen.defaults(), Settings { devices, ..Settings::default() });
+        assert_eq!(Settings::default().defaults(), Settings::default());
+    }
+
+    #[test]
     fn saved_settings_read_back_and_what_is_missing_is_its_default() {
         let chosen = Settings {
             resolution: Some([2560, 1440]),
@@ -421,6 +453,11 @@ mod tests {
             swap_gamepad_buttons: true,
             decoder: Decoder::Software,
             codec: Some(Codec::Av1),
+            devices: DeviceChoices {
+                camera: Some("USB Camera".to_owned()),
+                microphone: None,
+                speakers: Some("Headphones (USB Audio)".to_owned()),
+            },
             ..Settings::default()
         };
         assert_eq!(Settings::from_saved(&chosen.to_saved()), chosen);

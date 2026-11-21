@@ -18,6 +18,7 @@ mod camera;
 #[cfg(any(windows, test))]
 mod convert;
 mod encode;
+mod endpoints;
 mod feed;
 mod microphone;
 mod queue;
@@ -26,8 +27,9 @@ mod speaker;
 mod video;
 mod voice;
 
-pub use camera::Camera;
+pub use camera::{Camera, camera_names, look_for_cameras};
 pub use encode::{Encoded, PictureEncoder, Sending};
+pub use endpoints::{microphones, speakers};
 pub use feed::{CameraFeed, Carrier, Fed, Feeding, Limits};
 pub use microphone::Microphone;
 pub use sound::SoundDecoder;

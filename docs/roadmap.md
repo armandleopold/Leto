@@ -58,7 +58,12 @@ Progress:
   browser's own encoder and hands the pictures to the bridge, which asks the
   PC and passes them on. See
   [architecture.md](architecture.md#from-a-browser).
-- Done: the settings, behind the cog at the top right, after Moonlight's:
+- Done: choosing the camera, the microphone and the sound output on the
+  desktop, where a device has several, on the screen that tries them out.
+  The lists were only seen with made-up devices on Linux: what Windows
+  names its devices, and whether the choice holds there, was not tried. See
+  [architecture.md](architecture.md#the-camera).
+- Done: the settings, behind the cog on the list of PCs, after Moonlight's:
   size, pictures per second and bit rate of the stream, full screen, V-Sync,
   the PC's screen of its own, its speakers and game settings, closing the app
   when leaving, the system's shortcuts, whose pointer shows, the mouse
@@ -94,8 +99,8 @@ What the microphone does not do yet:
   microphone build and Foundation Sunshine as read in their source, and what
   it hears was checked there. The microphone itself was a made-up one, on
   Linux and in Chromium: no real microphone was captured, on any system.
-- In the desktop app it is the system's default microphone, as the system
-  gives it: no choice of device, no noise suppression, no echo cancellation.
+- In the desktop app it is the microphone chosen, or the system's default
+  one, as the system gives it: no noise suppression, no echo cancellation.
   With loudspeakers instead of a headset, the PC hears its own sound again.
   A browser is asked for its own echo cancellation and noise suppression,
   and chooses the microphone. Whether that keeps the PC's sound out of a
