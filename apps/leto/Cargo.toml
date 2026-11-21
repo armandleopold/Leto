@@ -22,6 +22,9 @@ leto-protocol = { workspace = true }
 # Every key for a stream, and what the screen is like. Nothing in a browser.
 leto-system = { workspace = true }
 log = { workspace = true }
+# The handle of Leto's window, for the pane pictures go straight to. The
+# version eframe uses.
+raw-window-handle = "0.6"
 # The settings are kept as JSON.
 serde = { workspace = true }
 serde_json = { workspace = true }

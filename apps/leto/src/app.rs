@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use egui::{Align, Id, Layout, Rect, RichText, Sense, UiBuilder, Vec2, pos2};
 use leto_core::{brand, platform::Platform};
+use leto_system::pane::Pane;
 
 use crate::{
     backend::{Backend, Door, Pace, Unavailable},
@@ -39,6 +40,12 @@ pub struct LetoApp {
     player: Player,
     /// The graphics card, where it draws the stream's pictures.
     card: Option<OnCard>,
+    /// The pane over the place of the pictures, while the graphics card
+    /// that decodes them shows them itself.
+    pane: Option<Pane>,
+    /// Windows opened no pane during this stream: it is not asked again
+    /// before the next one.
+    pane_refused: bool,
     /// What the camera shows while the person tries it out.
     preview: Preview,
     /// The code a browser types to be let in by its bridge.
@@ -72,6 +79,8 @@ impl LetoApp {
             covers: Covers::default(),
             player: Player::default(),
             card: card(cc, settings.vsync),
+            pane: None,
+            pane_refused: false,
             preview: Preview::default(),
             gate: gate::Form::default(),
             was_open: false,
@@ -83,6 +92,73 @@ impl LetoApp {
             told: None,
         }
     }
+
+    /// During a stream: has the graphics card that decodes the pictures
+    /// show them itself, when the person asked for that, on a pane it keeps
+    /// over the place the window leaves them, less what the window shows
+    /// there.
+    fn place_pane(&mut self, ctx: &egui::Context, window: &eframe::Frame) {
+        if !self.settings.straight_to_screen {
+            self.close_pane();
+            return;
+        }
+        if self.pane.is_none() && !self.pane_refused {
+            self.pane = window_of(window).and_then(Pane::open);
+            self.pane_refused = self.pane.is_none();
+        }
+        let Some(pane) = &mut self.pane else { return };
+        self.backend.show_on(Some((pane.handle(), !self.settings.vsync)));
+        // Until the card has shown a picture the window leaves no place,
+        // and the pane stays hidden.
+        let scale = ctx.pixels_per_point();
+        let place = self.player.hole().map(|hole| pixels(hole, scale));
+        let holes: Vec<_> = self
+            .player
+            .hole()
+            .into_iter()
+            .flat_map(|hole| self.player.over().iter().map(move |over| over.intersect(hole)))
+            .filter(|over| over.is_positive())
+            .map(|over| pixels(over, scale))
+            .collect();
+        pane.place(place, &holes);
+    }
+
+    /// Outside a stream, or when the person no longer asks for it: the
+    /// pictures go to the window again, and the pane is closed.
+    fn close_pane(&mut self) {
+        self.pane_refused = false;
+        if self.pane.is_some() {
+            // The card hears of it before the pane is gone.
+            self.backend.show_on(None);
+            self.pane = None;
+        }
+    }
+}
+
+/// The handle Windows gave Leto's window. `None` anywhere else.
+#[cfg(not(target_arch = "wasm32"))]
+fn window_of(window: &eframe::Frame) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+        _ => None,
+    }
+}
+
+/// A page in a browser is no window of Windows.
+#[cfg(target_arch = "wasm32")]
+const fn window_of(_window: &eframe::Frame) -> Option<isize> {
+    None
+}
+
+/// A place of the window in its pixels, from points.
+fn pixels(place: Rect, scale: f32) -> leto_system::pane::Place {
+    // Rounded first: a screen has far fewer pixels than an `i32` counts.
+    #[allow(clippy::cast_possible_truncation)]
+    let pixel = |points: f32| (points * scale).round() as i32;
+    let (left, top) = (pixel(place.min.x), pixel(place.min.y));
+    [left, top, pixel(place.max.x) - left, pixel(place.max.y) - top]
 }
 
 /// The graphics card the window draws with, where it draws the stream's
@@ -160,7 +236,7 @@ impl eframe::App for LetoApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, window: &mut eframe::Frame) {
         let now = ui.input(|input| input.time);
         let door = self.backend.door();
         let open = door == Door::Open;
@@ -293,11 +369,13 @@ impl eframe::App for LetoApp {
                 // held down is let go of before the stream is left.
                 self.backend.input(inputs);
                 self.backend.place_picture(self.player.hole());
+                self.place_pane(ui.ctx(), window);
             }
             (door, screen) => {
                 self.told = None;
                 self.player.clear(ui.ctx());
                 self.backend.place_picture(None);
+                self.close_pane();
                 let ground = egui::Frame::new().fill(theme::ground());
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
@@ -529,4 +607,20 @@ fn build_line() -> String {
     let name = platform.map_or("unsupported platform", Platform::name);
     let role = if platform.is_some_and(Platform::can_host) { "host and client" } else { "client" };
     format!("{} {} · {name} · {role}", brand::NAME, leto_core::VERSION)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_place_in_points_is_the_same_place_in_pixels() {
+        let place = Rect::from_min_max(pos2(10.0, 20.4), pos2(110.0, 70.4));
+        assert_eq!(pixels(place, 1.0), [10, 20, 100, 50]);
+        // Each edge goes to the nearest pixel: two places side by side
+        // stay side by side.
+        assert_eq!(pixels(place, 1.5), [15, 31, 150, 75]);
+        let beside = Rect::from_min_max(pos2(110.0, 20.4), pos2(200.0, 70.4));
+        assert_eq!(pixels(beside, 1.5)[0], 15 + 150);
+    }
 }

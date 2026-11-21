@@ -1,6 +1,7 @@
 //! What Leto asks of the system itself, beyond what a window gets: every key
 //! for the PC being watched, Windows' own shortcuts too, what the screen a
-//! stream fills is like, and a clock fine enough for a stream.
+//! stream fills is like, a clock fine enough for a stream, and a pane inside
+//! the window for pictures drawn straight on the screen.
 //!
 //! Only Windows is asked for now. Elsewhere these find nothing, and a stream
 //! gets the keys its window gets.
@@ -12,3 +13,4 @@
 pub mod clock;
 pub mod display;
 pub mod keyboard;
+pub mod pane;

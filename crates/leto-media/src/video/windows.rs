@@ -54,6 +54,8 @@ use crate::{
     Error,
     convert::{Nv12, Planes},
     kept::windows::Keeper,
+    straight::Straight,
+    video::Pane,
 };
 
 /// The size a decoder is tried at, to know that it works.
@@ -125,6 +127,13 @@ pub struct Decoder {
     keeper: Option<Keeper>,
     /// The card did not keep a picture: none is asked of it again.
     keeps_none: bool,
+    /// Where pictures decoded on the card are to be shown by the card
+    /// itself, straight on the screen.
+    pane: Option<Pane>,
+    /// What shows them there, once the first was.
+    straight: Option<Straight>,
+    /// The card did not show a picture there: none is asked of it again.
+    shows_none: bool,
 }
 
 // SAFETY: every object in it was made in the multithreaded apartment, where
@@ -191,6 +200,9 @@ impl Decoder {
             keep: false,
             keeper: None,
             keeps_none: false,
+            pane: None,
+            straight: None,
+            shows_none: false,
         };
         decoder.choose_output()?;
         // SAFETY: plain messages to the decoder, which is ready for them.
@@ -221,6 +233,22 @@ impl Decoder {
     /// Whether the next picture stays on the graphics card.
     pub const fn keeps(&self) -> bool {
         self.keep && !self.keeps_none && self.card.is_some()
+    }
+
+    /// Has the graphics card show the pictures it decodes itself, on
+    /// `pane`, from now on, or no longer for `None`. Another pane is tried
+    /// even after one failed.
+    pub fn show_on(&mut self, pane: Option<Pane>) {
+        if self.pane != pane {
+            self.pane = pane;
+            self.straight = None;
+            self.shows_none = false;
+        }
+    }
+
+    /// Whether the next picture is shown by the graphics card itself.
+    pub const fn shows(&self) -> bool {
+        self.pane.is_some() && !self.shows_none && self.card.is_some()
     }
 
     /// Decodes one picture, and copies it into `planes` when they are given.
@@ -294,7 +322,9 @@ impl Decoder {
                         let start = Instant::now();
                         // Reading waits for the card to finish the picture,
                         // which one that stays there does not.
-                        shown |= self.leave(&sample, planes) || self.read(&sample, planes)?;
+                        shown |= self.show(&sample, planes)
+                            || self.leave(&sample, planes)
+                            || self.read(&sample, planes)?;
                         self.copying += start.elapsed();
                     }
                 }
@@ -370,6 +400,44 @@ impl Decoder {
             if width > 0 && height > 0 {
                 self.shown =
                     ((width as usize).min(self.coded.0), (height as usize).min(self.coded.1));
+            }
+        }
+    }
+
+    /// Has the graphics card show the picture in `sample` on the pane, and
+    /// says so in `planes`. `false` when the card does not show pictures
+    /// itself: this one goes the way pictures went before.
+    fn show(&mut self, sample: &IMFSample, planes: &mut Planes) -> bool {
+        if !self.shows() {
+            return false;
+        }
+        let (Some((device, _)), Some(pane)) = (&self.card, self.pane) else { return false };
+        let shown = match &mut self.straight {
+            Some(straight) => straight.show(device, sample, self.shown),
+            None => Straight::new(device, pane.window, pane.torn).and_then(|mut straight| {
+                log::info!(
+                    "the graphics card shows the pictures it decodes itself, with Direct3D 11{}",
+                    if straight.tears() { ", without waiting for the screen" } else { "" }
+                );
+                let shown = straight.show(device, sample, self.shown);
+                self.straight = Some(straight);
+                shown
+            }),
+        };
+        match shown {
+            Ok(()) => {
+                planes.show(self.shown.0, self.shown.1);
+                true
+            }
+            Err(error) => {
+                log::warn!(
+                    "the graphics card does not show the pictures itself, and the window draws \
+                     them as before: {}",
+                    error.message()
+                );
+                self.shows_none = true;
+                self.straight = None;
+                false
             }
         }
     }

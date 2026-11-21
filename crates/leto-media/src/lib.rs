@@ -28,10 +28,14 @@ mod feed;
 // Direct3D and the driver's sharing with OpenGL are C interfaces.
 #[allow(unsafe_code)]
 mod kept;
+// Direct3D is a C interface.
 mod microphone;
 mod queue;
 mod sound;
 mod speaker;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod straight;
 mod video;
 mod voice;
 
@@ -45,7 +49,7 @@ pub use kept::Kept;
 pub use microphone::Microphone;
 pub use sound::SoundDecoder;
 pub use speaker::Speaker;
-pub use video::{Picture, VideoDecoder, decodable};
+pub use video::{Pane, Picture, VideoDecoder, decodable};
 pub use voice::{VOICE_FRAME, VOICE_RATE, VoiceEncoder};
 
 /// What can go wrong with pictures and sound.

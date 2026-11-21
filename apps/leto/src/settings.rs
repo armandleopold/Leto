@@ -74,6 +74,10 @@ pub struct Settings {
     /// draws them, instead of coming through memory. Windows only, and
     /// being tried: off unless the person turns it on.
     pub keep_on_card: bool,
+    /// The graphics card that decodes the pictures shows them itself,
+    /// straight on the screen, as Moonlight does: the window draws none.
+    /// Windows only, and being tried: off unless the person turns it on.
+    pub straight_to_screen: bool,
 
     /// The camera, microphone and speakers of this device that Leto uses,
     /// chosen on their own page.
@@ -166,6 +170,7 @@ impl Default for Settings {
             codec: None,
             statistics: false,
             keep_on_card: false,
+            straight_to_screen: false,
             devices: DeviceChoices::default(),
         }
     }
@@ -452,6 +457,7 @@ mod tests {
             decoder: Decoder::Software,
             codec: Some(Codec::Av1),
             keep_on_card: true,
+            straight_to_screen: true,
             devices: DeviceChoices {
                 camera: Some("USB Camera".to_owned()),
                 microphone: None,
@@ -468,6 +474,7 @@ mod tests {
         );
         // What is being tried is off until the person turns it on.
         assert!(!older.keep_on_card);
+        assert!(!older.straight_to_screen);
         // Not settings at all.
         assert_eq!(Settings::from_saved("{ not json"), Settings::default());
     }
