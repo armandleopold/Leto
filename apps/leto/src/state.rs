@@ -186,6 +186,8 @@ pub struct State {
     pub network_searched: bool,
     pub add: AddForm,
     pub notice: Option<String>,
+    /// The PCs asked to wake up, until they answer or Leto gives up.
+    pub waking: Vec<HostId>,
     last_search: f64,
     attempts: u64,
     requests: Vec<Request>,
@@ -201,6 +203,7 @@ impl State {
             network_searched: true,
             add: AddForm::default(),
             notice: None,
+            waking: Vec::new(),
             last_search: f64::NEG_INFINITY,
             attempts: 0,
             requests: Vec::new(),
@@ -232,7 +235,13 @@ impl State {
     pub fn open(&mut self, id: &HostId, now: f64) {
         let Some(host) = self.hosts.iter().find(|host| host.id == *id).cloned() else { return };
         self.notice = None;
-        if host.reachability == Reachability::Offline {
+        if host.reachability == Reachability::Offline && host.wakeable {
+            // It sleeps or is off: wake it, and open it once it answers.
+            if !self.waking.contains(id) {
+                self.waking.push(id.clone());
+                self.requests.push(Request::Wake(id.clone()));
+            }
+        } else if host.reachability == Reachability::Offline {
             // It may just have been switched on.
             self.search(now);
         } else if host.paired {
@@ -608,6 +617,25 @@ impl State {
                     }
                 }
             }
+            Event::WakeEnded { host, result } => {
+                if !self.waking.contains(&host) {
+                    return;
+                }
+                self.waking.retain(|waking| *waking != host);
+                // Opened as the person asked, unless they went on to
+                // something else meanwhile.
+                match result {
+                    Ok(woken) if self.screen == Screen::Pcs => {
+                        if woken.paired {
+                            self.show_apps(woken);
+                        } else {
+                            self.start_pairing(woken);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(message) => self.notice = Some(message),
+                }
+            }
             // Covers are pictures: the drawing side keeps them.
             Event::Cover { .. } => {}
             Event::Notice(message) => self.notice = Some(message),
@@ -632,6 +660,7 @@ mod tests {
             reachability,
             busy: false,
             running_app: None,
+            wakeable: false,
         }
     }
 
@@ -752,12 +781,47 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_pc_that_is_off_searches_again() {
+    fn choosing_a_pc_that_is_off_and_cannot_be_woken_searches_again() {
         let salon = host("Salon", true, Reachability::Offline);
         let mut state = state_with(vec![salon.clone()]);
         state.open(&salon.id, 1.0);
         assert_eq!(state.screen, Screen::Pcs);
         assert_eq!(state.take_requests(), [Request::Search]);
+    }
+
+    #[test]
+    fn choosing_a_pc_that_is_off_wakes_it_and_opens_it_once_it_answers() {
+        let salon = HostSummary { wakeable: true, ..host("Salon", true, Reachability::Offline) };
+        let mut state = state_with(vec![salon.clone()]);
+        state.open(&salon.id, 1.0);
+        assert_eq!(state.take_requests(), [Request::Wake(salon.id.clone())]);
+        assert_eq!(state.waking, std::slice::from_ref(&salon.id));
+        // Asked once, however impatient the person is.
+        state.open(&salon.id, 2.0);
+        assert_eq!(state.take_requests(), []);
+
+        let awake = HostSummary { reachability: Reachability::Online, ..salon.clone() };
+        state.apply(Event::WakeEnded { host: salon.id.clone(), result: Ok(awake) }, 30.0);
+        assert!(state.waking.is_empty());
+        assert_eq!(state.take_requests(), [Request::Apps(salon.id.clone())]);
+        assert!(matches!(&state.screen, Screen::Apps(view) if view.host.id == salon.id));
+    }
+
+    #[test]
+    fn a_pc_that_does_not_wake_up_says_why_and_one_that_wakes_late_stays_put() {
+        let salon = HostSummary { wakeable: true, ..host("Salon", true, Reachability::Offline) };
+        let mut state = state_with(vec![salon.clone()]);
+        state.open(&salon.id, 1.0);
+        let why = "The PC did not wake up within 120 seconds.".to_owned();
+        state.apply(Event::WakeEnded { host: salon.id.clone(), result: Err(why.clone()) }, 121.0);
+        assert_eq!((&state.screen, state.notice.as_ref()), (&Screen::Pcs, Some(&why)));
+
+        // The person went on to another screen meanwhile: it stays on screen.
+        state.open(&salon.id, 130.0);
+        state.check_devices();
+        let awake = HostSummary { reachability: Reachability::Online, ..salon.clone() };
+        state.apply(Event::WakeEnded { host: salon.id.clone(), result: Ok(awake) }, 140.0);
+        assert!(matches!(state.screen, Screen::Devices(_)), "{:?}", state.screen);
     }
 
     #[test]

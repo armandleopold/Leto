@@ -18,6 +18,8 @@ directories = "6"
 env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
 gethostname = "1"
 httparse = "1"
+# Lists the networks this device is on, to wake a PC on each.
+if-addrs = "0.13"
 leto-core = { workspace = true }
 leto-protocol = { workspace = true }
 leto-return = { workspace = true }

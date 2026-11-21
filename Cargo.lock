@@ -2161,6 +2161,7 @@ dependencies = [
  "env_logger",
  "gethostname",
  "httparse",
+ "if-addrs",
  "leto-core",
  "leto-media",
  "leto-protocol",

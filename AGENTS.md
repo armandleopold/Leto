@@ -64,6 +64,12 @@ cargo run -p leto-cli -- play Salon Desktop --seconds 10
 It also says whether the PC takes a microphone and a camera, and with
 `--microphone` and `--camera` it sends this device's meanwhile.
 
+`leto-cli wake Salon` wakes a paired PC that is off and waits for it to
+answer. The stand-in host tells its card (`leto_testhost::HOST_CARD`) only to
+a paired device, as Apollo does; to see a packet arrive, listen on UDP at its
+port plus 9 once it is stopped, as the tests in
+`crates/leto-client/tests/wake.rs` do.
+
 The web client needs its bridge: `cargo xtask web` builds the client, then
 `leto-cli bridge` serves it on port 5386 and prints the address to open and
 the code a new browser has to be given. The address is HTTPS with a

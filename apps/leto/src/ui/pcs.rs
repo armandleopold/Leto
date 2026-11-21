@@ -35,7 +35,7 @@ pub fn show(ui: &mut Ui, state: &mut State, now: f64) -> bool {
         return settings;
     }
 
-    let chosen = cards(ui, &state.hosts, state.add.open);
+    let chosen = cards(ui, &state.hosts, &state.waking, state.add.open);
     if state.add.open {
         add_form(ui, state);
     }
@@ -85,7 +85,7 @@ fn header(ui: &mut Ui, state: &mut State, now: f64) -> bool {
 }
 
 /// The grid of PCs, ending with the card that adds one.
-fn cards(ui: &mut Ui, hosts: &[HostSummary], adding: bool) -> Option<Chosen> {
+fn cards(ui: &mut Ui, hosts: &[HostSummary], waking: &[HostId], adding: bool) -> Option<Chosen> {
     let available = ui.available_width();
     let columns = (((available + GAP) / (CARD_MIN_WIDTH + GAP)).floor() as usize).clamp(1, 4);
     let width = (available - GAP * (columns as f32 - 1.0)) / columns as f32;
@@ -101,7 +101,7 @@ fn cards(ui: &mut Ui, hosts: &[HostSummary], adding: bool) -> Option<Chosen> {
             ui.spacing_mut().item_spacing.x = GAP;
             for slot in row {
                 let clicked = match slot {
-                    Some(host) => host_card(ui, host, size),
+                    Some(host) => host_card(ui, host, waking.contains(&host.id), size),
                     None => add_card(ui, size).then_some(Chosen::Add),
                 };
                 chosen = chosen.take().or(clicked);
@@ -112,9 +112,9 @@ fn cards(ui: &mut Ui, hosts: &[HostSummary], adding: bool) -> Option<Chosen> {
     chosen
 }
 
-fn host_card(ui: &mut Ui, host: &HostSummary, size: Vec2) -> Option<Chosen> {
+fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Option<Chosen> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let (dot, state_text) = status(host);
+    let (dot, state_text) = status(host, waking);
     response.widget_info(|| {
         WidgetInfo::labeled(Role::Button, true, format!("{}, {state_text}", host.name))
     });
@@ -311,9 +311,14 @@ enum Dot {
     Hollow,
 }
 
-/// The dot and the words that say what can be done with a PC.
-fn status(host: &HostSummary) -> (Dot, &'static str) {
+/// The dot and the words that say what can be done with a PC, or what is
+/// being done: waking it up.
+fn status(host: &HostSummary, waking: bool) -> (Dot, &'static str) {
+    if waking && host.reachability != Reachability::Online {
+        return (Dot::Hollow, "Waking up…");
+    }
     match (host.reachability, host.paired, host.busy) {
+        (Reachability::Offline, ..) if host.wakeable => (Dot::Hollow, "Offline · click to wake"),
         (Reachability::Offline, ..) => (Dot::Hollow, "Offline"),
         (Reachability::Unknown, ..) => (Dot::Hollow, "Checking…"),
         (Reachability::Online, false, _) => (Dot::Full(theme::SUN), "Not paired yet"),

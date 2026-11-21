@@ -70,6 +70,10 @@ Progress:
   The PC is offered what the card decodes, AV1 first, then H.265, and H.264
   always; the settings choose the codec and the decoder. See
   [architecture.md](architecture.md#a-stream).
+- Done: waking a PC that sleeps or is off. Leto learns the address of its
+  network card when pairing and sends it the packet that wakes it when the
+  PC is chosen while offline, or with `leto-cli wake`. See
+  [architecture.md](architecture.md#waking-a-pc).
 - Later in this step: HDR, surround sound, decoding on the graphics card on
   macOS and Linux, and H.265 and AV1 in the browser.
 

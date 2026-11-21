@@ -74,6 +74,14 @@ enum Command {
         /// Name, address or id of the PC.
         pc: String,
     },
+    /// Wake a paired PC that sleeps or is off, and wait until it answers.
+    Wake {
+        /// Name, address or id of the PC.
+        pc: String,
+        /// How long to wait for it, in seconds.
+        #[arg(long, default_value_t = 120)]
+        wait: u64,
+    },
     /// Stream an app for a moment and report what arrived. Shows no picture.
     Play {
         /// Name, address or id of the PC.
@@ -188,6 +196,7 @@ fn run(cli: &Cli) -> Result<String, String> {
         Command::Pair { pc, pin } => pcs::pair(&client(cli)?, pc, *pin, json),
         Command::Apps { pc } => pcs::apps(&client(cli)?, pc, json),
         Command::Forget { pc } => pcs::forget(&client(cli)?, pc, json),
+        Command::Wake { pc, wait } => pcs::wake(&client(cli)?, pc, *wait, json),
         Command::Play {
             pc,
             app,

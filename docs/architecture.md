@@ -628,6 +628,33 @@ then shows the PC as not paired, as before. An address where another PC now
 answers adds that PC to the list. The addresses are kept in `client.json`,
 the one that answered last as `address` and the others as `other_addresses`.
 
+## Waking a PC
+
+A PC that sleeps or is off can be woken by its network card, which still
+listens for a "magic packet": six bytes of `0xFF`, then the card's address
+sixteen times (Wake-on-LAN, `leto_client::wake`). Sunshine and Apollo tell
+that address only to a device they paired with, over HTTPS, and zeros to
+anyone else, so `leto-client` learns it when pairing and again each time it
+reaches the paired PC, and keeps it in `client.json` as `card`. A PC added
+but never paired cannot be woken.
+
+Choosing an offline PC that Leto can wake, in the app, or `leto-cli wake`,
+sends the packet and then asks the PC every two seconds until it answers,
+for two minutes, sending it again every ten seconds in case one was lost.
+The PC then opens as if it had been on. A sleeping PC answers nothing, so
+the packet goes everywhere it could land, as Moonlight does: to each of the
+PC's addresses, to every local network this device is on as a broadcast,
+and to the IPv6 address every device on a link listens to, each on ports 9
+and 47009 and on the ports of the streaming software, moved with the PC's
+own port.
+
+What it needs on the PC: Wake-on-LAN turned on in its firmware and in the
+settings of its network card, and a wired connection, as few Wi-Fi cards
+wake. The packet reaches it on the same network. From elsewhere it needs a
+router that forwards one of those ports to the PC's network as a broadcast,
+or a device at home that is awake and passes it on: a tunnel that ends on
+the sleeping PC itself is asleep with it.
+
 ## Trust between a client and a PC
 
 Pairing gives each side the other's certificate. From then on the client only

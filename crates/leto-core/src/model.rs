@@ -71,6 +71,11 @@ pub struct HostSummary {
     pub busy: bool,
     /// The app running on the host, when the host says which.
     pub running_app: Option<u32>,
+    /// Leto knows the address of the host's network card, so it can wake
+    /// the host when it sleeps or is off. The host tells a device it is
+    /// paired with.
+    #[serde(default)]
+    pub wakeable: bool,
 }
 
 /// One app a host offers to stream.
