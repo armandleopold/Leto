@@ -83,10 +83,13 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 fn free_port() -> u16 {
     loop {
         let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        // Ports end at 65535, and Windows hands out the last ones too: one
+        // that near the end has no twenty-one above it.
+        if port >= 65_000 {
+            continue;
+        }
         let around = [port - 5, port + 13, port + 21];
-        if port < 65_000
-            && around.iter().all(|port| TcpListener::bind(("127.0.0.1", *port)).is_ok())
-        {
+        if around.iter().all(|port| TcpListener::bind(("127.0.0.1", *port)).is_ok()) {
             return port;
         }
     }
