@@ -86,9 +86,8 @@ fn wait_for_stream(counter: &Counter) -> Tally {
 
 /// A picture that leaves the PC late is not waited for: the engine gives it
 /// up after a tenth of a second, asks for a keyframe and hands over nothing
-/// that builds on the picture it gave up. How long it waits is tested with
-/// exact times in the engine; this is the way from one end to the other,
-/// whatever the clocks of the computer that runs it are like.
+/// that builds on the picture it gave up. This is the way from one end to
+/// the other, whatever the clocks of the computer that runs it are like.
 #[test]
 fn after_a_picture_that_came_too_late_the_stream_goes_on_from_a_keyframe() {
     let settings = Settings::new();
@@ -150,7 +149,9 @@ fn a_stream_delivers_pictures_and_sound() {
 }
 
 /// A screen too slow for the stream: it takes longer over each picture
-/// than the PC takes to make the next.
+/// than the PC takes to make the next. Not as long as the engine waits for
+/// a picture before it gives it up, a tenth of a second: a screen that slow
+/// loses the pictures that wait whenever it is a little late.
 struct SlowScreen(mpsc::Sender<usize>);
 
 impl VideoSink for SlowScreen {
@@ -158,7 +159,7 @@ impl VideoSink for SlowScreen {
 
     fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
         let _ = self.0.send(frame.waiting);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(50));
         Decoded::Ok
     }
 }
@@ -174,12 +175,15 @@ fn a_screen_that_falls_behind_is_told_how_many_pictures_wait() {
     let session =
         client.play(&paired.id, 1, SMALL, SlowScreen(sender), Counter::default().audio(), |_| {});
     let session = session.unwrap();
-    // Thirty pictures a second, ten taken: they pile up.
+    // Thirty pictures a second, twenty taken at most: they pile up. How high
+    // depends on the clocks of the computer this runs on, which can make the
+    // engine give pictures up: that some wait, and are counted, does not.
     let waiting: Vec<usize> =
-        (0..10).map(|_| told.recv_timeout(Duration::from_secs(10)).unwrap()).collect();
+        (0..20).map(|_| told.recv_timeout(Duration::from_secs(10)).unwrap()).collect();
     session.stop();
 
-    assert!(waiting[9] >= 5, "pictures pile up behind a slow screen: {waiting:?}");
+    let most = waiting.iter().copied().max().unwrap_or(0);
+    assert!(most >= 2, "pictures wait behind a slow screen, and it is told: {waiting:?}");
 }
 
 #[test]
