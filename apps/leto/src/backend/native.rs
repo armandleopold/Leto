@@ -20,9 +20,11 @@ use leto_media::{
     Camera, CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Sending, Speaker,
     VOICE_FRAME,
 };
+use leto_system::permission::Need;
 
 use super::{
     Chime, DeviceNames, Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, gamepad,
+    leave::{Answer, Leave},
     pads,
     stream::{Outlet, Screen, Sound},
 };
@@ -39,6 +41,8 @@ pub struct Backend {
     ctx: egui::Context,
     /// The camera and the microphone while the person tries them out.
     tried: RefCell<Tried>,
+    /// The person's leave for each use of the camera and the microphone.
+    leaves: RefCell<Leaves>,
     /// The person has A and B change places on the gamepads, and X and Y.
     swapped: Arc<AtomicBool>,
     /// The camera, microphone and speakers the person chose.
@@ -61,6 +65,24 @@ struct Tried {
     picture: leto_media::Picture,
     /// The microphone, and the choice it was opened for.
     microphone: Option<(Microphone, Option<String>)>,
+}
+
+struct Leaves {
+    microphone: Leave,
+    camera: Leave,
+    tried_microphone: Leave,
+    tried_camera: Leave,
+}
+
+impl Default for Leaves {
+    fn default() -> Self {
+        Self {
+            microphone: Leave::new(Need::Microphone),
+            camera: Leave::new(Need::Camera),
+            tried_microphone: Leave::new(Need::Microphone),
+            tried_camera: Leave::new(Need::Camera),
+        }
+    }
 }
 
 /// The rate the test sound is made at.
@@ -134,6 +156,14 @@ fn chimed(speaker: &mut Speaker) -> bool {
 const CAMERA: &str = "LETO_CAMERA";
 
 /// Whether the camera is the test card.
+impl Backend {
+    /// Whether the window has the focus, which a question of the system
+    /// takes while it shows.
+    fn focused(&self) -> bool {
+        self.ctx.input(|input| input.focused)
+    }
+}
+
 fn is_card() -> bool {
     std::env::var_os(CAMERA).is_some_and(|camera| camera == "card")
 }
@@ -341,6 +371,7 @@ impl Backend {
             events,
             ctx: ctx.clone(),
             tried: RefCell::default(),
+            leaves: RefCell::default(),
             swapped,
             chosen,
             names: Arc::default(),
@@ -470,6 +501,7 @@ impl Backend {
         let mut voice = service.shell().voice();
         if !on || voice.stream.is_none() {
             voice.microphone = None;
+            self.leaves.borrow_mut().microphone.forget();
             return Ok(None);
         }
         if voice.microphone.as_ref().is_some_and(|(microphone, _)| microphone.is_lost()) {
@@ -482,6 +514,11 @@ impl Backend {
             voice.microphone = None;
         }
         if voice.microphone.is_none() {
+            match self.leaves.borrow_mut().microphone.check(self.focused()) {
+                Answer::Allowed => {}
+                Answer::Waiting => return Ok(None),
+                Answer::Refused(why) => return Err(why),
+            }
             // The engine outlives no microphone: it must not be kept alive
             // by one.
             let listener = Arc::downgrade(service);
@@ -509,12 +546,20 @@ impl Backend {
         let mut film = service.shell().film();
         let Some(limits) = film.limits.filter(|_| on) else {
             film.feed = None;
+            self.leaves.borrow_mut().camera.forget();
             return Ok(None);
         };
         // Another camera chosen meanwhile is the one sent from now on.
         let chosen = self.chosen().camera;
         if film.feed.as_ref().is_some_and(|(_, opened_for)| *opened_for != chosen) {
             film.feed = None;
+        }
+        if film.feed.is_none() && !is_card() {
+            match self.leaves.borrow_mut().camera.check(self.focused()) {
+                Answer::Allowed => {}
+                Answer::Waiting => return Ok(Some(Filming::Opening)),
+                Answer::Refused(why) => return Err(why),
+            }
         }
         let (feed, _) = film.feed.get_or_insert_with(|| {
             let carrier = ToPc { service: Arc::downgrade(service), camera: None };
@@ -551,11 +596,19 @@ impl Backend {
         let Tried { camera, picture, .. } = &mut *tried;
         if !on {
             *camera = None;
+            self.leaves.borrow_mut().tried_camera.forget();
             return Ok(None);
         }
         let chosen = self.chosen().camera;
         if camera.as_ref().is_some_and(|(_, opened_for)| *opened_for != chosen) {
             *camera = None;
+        }
+        if camera.is_none() && !is_card() {
+            match self.leaves.borrow_mut().tried_camera.check(self.focused()) {
+                Answer::Allowed => {}
+                Answer::Waiting => return Ok(None),
+                Answer::Refused(why) => return Err(why),
+            }
         }
         let (capturing, _) = camera.get_or_insert_with(|| {
             let ctx = self.ctx.clone();
@@ -590,6 +643,7 @@ impl Backend {
         let mut tried = self.tried.borrow_mut();
         if !on {
             tried.microphone = None;
+            self.leaves.borrow_mut().tried_microphone.forget();
             return Ok(None);
         }
         if tried.microphone.as_ref().is_some_and(|(microphone, _)| microphone.is_lost()) {
@@ -601,6 +655,11 @@ impl Backend {
             tried.microphone = None;
         }
         if tried.microphone.is_none() {
+            match self.leaves.borrow_mut().tried_microphone.check(self.focused()) {
+                Answer::Allowed => {}
+                Answer::Waiting => return Ok(None),
+                Answer::Refused(why) => return Err(why),
+            }
             let opened = Microphone::open(chosen.as_deref(), |_| {});
             let opened = opened.map_err(|error| sentence(&error.to_string()))?;
             tried.microphone = Some((opened, chosen));

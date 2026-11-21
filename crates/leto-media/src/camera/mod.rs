@@ -11,7 +11,12 @@ mod device;
 // Chosen among what a system's camera offers, where Leto reads one.
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 mod format;
+#[cfg(target_os = "android")]
+mod phone;
 mod pixels;
+// Used by the phone's camera, tested everywhere.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod turn;
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -206,7 +211,15 @@ fn look() -> Vec<String> {
             Vec::new()
         }
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "android")]
+    match phone::names() {
+        Ok(names) => names,
+        Err(error) => {
+            log::debug!("the cameras could not be listed: {error}");
+            Vec::new()
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
     Vec::new()
 }
 
@@ -263,7 +276,9 @@ impl Which {
         match self {
             #[cfg(any(windows, target_os = "linux"))]
             Self::System(name) => Ok(Box::new(device::Device::open(name.as_deref())?)),
-            #[cfg(not(any(windows, target_os = "linux")))]
+            #[cfg(target_os = "android")]
+            Self::System(name) => Ok(Box::new(phone::Phone::open(name.as_deref())?)),
+            #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
             Self::System(name) => {
                 let _ = name;
                 Err(Error::Camera("Leto does not read cameras on this system yet".to_owned()))

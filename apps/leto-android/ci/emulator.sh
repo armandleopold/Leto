@@ -58,6 +58,10 @@ step "Stream"
 screen tap 7-apps Desktop || fail "no Desktop app"
 sleep 20
 screen shot 8-stream
+# A stream turns the app to landscape.
+shape=$(identify -format "%w %h" shots/8-stream.png)
+echo "the stream's screen is $shape"
+[ "${shape% *}" -gt "${shape#* }" ] || fail "the stream is not in landscape"
 size=$(adb shell wm size | grep -o '[0-9]*x[0-9]*' | tail -1)
 width=${size%x*}; height=${size#*x}
 adb shell input tap $((width / 2)) $((height / 2))
@@ -70,7 +74,8 @@ done_
 
 step "What the stand-in PC saw"
 cat host.log
-grep -q "MouseButton\|mouse" host.log || fail "the PC heard no touch"
+# The count, not the help text, which names the mouse too.
+grep -Eq "^[1-9][0-9]* inputs received" host.log || fail "the PC heard no touch"
 done_
 
 step "The app's log"

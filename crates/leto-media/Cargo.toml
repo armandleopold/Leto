@@ -57,3 +57,7 @@ windows = { version = "0.62", features = [
 # On Linux it needs libclang to build (`libclang-dev`).
 [target.'cfg(target_os = "linux")'.dependencies]
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-v4l"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The phone's cameras, read through the NDK.
+leto-system = { workspace = true }

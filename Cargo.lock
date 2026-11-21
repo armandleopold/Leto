@@ -2411,6 +2411,7 @@ dependencies = [
  "glow",
  "image",
  "leto-core",
+ "leto-system",
  "log",
  "nokhwa",
  "openh264",
@@ -2444,6 +2445,7 @@ dependencies = [
  "leto-core",
  "log",
  "ndk-context",
+ "ndk-sys",
  "windows-sys 0.61.2",
 ]
 
