@@ -244,7 +244,15 @@ What this first version does, and what it leaves for later:
   decoders and OpenH264 alike, and go back to the graphics card as they are
   when the window draws: `leto_media::Card` puts them in two textures and a
   small program on the card turns them into pixels, BT.601 in limited range
-  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). That
+  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). A
+  colour serves two pixels across and two down, and the PC's encoder puts it
+  where the left one of the two is; a texture has it between the two. The
+  program reads the colours half a pixel to the right for that: read at the
+  same place as the brightness, every edge of colour is drawn half a pixel
+  off and smeared. On a pattern of hard edges of colour, with the colours
+  placed as Sunshine places them, that takes a third off the largest error
+  and a sixth off the average one. The processor's `convert.rs` gives each
+  colour to its four pixels unmixed, and is not changed. That
   is less than half the bytes of the pixels, and the processor no longer
   spends 6 ms a picture at 1920 × 1200 making pixels. It needs OpenGL 3.1 or
   OpenGL ES 3: where the card offers less, or turns the program down, the
