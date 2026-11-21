@@ -4,6 +4,7 @@
 //! Windows' own decoders also take H.265 and AV1, and decode on the
 //! graphics card when it can: that is what makes those codecs worth having,
 //! as the processor alone is too slow for them at the sizes of a stream.
+//! On Android, the phone's own decoders do the same on its video hardware.
 
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,9 @@ use crate::{Error, Planes};
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows;
+// The phone's decoders, reached through `leto-system`.
+#[cfg(target_os = "android")]
+mod android;
 
 /// A decoded picture: rows of pixels, four bytes each (red, green, blue and
 /// an opacity that is always full).
@@ -35,7 +39,9 @@ pub struct Picture {
 pub fn decodable() -> Decodable {
     #[cfg(windows)]
     let found = windows::decodable();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    let found = android::decodable();
+    #[cfg(not(any(windows, target_os = "android")))]
     let found = Decodable {
         hardware: leto_core::engine::Codecs::NONE,
         any: leto_core::engine::Codecs::NONE,
@@ -43,9 +49,9 @@ pub fn decodable() -> Decodable {
     Decodable { hardware: found.hardware, any: found.any.and(Decodable::SOFTWARE.any) }
 }
 
-/// How many pictures in a row Windows may fail to decode before H.264 goes
-/// to OpenH264 instead, for the rest of the stream.
-#[cfg(windows)]
+/// How many pictures in a row the system's decoder may fail before H.264
+/// goes to OpenH264 instead, for the rest of the stream.
+#[cfg(any(windows, target_os = "android"))]
 const FAILURES_BEFORE_SOFTWARE: u32 = 3;
 
 /// A pane to show pictures on: a window of the system's inside the app's,
@@ -72,6 +78,8 @@ enum By {
     OpenH264(Software),
     #[cfg(windows)]
     Windows(windows::Decoder),
+    #[cfg(target_os = "android")]
+    Android(android::Decoder),
 }
 
 impl VideoDecoder {
@@ -136,7 +144,24 @@ impl VideoDecoder {
         Ok(Self::by(codec, By::Windows(decoder)))
     }
 
-    #[cfg(not(windows))]
+    /// The phone's own decoder, on its video hardware: one on the processor
+    /// is no faster than OpenH264.
+    #[cfg(target_os = "android")]
+    fn system(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        hardware: bool,
+    ) -> Result<Self, Option<Error>> {
+        if !hardware || !android::decodable().hardware.contains(codec) {
+            return Err(None);
+        }
+        let decoder = android::Decoder::new(codec, width, height, fps).map_err(Some)?;
+        Ok(Self::by(codec, By::Android(decoder)))
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
     fn system(
         _codec: Codec,
         _width: u32,
@@ -164,6 +189,8 @@ impl VideoDecoder {
             By::OpenH264(decoder) => decoder.copying,
             #[cfg(windows)]
             By::Windows(decoder) => decoder.copying(),
+            #[cfg(target_os = "android")]
+            By::Android(decoder) => decoder.copying(),
         }
     }
 
@@ -179,6 +206,10 @@ impl VideoDecoder {
             }
             #[cfg(windows)]
             By::Windows(decoder) => decoder.keep_on_card(keep),
+            #[cfg(target_os = "android")]
+            By::Android(_) => {
+                let _ = keep;
+            }
         }
     }
 
@@ -194,6 +225,10 @@ impl VideoDecoder {
             }
             #[cfg(windows)]
             By::Windows(decoder) => decoder.show_on(pane),
+            #[cfg(target_os = "android")]
+            By::Android(_) => {
+                let _ = pane;
+            }
         }
     }
 
@@ -204,6 +239,8 @@ impl VideoDecoder {
             By::OpenH264(_) => false,
             #[cfg(windows)]
             By::Windows(decoder) => decoder.shows(),
+            #[cfg(target_os = "android")]
+            By::Android(_) => false,
         }
     }
 
@@ -214,6 +251,8 @@ impl VideoDecoder {
             By::OpenH264(_) => false,
             #[cfg(windows)]
             By::Windows(decoder) => decoder.keeps(),
+            #[cfg(target_os = "android")]
+            By::Android(_) => false,
         }
     }
 
@@ -223,6 +262,8 @@ impl VideoDecoder {
             By::OpenH264(_) => false,
             #[cfg(windows)]
             By::Windows(decoder) => decoder.on_graphics_card(),
+            #[cfg(target_os = "android")]
+            By::Android(decoder) => decoder.on_graphics_card(),
         }
     }
 
@@ -237,6 +278,8 @@ impl VideoDecoder {
             By::OpenH264(decoder) => decoder.decode(data, Some(planes)),
             #[cfg(windows)]
             By::Windows(decoder) => decoder.decode(data, Some(planes)),
+            #[cfg(target_os = "android")]
+            By::Android(decoder) => decoder.decode(data, Some(planes)),
         };
         self.count(decoded)
     }
@@ -268,6 +311,8 @@ impl VideoDecoder {
             By::OpenH264(decoder) => decoder.decode(data, None),
             #[cfg(windows)]
             By::Windows(decoder) => decoder.decode(data, None),
+            #[cfg(target_os = "android")]
+            By::Android(decoder) => decoder.decode(data, None),
         };
         self.count(decoded)
     }
@@ -280,12 +325,12 @@ impl VideoDecoder {
             return decoded;
         }
         self.failures += 1;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         if self.codec == Codec::H264
-            && matches!(self.by, By::Windows(_))
+            && !matches!(self.by, By::OpenH264(_))
             && self.failures >= FAILURES_BEFORE_SOFTWARE
         {
-            log::warn!("Windows fails to decode H.264, so OpenH264 does from the next keyframe");
+            log::warn!("the system fails to decode H.264, so OpenH264 does from the next keyframe");
             self.by = By::OpenH264(Software::new()?);
             self.failures = 0;
         }

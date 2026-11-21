@@ -98,23 +98,31 @@ mod desktop {
         // A phone held upright streams on its side: it turns to landscape
         // for a stream, and the PC is asked for a landscape screen.
         #[cfg(target_os = "android")]
-        let (width, height) = phone(width, height);
+        let (width, height) = phone(width, height, phone_decodes_whole_screens());
         Some(ScreenMode { width, height, refresh_hz: 60 })
     }
 
-    /// The most a phone asks for on its short side. Its pictures are
-    /// decoded in software, which falls behind at a phone's whole screen
+    /// Whether this phone decodes H.264 on its video hardware, which keeps
+    /// up with pictures of its whole screen.
+    #[cfg(target_os = "android")]
+    fn phone_decodes_whole_screens() -> bool {
+        leto_media::decodable().hardware.contains(leto_core::engine::Codec::H264)
+    }
+
+    /// The most a phone without a hardware decoder asks for on its short
+    /// side. OpenH264 on its processor falls behind at its whole screen
     /// (2400 by 1080 and the like): the first picture came and no other.
     #[cfg(any(target_os = "android", test))]
     const PHONE_SHORT: u32 = 720;
 
-    /// What a phone asks for: landscape, at most [`PHONE_SHORT`] high, with
+    /// What a phone asks for: its whole screen in landscape when it
+    /// `decodes_whole` screens; otherwise at most [`PHONE_SHORT`] high, with
     /// the shape of its screen and a width the encoders take (a multiple
     /// of 8).
     #[cfg(any(target_os = "android", test))]
-    fn phone(width: u32, height: u32) -> (u32, u32) {
+    fn phone(width: u32, height: u32, decodes_whole: bool) -> (u32, u32) {
         let (long, short) = (width.max(height), width.min(height));
-        if short <= PHONE_SHORT {
+        if decodes_whole || short <= PHONE_SHORT {
             return (long, short);
         }
         let long = (u64::from(long) * u64::from(PHONE_SHORT) / u64::from(short)) as u32;
@@ -126,13 +134,19 @@ mod desktop {
         use super::phone;
 
         #[test]
-        fn a_phone_asks_for_its_shape_at_720_high_in_landscape() {
-            assert_eq!(phone(1080, 2400), (1600, 720));
-            assert_eq!(phone(2400, 1080), (1600, 720));
-            assert_eq!(phone(1440, 3120), (1560, 720));
-            assert_eq!(phone(1080, 2340), (1560, 720));
+        fn a_phone_decoding_on_its_processor_asks_for_720_lines() {
+            assert_eq!(phone(1080, 2400, false), (1600, 720));
+            assert_eq!(phone(2400, 1080, false), (1600, 720));
+            assert_eq!(phone(1440, 3120, false), (1560, 720));
+            assert_eq!(phone(1080, 2340, false), (1560, 720));
             // A small screen is asked for as it is.
-            assert_eq!(phone(320, 640), (640, 320));
+            assert_eq!(phone(320, 640, false), (640, 320));
+        }
+
+        #[test]
+        fn a_phone_that_decodes_on_its_hardware_asks_for_its_whole_screen() {
+            assert_eq!(phone(1080, 2400, true), (2400, 1080));
+            assert_eq!(phone(2412, 1080, true), (2412, 1080));
         }
     }
 }

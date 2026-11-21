@@ -8,7 +8,7 @@ use leto_core::engine::{BITRATES_KBPS, Codec, Decodable, ScreenMode};
 use super::{tunnel, widgets};
 use crate::{
     input::{HAS_POINTER, Shortcut},
-    settings::{CODECS, Capture, Decoder, FRAME_RATES, RESOLUTIONS, Settings, codec_name},
+    settings::{CODECS, Capture, Decoder, FRAME_RATES, RESOLUTIONS, SCALES, Settings, codec_name},
     state::TunnelForm,
     theme,
 };
@@ -111,6 +111,28 @@ fn picture_and_sound(ui: &mut Ui, settings: &mut Settings, native: Option<Screen
                     }
                 });
         });
+
+        if settings.resolution.is_none() {
+            let about = match settings.screen(native) {
+                Some(mode) if settings.scale != 100 => format!(
+                    "Text and windows on the PC are larger, and the stream is {} × {}.",
+                    mode.width, mode.height
+                ),
+                _ => {
+                    "Text and windows on the PC are larger, with fewer pixels to stream.".to_owned()
+                }
+            };
+            row(ui, "Scale", &about, LIST_WIDTH, |ui| {
+                egui::ComboBox::from_id_salt("scale")
+                    .width(LIST_WIDTH)
+                    .selected_text(format!("{}%", settings.scale))
+                    .show_ui(ui, |ui| {
+                        for scale in SCALES {
+                            ui.selectable_value(&mut settings.scale, scale, format!("{scale}%"));
+                        }
+                    });
+            });
+        }
 
         let about = native.map_or_else(
             || "Native is 60 FPS: this window does not know its screen's.".to_owned(),

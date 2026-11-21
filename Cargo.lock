@@ -2442,6 +2442,7 @@ dependencies = [
  "android-activity",
  "jni 0.21.1",
  "leto-core",
+ "libc",
  "log",
  "ndk-context",
  "ndk-sys",
