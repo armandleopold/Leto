@@ -184,6 +184,8 @@ struct Inner {
     /// The host itself ends the stream: tell the client before leaving.
     terminate: AtomicBool,
     wants_keyframe: AtomicBool,
+    /// How late the next picture leaves, in milliseconds, when a test asked.
+    picture_held: AtomicU64,
     negotiated: Mutex<Option<Negotiated>>,
     media: Mutex<Vec<thread::JoinHandle<()>>>,
     connected: AtomicBool,
@@ -247,6 +249,7 @@ impl Session {
             stop: AtomicBool::new(false),
             terminate: AtomicBool::new(false),
             wants_keyframe: AtomicBool::new(false),
+            picture_held: AtomicU64::new(0),
             negotiated: Mutex::new(None),
             media: Mutex::new(Vec::new()),
             connected: AtomicBool::new(false),
@@ -301,6 +304,13 @@ impl Session {
             microphone_packets: inner.microphone_packets.load(Ordering::SeqCst),
             codec: negotiated.map_or(Codec::H264, |negotiated| negotiated.codec),
         }
+    }
+
+    /// The next picture leaves `late`, once: made at its time, and kept
+    /// that long before it is sent.
+    pub fn hold_a_picture(&self, late: Duration) {
+        let late = u64::try_from(late.as_millis()).unwrap_or(u64::MAX);
+        self.inner.picture_held.store(late, Ordering::SeqCst);
     }
 
     /// What the client's microphone sent lately, decoded: one channel at
@@ -910,6 +920,12 @@ fn serve_video(inner: &Inner, negotiated: Negotiated) {
             let kind = if frame.keyframe { ServerFrameType::Idr } else { ServerFrameType::PFrame };
             // Video time counts in ninetieths of a millisecond.
             let timestamp = (number * 90_000 / u64::from(negotiated.fps)) as u32;
+            // Made as it was due, and late all the same when a test asks:
+            // a keyframe asked for in the meantime is the next picture.
+            let late = inner.picture_held.swap(0, Ordering::SeqCst);
+            if late > 0 {
+                thread::sleep(Duration::from_millis(late));
+            }
             if payloader.push_frame(timestamp, None, kind, frame.data).is_ok() {
                 while let Some(packet) = payloader.poll_packet() {
                     send(socket, &packet, client);

@@ -432,6 +432,15 @@ impl FakeHost {
         self.shared.cameras.as_ref().and_then(|cameras| cameras.seen())
     }
 
+    /// The next picture of the stream leaves `late`, once, as on a PC that
+    /// was busy with something else for a moment: made at its time, and
+    /// sent that much after it. For what a client makes of a late picture.
+    pub fn hold_a_picture(&self, late: Duration) {
+        if let Some(session) = &self.shared.playing.lock().unwrap().session {
+            session.hold_a_picture(late);
+        }
+    }
+
     /// Starts no stream, for now, and says that it is busy: as a host that
     /// has not noticed yet that the client it streamed to is gone.
     pub fn refuse_streams(&self, refused: bool) {

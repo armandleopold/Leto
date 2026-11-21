@@ -84,6 +84,36 @@ fn wait_for_stream(counter: &Counter) -> Tally {
     counter.tally()
 }
 
+/// A picture that leaves the PC late is not waited for: the engine gives it
+/// up after a tenth of a second, asks for a keyframe and hands over nothing
+/// that builds on the picture it gave up. How long it waits is tested with
+/// exact times in the engine; this is the way from one end to the other,
+/// whatever the clocks of the computer that runs it are like.
+#[test]
+fn after_a_picture_that_came_too_late_the_stream_goes_on_from_a_keyframe() {
+    let settings = Settings::new();
+    let host = FakeHost::start();
+    let client = settings.open();
+    let paired = pair(&client, &host);
+    let counter = Counter::default();
+    let session =
+        client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+    let before = wait_for_stream(&counter);
+
+    // Far longer than the engine waits, and than a busy computer stalls.
+    host.hold_a_picture(Duration::from_millis(500));
+    wait_for("the stream to go on", || {
+        let tally = counter.tally();
+        tally.frames >= before.frames + 15 && tally.keyframes > before.keyframes
+    });
+
+    let tally = counter.tally();
+    assert_eq!(tally.frames_orphaned, 0, "a picture that follows a missing one is a keyframe");
+    let report = host.stream_report().expect("the host is streaming");
+    assert!(report.keyframes_requested >= 1, "{report:?}");
+    drop(session);
+}
+
 #[test]
 fn a_stream_delivers_pictures_and_sound() {
     let settings = Settings::new();
@@ -99,7 +129,9 @@ fn a_stream_delivers_pictures_and_sound() {
     let video = tally.setup.expect("the video was set up");
     assert_eq!((video.width, video.height, video.fps), (320, 180, 30));
     assert!(tally.keyframes >= 1, "the stream starts with a keyframe");
-    assert_eq!(tally.frames_missing, 0, "nothing is lost on the loopback interface");
+    // Not that none is missing: a computer busy enough sends one late, and
+    // the engine stops waiting for a picture after a tenth of a second.
+    assert_eq!(tally.frames_orphaned, 0, "a picture that follows a missing one is a keyframe");
     let audio = tally.audio_setup.expect("the sound was set up");
     assert_eq!((audio.sample_rate, audio.channels, audio.samples_per_packet), (48_000, 2, 240));
     // Sixty bytes per packet: 96 kbit/s in packets of five milliseconds.
