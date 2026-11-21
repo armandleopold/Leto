@@ -324,6 +324,9 @@ pub struct Session {
     sideways_wheel: bool,
     /// The host takes the microphone of this device.
     microphone: bool,
+    /// The stream waits a few milliseconds at a time, in the engine, in the
+    /// decoders and in the sound: the system counts them finely meanwhile.
+    _clock: leto_system::clock::Fine,
 }
 
 impl Session {
@@ -335,6 +338,8 @@ impl Session {
         audio: impl AudioSink,
         ended: impl FnOnce(Ended) + Send + 'static,
     ) -> Result<Self, moonlight_common::error::Error> {
+        // Before the first wait of the stream.
+        let clock = leto_system::clock::fine();
         let control = Arc::new(Control::default());
         let leaving = Arc::new(AtomicBool::new(false));
         let input_allowed = input_allowed(config.apollo_permissions.as_ref());
@@ -364,7 +369,7 @@ impl Session {
         if control.keyframe_wanted_early.swap(false, Ordering::SeqCst) {
             control.request_keyframe();
         }
-        Ok(Self { stream, leaving, input_allowed, sideways_wheel, microphone })
+        Ok(Self { stream, leaving, input_allowed, sideways_wheel, microphone, _clock: clock })
     }
 
     /// Whether the stream has ended, by either side.
@@ -736,8 +741,12 @@ pub struct Tally {
     pub frames: u64,
     pub keyframes: u64,
     pub video_bytes: u64,
-    /// Pictures the host made that never arrived.
+    /// Pictures the host made that never arrived, or arrived too late to
+    /// be waited for.
     pub frames_missing: u64,
+    /// Pictures that came after missing ones and were no keyframes: they
+    /// build on pictures nobody has, and should never have been handed over.
+    pub frames_orphaned: u64,
     /// The most pictures that were ever waiting behind one.
     pub most_waiting: usize,
     last_number: Option<u32>,
@@ -784,7 +793,9 @@ impl VideoSink for CountingSink {
             tally.video_bytes += frame.data.len() as u64;
             tally.most_waiting = tally.most_waiting.max(frame.waiting);
             if let Some(last) = tally.last_number {
-                tally.frames_missing += u64::from(frame.number.saturating_sub(last + 1));
+                let missing = u64::from(frame.number.saturating_sub(last + 1));
+                tally.frames_missing += missing;
+                tally.frames_orphaned += u64::from(missing > 0 && !frame.keyframe);
             }
             tally.last_number = Some(frame.number);
         });

@@ -35,7 +35,7 @@ crates/
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
-  leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
+  leto-system/    What Leto asks of the system itself: every key for a stream, what the screen is like, and a clock that counts finely during a stream. Windows only for now, `unsafe` allowed
   leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
@@ -73,8 +73,18 @@ instead of scattering `cfg` attributes through the interface.
 
 `apps/leto` is an [egui](https://github.com/emilk/egui) app. The same code
 draws the native window and, compiled to WebAssembly, the web client
-(`cargo xtask web` builds it into `dist/web`). The look is fixed: the "Braise"
-palette from `leto_core::brand`, dark, whatever the system theme.
+(`cargo xtask web` builds it into `dist/web`).
+
+The look is the "Braise" palette from `leto_core::brand`, by night and by day
+(`theme.rs`): a warm black ground with ivory text, or the same turned over,
+ivory under warm black, with the orange accent a little deeper so that it
+shows on ivory. Leto wears the one the system asks for and changes with it
+while it runs: Windows tells the app, and a browser tells the page
+(`prefers-color-scheme`). Linux tells neither, so the app is dark there
+unless `LETO_THEME=light` is in its environment. A stream is always shown by
+night, whatever the system asks for: black surrounds its pictures, and what
+is drawn over them has to be read on them. A test checks that what is
+written can be read on both grounds.
 
 It is made of three parts that do not reach into each other:
 
@@ -258,14 +268,23 @@ What this first version does, and what it leaves for later:
   says why instead of waiting.
 - Leto asks the PC for BT.601 colours in limited range, in standard dynamic
   range. HDR comes with the decoders that can show it.
+- A stream waits a few milliseconds at a time in many places: the engine
+  for packets, the decoder for the graphics card, the sound for its queue.
+  Windows wakes such a wait on the ticks of its clock, 15.6 ms apart unless
+  a program asks for finer ones, which is two pictures of a fast stream. So
+  each `Session` asks for ticks a millisecond apart for as long as it lives
+  (`leto_system::clock`), as Moonlight does through SDL. Other systems count
+  finely by themselves.
 - Sound is stereo Opus, decoded in Rust and played on the system's default
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
-  drifts behind the picture. A PC sends sound all the time, silence included,
-  so a stream that has had none for five seconds, or whose first second of
-  sound did not decode, shows "No sound" in its bar and says why in the log,
-  as speakers that did not open do.
+  drifts behind the picture. A stream whose first second of sound did not
+  decode shows "No sound" in its bar and says why in the log, as speakers
+  that did not open do. A stream that has had no sound at all does not:
+  Sunshine and Apollo send nothing while the PC plays nothing, as a real
+  Apollo showed, and nothing tells that apart from sound lost on the way.
+  The log notes it after five seconds, for whoever reads it.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
@@ -675,6 +694,32 @@ gives itself. Sunshine and Apollo tell which of their addresses a question
 came in on, which, asked from beyond a forwarded port, is their address on
 their own network.
 
+A PC known only through a VPN tells its address there, and its address
+nearby has to come from somewhere else. One way is the announcement the PC
+makes on the local network, which a firewall can keep from Leto. The other
+is its name: a PC says the name of the computer it runs on, and this
+device's own system often knows where that name leads, from the router or
+by asking the network as Windows and macOS do for the names of computers.
+So while Leto listens for announcements it also asks the system, once a
+minute at most, for the name of each PC it keeps and for that name with
+`.local` (`discovery::by_name`). Only an address of a local network is
+asked at, since a name can mean something else on the internet, and only a
+name that can be a computer's. An address where the PC answers, and proves
+who it is when it is paired, joins the others.
+
+Neither worked on the first laptop it was tried on: nothing was announced
+to Leto there and the name led nowhere. So a third way needs nothing from
+the network but what a stream needs. While a paired PC answers, but not at
+an address of a local network this device is on, Leto looks around on that
+network (`Client::look_around_on`): it tries a connection on the PC's port
+at each address around its own, the 253 that share its first three numbers
+at most, for a third of a second, all at once (`discovery::listening`).
+What takes one is asked who it is, and only a PC that proves to be one Leto
+paired with is kept, at that address too. Each network is looked around on
+once while Leto runs. It is some 250 connections tried on whatever local
+network the device is on, at home or not, which a network that is not the
+person's own may notice: that is its cost.
+
 Each time it looks for a PC, it asks at every address at once and uses the
 first that answers: the nearest way there, the one with the shortest round
 trip. Moonlight prefers a PC's address on the local network for the same
@@ -729,13 +774,16 @@ Windows. Its text never reaches a log, and a browser
 cannot give or remove one through the bridge: the tunnel belongs to the
 device the engine runs on.
 
-What it does not do, and what was never tried:
+What it does not do, and what was tried:
 
-- It was never tried against a real WireGuard server. Two of Leto's own
-  tunnel ends talk to each other in the tests, and a whole session goes
-  through them to the stand-in host: finding it, pairing, the apps, pictures,
-  sound and input. boringtun is the WireGuard that Cloudflare runs, but
-  nothing here met `wg` or a router's WireGuard.
+- It met one real WireGuard server, on 2026-11-21: the Windows app reached
+  a PC through the WireGuard of a Raspberry Pi at home, of which the PC is
+  a peer too, and the person who tried it reports that it works well. Which
+  of pictures, sound and input were looked at is not known, and no other
+  server was tried, a router's among them. In the tests two of Leto's own
+  tunnel ends talk to each other, and a whole session goes through them to
+  the stand-in host: finding it, pairing, the apps, pictures, sound and
+  input.
 - Leto should have a peer of its own on the server. The same keys in use at
   the same time by the WireGuard app, on this device or another, take the
   tunnel from each other every few seconds.
@@ -751,7 +799,9 @@ What it does not do, and what was never tried:
   address, since a broadcast does not cross WireGuard. That wakes it only
   while the device the tunnel ends on still knows which card has that
   address, which routers forget after a while, and never when the tunnel
-  ends on the sleeping PC itself. See below.
+  ends on the sleeping PC itself. A PC that is a peer of the server, and
+  known to Leto by its address inside WireGuard, is in that case: that
+  address is the PC's own end of a tunnel, asleep with it. See below.
 - Not in the browser: the web client reaches PCs through the bridge, which
   uses the tunnel of the device it runs on.
 
@@ -813,6 +863,14 @@ run adds to its file; a file that reached 10 MB is set aside as
 is written there too, which matters on Windows, where the app has no
 terminal. Leto's own crates log in detail, other libraries only what they
 find worth telling; `RUST_LOG` changes that and also prints to the terminal.
+
+During a stream the app writes a line every ten seconds with what its
+statistics show: pictures arrived, decoded and skipped in a second, the bit
+rate, the loss, how long a picture took to decode and how much of that to
+leave the decoder, how long the PC took to make one, the way to the PC and
+back, and on how many pixels of the screen the pictures are drawn: one for
+each of theirs, or more or fewer, which makes them less sharp. A log of a
+stream that felt slow or looked soft says where to look.
 
 A log names PCs and their addresses, and each request's path, but never a
 secret: the folder can be sent as it is. The settings folder around it holds

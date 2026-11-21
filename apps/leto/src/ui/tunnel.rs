@@ -66,7 +66,7 @@ pub fn show(ui: &mut Ui, form: &mut TunnelForm) -> Option<Asked> {
             });
         });
         if let Some(why) = &form.refused {
-            ui.add(egui::Label::new(RichText::new(why).color(theme::PROBLEM)).wrap());
+            ui.add(egui::Label::new(RichText::new(why).color(theme::problem())).wrap());
         }
     }
     asked
@@ -106,14 +106,14 @@ fn state(ui: &mut Ui, summary: &TunnelSummary) {
 fn status(summary: &TunnelSummary) -> (Color32, String) {
     let end = summary.endpoint.as_deref().unwrap_or("the other end");
     match (&summary.problem, summary.running, summary.handshake) {
-        (Some(problem), ..) => (theme::PROBLEM, format!("The tunnel does not work: {problem}")),
-        (None, true, Some(ago)) if ago <= FRESH => (theme::READY, format!("Connected to {end}.")),
+        (Some(problem), ..) => (theme::problem(), format!("The tunnel does not work: {problem}")),
+        (None, true, Some(ago)) if ago <= FRESH => (theme::ready(), format!("Connected to {end}.")),
         (None, true, Some(ago)) => {
-            (theme::DIM, format!("Open. {end} last answered {} minutes ago.", ago / 60))
+            (theme::dim(), format!("Open. {end} last answered {} minutes ago.", ago / 60))
         }
-        (None, true, None) => (theme::SUN, format!("Waiting for {end} to answer…")),
+        (None, true, None) => (theme::sun(), format!("Waiting for {end} to answer…")),
         (None, false, _) => {
-            (theme::DIM, format!("To {end}. It opens when a PC it leads to is looked for."))
+            (theme::dim(), format!("To {end}. It opens when a PC it leads to is looked for."))
         }
     }
 }
@@ -133,7 +133,7 @@ fn file_form(ui: &mut Ui, form: &mut TunnelForm) -> Option<Asked> {
             .hint_text(HINT),
     );
     if let Some(why) = &form.refused {
-        ui.add(egui::Label::new(RichText::new(why).color(theme::PROBLEM)).wrap());
+        ui.add(egui::Label::new(RichText::new(why).color(theme::problem())).wrap());
     }
     ui.add_space(4.0);
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -201,16 +201,16 @@ mod tests {
         let connected = summary();
         assert_eq!(
             status(&connected),
-            (theme::READY, "Connected to home.example.org:51820.".into())
+            (theme::ready(), "Connected to home.example.org:51820.".into())
         );
         let waiting = TunnelSummary { handshake: None, ..summary() };
-        assert_eq!(status(&waiting).0, theme::SUN);
+        assert_eq!(status(&waiting).0, theme::sun());
         let quiet = TunnelSummary { handshake: Some(600), ..summary() };
         assert!(status(&quiet).1.contains("10 minutes ago"));
         let closed = TunnelSummary { running: false, handshake: None, ..summary() };
         assert!(status(&closed).1.contains("opens when a PC"));
         let broken = TunnelSummary { problem: Some("no route".into()), ..summary() };
-        assert_eq!(status(&broken).0, theme::PROBLEM);
+        assert_eq!(status(&broken).0, theme::problem());
     }
 
     /// Every state of the card draws in a narrow window and a wide one, and
