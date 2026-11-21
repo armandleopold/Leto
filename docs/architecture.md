@@ -86,6 +86,19 @@ It is made of three parts that do not reach into each other:
 - `ui/` draws the screens from the state and tells the state what the person
   did.
 
+On Windows the window has no title bar of the system's: Leto's own top bar
+takes its place (`ui/frame.rs`). Dragged, it moves the window, with the
+system's snapping to the sides; double-clicked, it maximizes the window or
+gives the screen back. Its top right corner holds the buttons that minimize,
+maximize and close it, as tall as the bar, and the window's edges resize it.
+egui gives such a window the system's shadow. A stream in a window, rather
+than full screen, has the same three buttons at the end of its bar, which
+moves the window too; its edges are the PC's, for the mouse. `leto.exe`
+carries the app's icon and name as Windows resources, made by
+`apps/leto/build.rs` from `assets/brand/windows/leto.ico`: Explorer, its
+search and the Task Manager show them before the app runs. Elsewhere the
+system draws the frame.
+
 ## A stream
 
 What a shell asks of the engine and what it hears back are the same for all
@@ -125,7 +138,7 @@ wins. Sunshine ignores the question and shows its own screen. A browser says
 its screen's size but not its pace: it gets 60, lying down.
 
 Those are the defaults, and the settings change them, after Moonlight's
-(`settings.rs`, drawn by `ui/settings.rs` behind the cog at the top right).
+(`settings.rs`, drawn by `ui/settings.rs` behind the cog on the list of PCs).
 The person may choose the stream's size and pace instead of the screen's, its
 bit rate (from 0.5 to 150 Mbit/s, as in Moonlight), no screen of its own on
 the PC, the PC's speakers playing too, no optimized game settings, the app
@@ -355,11 +368,23 @@ of the device: capturing it, showing it to the person, and sending it to a PC
 that takes one. No Sunshine or Apollo does, and Leto's own host is not written
 yet, so the only PC that takes it today is the stand-in host of the tests.
 
-- **A screen of its own.** "Camera and microphone", reached from the list of
-  PCs, shows what the camera sees and how loud the microphone is, with no PC
-  involved. Both are off at every visit, each has its switch, and leaving the
-  screen lets go of both. While one captures, its icon is lit and a line
-  under it says so.
+- **A screen of its own.** "Camera, microphone and sound", reached from the
+  list of PCs, shows what the camera sees and how loud the microphone is,
+  with no PC involved. Both are off at every visit, each has its switch, and
+  leaving the screen lets go of both. While one captures, its icon is lit and
+  a line under it says so.
+- **Which camera, microphone and sound output.** On the desktop the same
+  screen has a list for each, for a device that has several: a laptop's own
+  camera and one on USB, a headset beside the loudspeakers. A device is
+  chosen by the name the system gives it, kept with the settings
+  (`DeviceChoices`), and "Restore the defaults" leaves it alone. The first
+  choice of each list leaves it to Leto (the first camera with colour) or to
+  the system (its default microphone and output), and so does a device that
+  is not there when it is wanted. The lists are made when the screen opens
+  and again when one is opened, the cameras on their own thread
+  (`leto_media::look_for_cameras`). A camera or microphone at work changes at
+  once, the sound output at the next stream, and a short test sound tells
+  where sound goes. A browser asks the person itself and has no lists.
 - **On the desktop**, `leto-media` reads the camera (`Camera`) through
   nokhwa: Media Foundation on Windows, V4L2 on Linux, nothing on macOS yet.
   It opens the first camera that has colour, because laptops that recognise a

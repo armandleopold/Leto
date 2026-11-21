@@ -41,7 +41,9 @@ use self::{
     screen::{Canvas, Screen, Shown},
     speaker::Speaker,
 };
-use super::{Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, pads};
+use super::{
+    Chime, DeviceNames, Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, pads,
+};
 use crate::{
     state::{Event, Request},
     stats::Counts,
@@ -439,6 +441,23 @@ impl Backend {
             },
             Device::Refused(why) => Err(why),
         }
+    }
+
+    /// The browser asks the person which camera and microphone to use,
+    /// and plays sound where the system does: the page has nothing to
+    /// choose from.
+    pub fn device_names(&self) -> Option<DeviceNames> {
+        None
+    }
+
+    pub fn look_for_devices(&self) {}
+
+    pub fn choose_devices(&self, _chosen: &crate::settings::DeviceChoices) {}
+
+    pub fn test_sound(&self) {}
+
+    pub fn chime(&self) -> Chime {
+        Chime::Silent
     }
 
     /// Passes what the person did on to the PC being watched, in order.
