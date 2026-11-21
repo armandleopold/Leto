@@ -6,7 +6,7 @@
 
 use std::{
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -23,6 +23,15 @@ use crate::stats::Counts;
 /// How long a window that is only glanced at shows each picture.
 const GLANCE: Duration = Duration::from_secs(1);
 
+/// How long a stream may go without any sound before Leto says none
+/// arrives. A PC sends sound all the time, silence included, from the first
+/// moments of a stream.
+const SILENCE: Duration = Duration::from_secs(5);
+
+/// How many packets of sound that all fail to decode mean that none will:
+/// about a second of sound.
+const UNPLAYABLE: u64 = 200;
+
 /// What a stream leaves for the interface to pick up.
 #[derive(Default)]
 pub struct Outlet {
@@ -38,6 +47,35 @@ pub struct Outlet {
     muted: AtomicBool,
     /// Why the stream has no pictures, when it has none.
     picture_problem: Mutex<Option<String>>,
+    /// What happened to the sound so far.
+    heard: Mutex<Heard>,
+}
+
+/// What happened to the sound of a stream, to tell when it never plays.
+#[derive(Debug, Default)]
+struct Heard {
+    /// When the stream said what sound it sends.
+    since: Option<Instant>,
+    /// Packets that arrived.
+    arrived: u64,
+    /// Packets that did not decode.
+    lost: u64,
+    /// The problem last written in the log.
+    told: Option<&'static str>,
+}
+
+impl Heard {
+    /// Why nothing is heard, judging by what arrived by `now`.
+    fn problem(&self, now: Instant) -> Option<&'static str> {
+        let since = self.since?;
+        if self.arrived == 0 && now.saturating_duration_since(since) >= SILENCE {
+            Some("No sound arrives from the PC.")
+        } else if self.arrived >= UNPLAYABLE && self.lost == self.arrived {
+            Some("The sound from the PC does not decode.")
+        } else {
+            None
+        }
+    }
 }
 
 impl Outlet {
@@ -75,8 +113,51 @@ impl Outlet {
         *self.pace.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Why the stream has no sound, when it has none: the speakers did not
+    /// open, or nothing arrives that can be played.
     pub fn sound_problem(&self) -> Option<String> {
-        self.sound_problem.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.sound_problem_at(Instant::now())
+    }
+
+    fn sound_problem_at(&self, now: Instant) -> Option<String> {
+        let set = self.sound_problem.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if set.is_some() {
+            return set;
+        }
+        let mut heard = self.heard();
+        let problem = heard.problem(now);
+        if problem != heard.told {
+            match problem {
+                Some(problem) => log::warn!(
+                    "the stream plays without sound: {problem} {} packets of sound arrived, {} \
+                     did not decode",
+                    heard.arrived,
+                    heard.lost,
+                ),
+                None => log::info!("the stream has sound after all"),
+            }
+            heard.told = problem;
+        }
+        problem.map(str::to_owned)
+    }
+
+    fn heard(&self) -> MutexGuard<'_, Heard> {
+        self.heard.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The stream said what sound it sends at `now`: it has had none yet.
+    fn sound_begins(&self, now: Instant) {
+        *self.heard() = Heard { since: Some(now), ..Heard::default() };
+    }
+
+    /// A packet of sound arrived, and decoded or not.
+    fn sound_arrived(&self, decoded: bool) {
+        let mut heard = self.heard();
+        heard.arrived += 1;
+        heard.lost += u64::from(!decoded);
+        if heard.arrived == 1 {
+            log::info!("the first sound arrived from the PC");
+        }
     }
 
     fn set_sound_problem(&self, problem: String) {
@@ -229,16 +310,20 @@ impl VideoSink for Screen {
 pub struct Sound {
     outlet: Arc<Outlet>,
     playing: Option<(SoundDecoder, Speaker)>,
+    /// Packets that did not decode.
+    lost: u64,
 }
 
 impl Sound {
     pub fn new(outlet: &Arc<Outlet>) -> Self {
-        Self { outlet: Arc::clone(outlet), playing: None }
+        Self { outlet: Arc::clone(outlet), playing: None, lost: 0 }
     }
 }
 
 impl AudioSink for Sound {
     fn setup(&mut self, setup: AudioSetup) {
+        self.outlet.sound_begins(Instant::now());
+        self.lost = 0;
         if setup.channels != 2 {
             let problem = format!("Leto plays stereo only, and the PC sends {}", setup.channels);
             return self.outlet.set_sound_problem(format!("{problem} channels."));
@@ -258,12 +343,24 @@ impl AudioSink for Sound {
     }
 
     fn packet(&mut self, opus: &[u8]) {
-        let Some((decoder, speaker)) = &mut self.playing else { return };
+        let Some((decoder, speaker)) = &mut self.playing else {
+            return self.outlet.sound_arrived(false);
+        };
         // Decoded even when muted: the next packets build on this one.
-        match decoder.decode(opus) {
+        let decoded = decoder.decode(opus);
+        self.outlet.sound_arrived(decoded.is_ok());
+        match decoded {
             Ok(_) if self.outlet.muted.load(Ordering::Relaxed) => {}
             Ok(samples) => speaker.play(samples),
-            Err(error) => log::debug!("a packet of sound is lost: {error}"),
+            // The first says why, should none ever decode.
+            Err(error) if self.lost == 0 => {
+                self.lost += 1;
+                log::warn!("a packet of sound did not decode: {error}");
+            }
+            Err(error) => {
+                self.lost += 1;
+                log::debug!("a packet of sound did not decode: {error}");
+            }
         }
     }
 
@@ -287,6 +384,56 @@ mod tests {
     use leto_testhost::FakeHost;
 
     use super::*;
+
+    #[test]
+    fn a_stream_without_sound_says_so_after_a_while() {
+        let outlet = Outlet::default();
+        let start = Instant::now();
+        assert_eq!(outlet.sound_problem_at(start + SILENCE), None, "no sound was promised yet");
+
+        outlet.sound_begins(start);
+        assert_eq!(outlet.sound_problem_at(start + Duration::from_secs(1)), None, "it may come");
+        let silent = outlet.sound_problem_at(start + SILENCE).expect("too long without sound");
+        assert!(silent.contains("No sound arrives"), "{silent}");
+
+        // Sound that arrives late is sound all the same.
+        outlet.sound_arrived(true);
+        assert_eq!(outlet.sound_problem_at(start + SILENCE * 2), None);
+
+        // A new stream starts with none.
+        outlet.sound_begins(start + SILENCE * 2);
+        assert!(outlet.sound_problem_at(start + SILENCE * 3).is_some());
+    }
+
+    #[test]
+    fn sound_that_never_decodes_is_said_and_some_losses_are_not() {
+        let outlet = Outlet::default();
+        let start = Instant::now();
+        outlet.sound_begins(start);
+        for _ in 1..UNPLAYABLE {
+            outlet.sound_arrived(false);
+        }
+        assert_eq!(outlet.sound_problem_at(start), None, "not yet a second of it");
+        outlet.sound_arrived(false);
+        let problem = outlet.sound_problem_at(start).expect("none decoded");
+        assert!(problem.contains("does not decode"), "{problem}");
+
+        outlet.sound_arrived(true);
+        assert_eq!(outlet.sound_problem_at(start), None, "one decoded");
+    }
+
+    #[test]
+    fn speakers_that_did_not_open_are_the_problem_whatever_arrives() {
+        let outlet = Outlet::default();
+        let start = Instant::now();
+        outlet.sound_begins(start);
+        outlet.set_sound_problem("This device has no sound output.".to_owned());
+        outlet.sound_arrived(false);
+        assert_eq!(
+            outlet.sound_problem_at(start + SILENCE).as_deref(),
+            Some("This device has no sound output.")
+        );
+    }
 
     /// The whole way of a picture: drawn and encoded by the stand-in PC,
     /// encrypted, sent with recovery data, put together again, decoded and
