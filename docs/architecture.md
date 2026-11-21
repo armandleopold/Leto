@@ -680,6 +680,19 @@ asked at, since a name can mean something else on the internet, and only a
 name that can be a computer's. An address where the PC answers, and proves
 who it is when it is paired, joins the others.
 
+Neither worked on the first laptop it was tried on: nothing was announced
+to Leto there and the name led nowhere. So a third way needs nothing from
+the network but what a stream needs. While a paired PC answers, but not at
+an address of a local network this device is on, Leto looks around on that
+network (`Client::look_around_on`): it tries a connection on the PC's port
+at each address around its own, the 253 that share its first three numbers
+at most, for a third of a second, all at once (`discovery::listening`).
+What takes one is asked who it is, and only a PC that proves to be one Leto
+paired with is kept, at that address too. Each network is looked around on
+once while Leto runs. It is some 250 connections tried on whatever local
+network the device is on, at home or not, which a network that is not the
+person's own may notice: that is its cost.
+
 Each time it looks for a PC, it asks at every address at once and uses the
 first that answers: the nearest way there, the one with the shortest round
 trip. Moonlight prefers a PC's address on the local network for the same
