@@ -140,7 +140,12 @@ crates that know nothing of each other:
    large as fits, undistorted.
 
 Leaving a stream keeps the app running on the PC, like closing Moonlight. The
-apps screen then offers to resume it or to close it.
+apps screen then offers to resume it or to close it. The PC is told that the
+client leaves, in one packet that is not waited for, as Moonlight tells it
+(a change to the vendored engine): a PC that is told nothing keeps the place
+of a client it no longer hears for seconds, up to a minute, and a client
+that comes back within that time finds a PC still busy with the stream it
+left.
 
 A stream that loses its PC while the person watches it is not left. The engine
 says so (`Event::Reconnecting`) and asks the PC for the stream again, after 1,

@@ -528,7 +528,19 @@ impl Inner {
 
     fn stop(&self) {
         // Stop self
-        self.stopped.store(true, Ordering::Release);
+        let already = self.stopped.swap(true, Ordering::AcqRel);
+
+        // Leto: the host is told that this client leaves, once. Without
+        // it the host goes on streaming to nobody until it gives up on the
+        // silence, which takes it from seconds to a minute, and a client
+        // that comes back before that finds its place taken.
+        if !already && !self.streams.control.is_stopped() {
+            self.streams.control.last_words(|stream| {
+                if let Err(err) = stream.disconnect_now(0) {
+                    debug!(error = ?err, "the host was not told that the stream is left");
+                }
+            });
+        }
 
         // Stop all streams
         self.streams.audio.stop();
