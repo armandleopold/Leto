@@ -11,7 +11,7 @@ mod stream;
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use leto_client::{Client, Pin, StreamSettings, VirtualDisplay};
+use leto_client::{Client, Pin, StreamSettings};
 use leto_core::{
     brand,
     engine::{Codec, Codecs, Decodable},
@@ -95,10 +95,10 @@ enum Command {
         /// Video bit rate to ask for, in kilobits per second.
         #[arg(long, default_value_t = StreamSettings::default().bitrate_kbps, value_name = "KBPS")]
         bitrate: u32,
-        /// Ask the PC for a screen of its own in that size and pace, with
-        /// text this large, in percent. Apollo makes one; others ignore it.
-        #[arg(long, value_name = "PERCENT", num_args = 0..=1, default_missing_value = "100")]
-        virtual_display: Option<u32>,
+        /// Ask the PC for a screen of its own in that size and pace. Apollo
+        /// makes one; others ignore it.
+        #[arg(long)]
+        virtual_display: bool,
         /// Send the PC this device's microphone meanwhile, if it takes one.
         #[arg(long)]
         microphone: bool,
@@ -208,8 +208,7 @@ fn run(cli: &Cli) -> Result<String, String> {
                 height: *height,
                 fps: *fps,
                 bitrate_kbps: *bitrate,
-                virtual_display: virtual_display
-                    .map(|scale_percent| VirtualDisplay { scale_percent }),
+                virtual_display: *virtual_display,
                 codecs,
                 ..StreamSettings::default()
             };

@@ -64,7 +64,7 @@ pub struct StreamSettings {
     /// Asks the host for a screen of its own, made in the stream's size and
     /// pace, instead of showing one of its own screens. Apollo makes one;
     /// the others ignore the question.
-    pub virtual_display: Option<VirtualDisplay>,
+    pub virtual_display: bool,
     /// The host may change a game's settings to suit the stream.
     pub optimize_games: bool,
     /// The host's own speakers keep playing too.
@@ -72,13 +72,6 @@ pub struct StreamSettings {
     /// The codecs the pictures may come in. H.264 always may: every host
     /// sends it.
     pub codecs: Codecs,
-}
-
-/// The screen a host makes for a stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VirtualDisplay {
-    /// How large the host draws text and windows on it, in percent.
-    pub scale_percent: u32,
 }
 
 impl Default for StreamSettings {
@@ -90,7 +83,7 @@ impl Default for StreamSettings {
             height: 1080,
             fps: 60,
             bitrate_kbps: 20_000,
-            virtual_display: None,
+            virtual_display: false,
             optimize_games: true,
             sound_on_pc: false,
             codecs: Codecs::default(),
@@ -100,7 +93,7 @@ impl Default for StreamSettings {
 
 impl StreamSettings {
     /// A stream that fills `screen` as it is: its size and its pace, on a
-    /// screen the host makes just like it, with text drawn as large.
+    /// screen the host makes just like it.
     ///
     /// The bit rate is the one [`bitrate_for`] gives the stream's size and
     /// pace.
@@ -112,9 +105,7 @@ impl StreamSettings {
             height,
             fps,
             bitrate_kbps: bitrate_for(width, height, fps),
-            virtual_display: Some(VirtualDisplay {
-                scale_percent: screen.scale_percent.clamp(100, 400),
-            }),
+            virtual_display: true,
             ..Self::default()
         }
     }
@@ -123,9 +114,7 @@ impl StreamSettings {
     /// Without a screen, it is the default one, and the host makes none.
     pub fn chosen(screen: Option<ScreenMode>, choices: Choices) -> Self {
         let mut settings = screen.map_or_else(Self::default, Self::for_screen);
-        if !choices.virtual_display {
-            settings.virtual_display = None;
-        }
+        settings.virtual_display &= choices.virtual_display;
         if let Some(kbps) = choices.bitrate_kbps {
             settings.bitrate_kbps = kbps.clamp(BITRATES_KBPS.0, BITRATES_KBPS.1);
         }
@@ -139,11 +128,12 @@ impl StreamSettings {
     /// starting with `&`.
     pub(crate) fn launch_parameters(self) -> String {
         let mut parameters = MoonlightStream::launch_query_parameters().to_owned();
-        if let Some(display) = self.virtual_display {
-            // Apollo reads these. A screen its owner set for this device
-            // overrides them.
-            parameters
-                .push_str(&format!("&virtualDisplay=1&scaleFactor={}", display.scale_percent));
+        if self.virtual_display {
+            // Apollo reads it. A screen its owner set for this device
+            // overrides it. Its `scaleFactor` is not how large it draws text
+            // on that screen: it multiplies the screen's size, and the
+            // stream's with it, which only makes more pixels to decode.
+            parameters.push_str("&virtualDisplay=1");
         }
         parameters
     }
@@ -814,25 +804,25 @@ impl AudioSink for CountingSink {
 mod tests {
     use super::*;
 
-    fn screen(width: u32, height: u32, refresh_hz: u32, scale_percent: u32) -> ScreenMode {
-        ScreenMode { width, height, refresh_hz, scale_percent }
+    fn screen(width: u32, height: u32, refresh_hz: u32) -> ScreenMode {
+        ScreenMode { width, height, refresh_hz }
     }
 
     #[test]
     fn a_stream_for_a_screen_is_made_in_its_size_and_pace() {
-        let settings = StreamSettings::for_screen(screen(2560, 1440, 144, 125));
+        let settings = StreamSettings::for_screen(screen(2560, 1440, 144));
         assert_eq!((settings.width, settings.height, settings.fps), (2560, 1440, 144));
-        assert_eq!(settings.virtual_display, Some(VirtualDisplay { scale_percent: 125 }));
+        assert!(settings.virtual_display);
         // Full HD at 60 is what Moonlight asks for by default, at 20 Mbit/s.
-        let full_hd = StreamSettings::for_screen(screen(1920, 1080, 60, 100));
+        let full_hd = StreamSettings::for_screen(screen(1920, 1080, 60));
         assert_eq!(full_hd.bitrate_kbps, 20_000);
-        assert_eq!(StreamSettings { virtual_display: None, ..full_hd }, StreamSettings::default());
+        assert_eq!(StreamSettings { virtual_display: false, ..full_hd }, StreamSettings::default());
     }
 
     #[test]
     fn the_bit_rate_grows_with_the_pixels_and_less_than_the_pace() {
         let bitrate = |width, height, fps| {
-            StreamSettings::for_screen(screen(width, height, fps, 100)).bitrate_kbps
+            StreamSettings::for_screen(screen(width, height, fps)).bitrate_kbps
         };
         assert_eq!(bitrate(3840, 2160, 60), 80_000);
         assert_eq!(bitrate(1920, 1080, 30), 10_000);
@@ -847,7 +837,7 @@ mod tests {
     #[test]
     fn a_screen_larger_than_h264_carries_is_asked_for_in_its_shape() {
         let fitted = |width, height| {
-            let settings = StreamSettings::for_screen(screen(width, height, 60, 100));
+            let settings = StreamSettings::for_screen(screen(width, height, 60));
             (settings.width, settings.height)
         };
         assert_eq!(fitted(3840, 2160), (3840, 2160));
@@ -860,18 +850,16 @@ mod tests {
     }
 
     #[test]
-    fn a_screens_pace_and_scale_stay_within_what_makes_sense() {
-        let settings = StreamSettings::for_screen(screen(1920, 1080, 0, 0));
+    fn a_screens_pace_stays_within_what_makes_sense() {
+        let settings = StreamSettings::for_screen(screen(1920, 1080, 0));
         assert_eq!(settings.fps, SLOWEST);
-        assert_eq!(settings.virtual_display, Some(VirtualDisplay { scale_percent: 100 }));
-        let settings = StreamSettings::for_screen(screen(1920, 1080, 500, 1000));
+        let settings = StreamSettings::for_screen(screen(1920, 1080, 500));
         assert_eq!(settings.fps, FASTEST);
-        assert_eq!(settings.virtual_display, Some(VirtualDisplay { scale_percent: 400 }));
     }
 
     #[test]
     fn a_stream_is_what_the_person_chose() {
-        let native = screen(2560, 1440, 144, 150);
+        let native = screen(2560, 1440, 144);
         // As Leto would have it.
         assert_eq!(
             StreamSettings::chosen(Some(native), Choices::default()),
@@ -889,7 +877,7 @@ mod tests {
         let settings = StreamSettings::chosen(Some(native), chosen);
         assert_eq!((settings.width, settings.height, settings.fps), (2560, 1440, 144));
         assert_eq!(settings.bitrate_kbps, 35_000);
-        assert_eq!(settings.virtual_display, None);
+        assert!(!settings.virtual_display);
         let protocol = settings.to_protocol();
         assert!(!protocol.sops);
         assert!(protocol.local_audio_play_mode);
@@ -909,7 +897,9 @@ mod tests {
     fn the_host_is_asked_for_a_screen_of_its_own_only_for_a_screen() {
         let plain = StreamSettings::default().launch_parameters();
         assert_eq!(plain, MoonlightStream::launch_query_parameters());
-        let native = StreamSettings::for_screen(screen(2560, 1440, 144, 150)).launch_parameters();
-        assert_eq!(native, format!("{plain}&virtualDisplay=1&scaleFactor=150"));
+        // Never with a scale: Apollo would make the screen that much larger
+        // than this one.
+        let native = StreamSettings::for_screen(screen(2560, 1440, 144)).launch_parameters();
+        assert_eq!(native, format!("{plain}&virtualDisplay=1"));
     }
 }
