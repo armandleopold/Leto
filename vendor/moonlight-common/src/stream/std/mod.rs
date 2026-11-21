@@ -275,7 +275,8 @@ impl MoonlightStream {
         self.inner
             .streams
             .control
-            .stream_mut(|stream| stream.batch_input(input))?;
+            // Leto: the stream is told the time first, see `stream_mut_now`.
+            .stream_mut_now(|stream| stream.batch_input(input))??;
 
         Ok(())
     }
@@ -285,7 +286,8 @@ impl MoonlightStream {
         self.inner
             .streams
             .control
-            .stream_mut(|stream| stream.send_raw(packet))?;
+            // Leto: the stream is told the time first, see `stream_mut_now`.
+            .stream_mut_now(|stream| stream.send_raw(packet))??;
 
         Ok(())
     }
