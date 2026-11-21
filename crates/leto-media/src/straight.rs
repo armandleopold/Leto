@@ -545,9 +545,9 @@ mod tests {
 
     use super::*;
 
-    /// Windows' own card made of software, which every Windows has. `None`
-    /// where it makes no pictures of brightness and colours.
-    fn software_card() -> Option<ID3D11Device> {
+    /// Windows' own card made of software, which every Windows has, and
+    /// which makes pictures of brightness and colours as a real one does.
+    fn software_card() -> ID3D11Device {
         let mut device = None;
         // SAFETY: a device asked of Windows with room for it, and a plain
         // question to it.
@@ -565,8 +565,14 @@ mod tests {
             )
             .expect("Windows makes a card of software");
             let device = device.expect("the card of software");
+            // A test that drew nothing would say nothing: it fails instead.
             let can = device.CheckFormatSupport(DXGI_FORMAT_NV12).unwrap_or(0);
-            (can & D3D11_FORMAT_SUPPORT_TEXTURE2D.0 as u32 != 0).then_some(device)
+            assert_ne!(
+                can & D3D11_FORMAT_SUPPORT_TEXTURE2D.0 as u32,
+                0,
+                "the card of software makes no pictures of brightness and colours"
+            );
+            device
         }
     }
 
@@ -664,10 +670,7 @@ mod tests {
 
     #[test]
     fn a_card_draws_a_picture_in_its_colours_on_a_pane_and_shows_it() {
-        let Some(device) = software_card() else {
-            eprintln!("the card of software makes no pictures of brightness and colours here");
-            return;
-        };
+        let device = software_card();
         // SAFETY: two windows of a kind Windows has, one inside the other
         // as a pane is, neither shown, both closed below.
         let (around, pane) = unsafe {
