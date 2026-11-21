@@ -35,7 +35,7 @@ crates/
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
-  leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
+  leto-system/    What Leto asks of the system itself: every key for a stream, what the screen is like, and a clock that counts finely during a stream. Windows only for now, `unsafe` allowed
   leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
@@ -250,6 +250,13 @@ What this first version does, and what it leaves for later:
   says why instead of waiting.
 - Leto asks the PC for BT.601 colours in limited range, in standard dynamic
   range. HDR comes with the decoders that can show it.
+- A stream waits a few milliseconds at a time in many places: the engine
+  for packets, the decoder for the graphics card, the sound for its queue.
+  Windows wakes such a wait on the ticks of its clock, 15.6 ms apart unless
+  a program asks for finer ones, which is two pictures of a fast stream. So
+  each `Session` asks for ticks a millisecond apart for as long as it lives
+  (`leto_system::clock`), as Moonlight does through SDL. Other systems count
+  finely by themselves.
 - Sound is stereo Opus, decoded in Rust and played on the system's default
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
@@ -805,6 +812,12 @@ run adds to its file; a file that reached 10 MB is set aside as
 is written there too, which matters on Windows, where the app has no
 terminal. Leto's own crates log in detail, other libraries only what they
 find worth telling; `RUST_LOG` changes that and also prints to the terminal.
+
+During a stream the app writes a line every ten seconds with what its
+statistics show: pictures arrived, decoded and skipped in a second, the bit
+rate, the loss, how long a picture took to decode and how much of that to
+leave the decoder, how long the PC took to make one, and the way to the PC
+and back. A log of a stream that felt slow says where the time went.
 
 A log names PCs and their addresses, and each request's path, but never a
 secret: the folder can be sent as it is. The settings folder around it holds
