@@ -50,7 +50,8 @@ impl fmt::Display for Range {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
     #[error("line {line}: {what}")]
-    Line { line: usize, what: String },
+    /// `what` is never what the file says: a damaged line can hold a key.
+    Line { line: usize, what: &'static str },
     #[error("the file has no {0}")]
     Missing(&'static str),
     #[error("Leto takes a tunnel to one peer, and the file has {0}")]
@@ -114,7 +115,7 @@ impl Config {
 
         for (index, line) in text.lines().enumerate() {
             let line_number = index + 1;
-            let wrong = |what: String| ConfigError::Line { line: line_number, what };
+            let wrong = |what: &'static str| ConfigError::Line { line: line_number, what };
             let line = line.split('#').next().unwrap_or_default().trim();
             if line.is_empty() {
                 continue;
@@ -126,17 +127,19 @@ impl Config {
                         peers += 1;
                         Section::Peer
                     }
-                    _ => return Err(wrong(format!("{line} is not a section of WireGuard"))),
+                    // Said without the line: a file whose lines ran together
+                    // has its keys on this one.
+                    _ => return Err(wrong("a section that is not WireGuard's")),
                 };
                 continue;
             }
             let Some((key, value)) = line.split_once('=') else {
-                return Err(wrong("a line that is not `Name = value`".to_owned()));
+                return Err(wrong("a line that is not `Name = value`"));
             };
             let (key, value) = (key.trim().to_ascii_lowercase(), value.trim());
             match (section, key.as_str()) {
                 (Section::None, _) => {
-                    return Err(wrong("a setting before [Interface] or [Peer]".to_owned()));
+                    return Err(wrong("a setting before [Interface] or [Peer]"));
                 }
                 (Section::Interface, "privatekey") => {
                     private_key = Some(read_key(value).ok_or_else(|| not_a_key("PrivateKey"))?);
@@ -151,14 +154,11 @@ impl Config {
                         .parse()
                         .ok()
                         .filter(|mtu| (576..=9000).contains(mtu))
-                        .ok_or_else(|| wrong(format!("MTU {value} is not one Leto can use")))?;
+                        .ok_or_else(|| wrong("an MTU Leto cannot use"))?;
                 }
                 (Section::Interface, "listenport") => {
-                    listen_port = Some(
-                        value
-                            .parse()
-                            .map_err(|_| wrong(format!("ListenPort {value} is no port")))?,
-                    );
+                    listen_port =
+                        Some(value.parse().map_err(|_| wrong("a ListenPort that is no port"))?);
                 }
                 (Section::Peer, _) if peers > 1 => {}
                 (Section::Peer, "publickey") => {
@@ -167,7 +167,19 @@ impl Config {
                 (Section::Peer, "presharedkey") => {
                     preshared_key = Some(read_key(value).ok_or_else(|| not_a_key("PresharedKey"))?);
                 }
-                (Section::Peer, "endpoint") => endpoint = Some(value.to_owned()),
+                (Section::Peer, "endpoint") => {
+                    // Shown and logged later: nothing but a name and a port
+                    // may get there from a line that ran into the next.
+                    let named = value.rsplit_once(':').is_some_and(|(host, port)| {
+                        port.parse::<u16>().is_ok()
+                            && !host.is_empty()
+                            && !host.contains(|c: char| c.is_whitespace() || c == '=')
+                    });
+                    if !named {
+                        return Err(wrong("an Endpoint that is not `name:port`"));
+                    }
+                    endpoint = Some(value.to_owned());
+                }
                 (Section::Peer, "allowedips") => {
                     // IPv6 ranges are left out with the rest of IPv6.
                     allowed.extend(value.split(',').filter_map(|one| one.parse::<Range>().ok()));
@@ -176,13 +188,14 @@ impl Config {
                     keepalive = match value {
                         "off" | "0" => None,
                         _ => Some(value.parse().map_err(|_| {
-                            wrong(format!("PersistentKeepalive {value} is not a number of seconds"))
+                            wrong("a PersistentKeepalive that is not a number of seconds")
                         })?),
                     };
                 }
                 // DNS, Table, PreUp, PostUp, FwMark and the like: what the
                 // system's WireGuard does with the file, not a tunnel's.
-                _ => log::debug!("line {line_number} of the WireGuard file is left out: {key}"),
+                // The name is not logged: on a damaged line it can be a key.
+                _ => log::debug!("line {line_number} of the WireGuard file is left out"),
             }
         }
 
@@ -329,5 +342,47 @@ mod tests {
         assert_eq!(error, ConfigError::Missing("valid PublicKey"));
         let debug = format!("{:?}", Config::parse(&wg_easy()).expect("a valid file"));
         assert!(!debug.contains(KEY) && !debug.contains(PEER), "{debug}");
+    }
+
+    /// A file damaged on its way here, with its lines run together or cut
+    /// anywhere, has its keys where anything is expected. Nothing of it is
+    /// said back: the message goes to a window, a terminal and a log.
+    #[test]
+    fn a_damaged_file_is_refused_without_a_word_of_it() {
+        let file = wg_easy();
+        let mut damaged = vec![
+            file.replace('\n', ""),
+            file.replace('\n', " "),
+            file.replace("[Interface]\n", "[Interface]"),
+            file.replace("PrivateKey = ", "[").replace("[Peer]", "]"),
+            file.replace("PrivateKey = ", "MTU = "),
+            file.replace("PrivateKey = ", "ListenPort = "),
+            file.replace("PublicKey = ", "PersistentKeepalive = "),
+            file.replace("PrivateKey = ", ""),
+            file.replace("[Interface]\n", ""),
+        ];
+        // Any two lines run together.
+        let ends = file.match_indices('\n').map(|(at, _)| at);
+        damaged.extend(ends.map(|at| format!("{}{}", &file[..at], &file[at + 1..])));
+        // And cut after any character.
+        damaged.extend((0..file.len()).filter(|&at| file.is_char_boundary(at)).map(|at| {
+            let (start, end) = file.split_at(at);
+            format!("{start}\n{end}")
+        }));
+
+        for text in damaged {
+            let said = match Config::parse(&text) {
+                // What a tunnel shows of its file: where the other end is.
+                Ok(config) => format!("{config:?} {:?}", config.endpoint),
+                Err(error) => format!("{error} {error:?}"),
+            };
+            for secret in [KEY, PEER] {
+                // No piece of a key long enough to help guessing it.
+                for piece in secret.as_bytes().windows(6) {
+                    let piece = std::str::from_utf8(piece).expect("base64 is ASCII");
+                    assert!(!said.contains(piece), "{said} says {piece}");
+                }
+            }
+        }
     }
 }
