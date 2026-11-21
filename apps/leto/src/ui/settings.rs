@@ -272,6 +272,13 @@ fn hands_and_more(ui: &mut Ui, settings: &mut Settings, decodable: Decodable) {
                 let name = "Pictures stay on the graphics card";
                 widgets::switch(ui, &mut settings.keep_on_card, name);
             });
+            let about = "Being tried. The graphics card that decodes the pictures shows them \
+                         itself, with Direct3D 11 as Moonlight does, without waiting for the \
+                         window to draw. Turn it off if the picture turns black or wrong.";
+            row(ui, "Pictures go straight to the screen", about, SWITCH_WIDTH, |ui| {
+                let name = "Pictures go straight to the screen";
+                widgets::switch(ui, &mut settings.straight_to_screen, name);
+            });
         }
         let about = format!("{} shows or hides them during a stream.", Shortcut::Statistics.keys());
         row(ui, "Statistics from the start", &about, SWITCH_WIDTH, |ui| {

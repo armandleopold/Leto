@@ -21,6 +21,9 @@ pub struct Counts {
     pub on_graphics_card: Option<bool>,
     /// The pictures stay on the graphics card until they are drawn.
     pub kept_on_card: bool,
+    /// The graphics card shows the pictures itself, straight on the
+    /// screen: the window draws none.
+    pub straight: bool,
     /// Pictures that arrived, and their size in bytes.
     pub received: u64,
     pub bytes: u64,

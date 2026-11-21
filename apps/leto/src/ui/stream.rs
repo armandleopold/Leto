@@ -96,6 +96,10 @@ pub struct Player {
     surface: Option<Surface>,
     /// Where the window lets pictures shown behind it through.
     hole: Option<Rect>,
+    /// What the window shows over the pictures in this frame: the bar, the
+    /// statistics, a sign. Pictures the backend shows over the window
+    /// leave these free.
+    over: Vec<Rect>,
     /// The stream screen made the window fill the screen, so leaving the
     /// stream gives the window back.
     filled_screen: bool,
@@ -226,6 +230,14 @@ impl Player {
         self.hole
     }
 
+    /// What the window shows over the pictures, in points: a backend that
+    /// puts its pictures over the window leaves these places to it.
+    // A browser shows its pictures behind the page, and needs none.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn over(&self) -> &[Rect] {
+        &self.over
+    }
+
     /// Takes the keyboard away from the interface, for the PC: while a
     /// stream is connected, Tab, Enter, Escape and the rest mean something
     /// there, not here.
@@ -329,6 +341,7 @@ pub fn show(
     player.strokes.extend(window::keys().into_iter().map(KeyStroke::System));
 
     player.hole = None;
+    player.over.clear();
     let picture = player.surface.as_ref().map(|surface| {
         let size = surface.size();
         let place = fit(vec2(size[0] as f32, size[1] as f32), window);
@@ -342,9 +355,15 @@ pub fn show(
                 egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
             }
             Surface::Behind(_) => {
-                // Black around the pictures, and nothing over them.
-                for side in around(place, window) {
-                    ui.painter().rect_filled(side, 0, Color32::BLACK);
+                // Black around the pictures, and nothing over them. Where
+                // a pane shows them over the window, what the window shows
+                // through its holes stands on black too.
+                if cfg!(target_arch = "wasm32") {
+                    for side in around(place, window) {
+                        ui.painter().rect_filled(side, 0, Color32::BLACK);
+                    }
+                } else {
+                    ui.painter().rect_filled(window, 0, Color32::BLACK);
                 }
                 player.hole = Some(place);
             }
@@ -451,10 +470,12 @@ pub fn show(
     }
 
     overlay(ui, window, view, player, status, now, &mut asked);
+    player.over.extend(player.bar);
     if view.connected {
         let arrived = status.counts.map_or(player.shown, |counts| counts.received);
         if seems_lost(view, picture.is_some(), arrived, now, &mut player.arrived) {
-            connection_lost(ui.ctx(), window, player.bar);
+            let sign = connection_lost(ui.ctx(), window, player.bar);
+            player.over.push(sign);
         } else if picture.is_some()
             && let Some((_, since)) = player.arrived
         {
@@ -467,7 +488,8 @@ pub fn show(
         && let Some(statistics) = &mut player.statistics
     {
         statistics.update(status.counts, player.shown, now);
-        statistics_panel(ui.ctx(), statistics, status);
+        let panel = statistics_panel(ui.ctx(), statistics, status);
+        player.over.push(panel);
         // The numbers change even while the picture stands still.
         ui.ctx().request_repaint_after_secs(STATISTICS_EVERY as f32 / 2.0);
     }
@@ -679,15 +701,17 @@ fn overlay(
         && opacity < 1.0
     {
         let level = meter(level);
-        live(ui, window, signs, 1.0 - opacity, |painter, rect, color| {
+        let sign = live(ui, window, signs, 1.0 - opacity, |painter, rect, color| {
             icons::microphone(painter, rect, color, level);
         });
+        player.over.push(sign);
         signs += 1;
     }
     if let (Cam::On, Some(Filming::Sending(_))) = (&view.camera, status.film)
         && opacity < 1.0
     {
-        live(ui, window, signs, 1.0 - opacity, icons::camera);
+        let sign = live(ui, window, signs, 1.0 - opacity, icons::camera);
+        player.over.push(sign);
     }
     if !view.connected || !has_picture {
         return;
@@ -699,7 +723,8 @@ fn overlay(
         ui.ctx().set_cursor_icon(CursorIcon::None);
     }
     if pointing.is_some() && opacity == 0.0 && idle < GRIP_STAYS {
-        grip(ui, window);
+        let grip = grip(ui, window);
+        player.over.push(grip);
         ui.ctx().request_repaint_after_secs(0.25);
     }
 }
@@ -725,8 +750,9 @@ impl Statistics {
 /// Who decodes the pictures, when the backend does not say.
 const DECODER: &str = if cfg!(target_arch = "wasm32") { "The browser's" } else { "Not yet known" };
 
-/// The statistics over the picture, in a corner, as in Moonlight.
-fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status<'_>) {
+/// The statistics over the picture, in a corner, as in Moonlight. Returns
+/// where they are.
+fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status<'_>) -> Rect {
     let lines = statistics_lines(statistics, status.counts, status.round_trip);
     egui::Area::new(Id::unique("stream-statistics"))
         .order(Order::Foreground)
@@ -755,7 +781,9 @@ fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status
                     let hide = format!("{} hides these.", Shortcut::Statistics.keys());
                     ui.label(widgets::dim(hide).size(theme::SMALL - 1.0));
                 });
-        });
+        })
+        .response
+        .rect
 }
 
 /// The lines of the statistics: a name, and what it is at.
@@ -773,6 +801,7 @@ fn statistics_lines(
         lines.push(("Video", format!("{width} × {height}, {fps} per second, {codec}")));
     }
     let decoder = match counts.on_graphics_card {
+        Some(true) if counts.straight => "On the graphics card, which shows them itself",
         Some(true) if counts.kept_on_card => "On the graphics card, where the pictures stay",
         Some(true) => "On the graphics card",
         Some(false) => "In software, on the processor",
@@ -816,11 +845,12 @@ fn statistics_lines(
 
 /// A small handle at the top of the picture: where to rest the pointer to
 /// get the bar.
-fn grip(ui: &Ui, window: Rect) {
+fn grip(ui: &Ui, window: Rect) -> Rect {
     let rect = Rect::from_center_size(window.center_top() + vec2(0.0, 7.0), vec2(44.0, 5.0));
     let painter = ui.painter();
     painter.rect_filled(rect.expand(1.0), 4, Color32::from_black_alpha(120));
     painter.rect_filled(rect, 3, theme::MOON.gamma_multiply(0.55));
+    rect.expand(1.0)
 }
 
 /// A small sign in a corner of the picture that the PC is listening, or
@@ -832,7 +862,7 @@ fn live(
     place: usize,
     opacity: f32,
     icon: impl Fn(&egui::Painter, Rect, Color32),
-) {
+) -> Rect {
     let center = window.right_top() + vec2(-28.0 - 40.0 * place as f32, 28.0);
     let rect = Rect::from_center_size(center, Vec2::splat(32.0));
     let painter =
@@ -840,6 +870,7 @@ fn live(
     let ground = Color32::from_black_alpha(170).gamma_multiply(opacity);
     painter.circle_filled(rect.center(), rect.width() / 2.0, ground);
     icon(&painter, rect.shrink(8.0), theme::SUN.gamma_multiply(opacity));
+    rect
 }
 
 /// How full the microphone's meter is for a level from 0 to 1. Ears hear in
@@ -898,8 +929,8 @@ fn seems_lost(
 }
 
 /// Says that the stream lost its PC and is getting it back, under the bar
-/// when the bar shows.
-fn connection_lost(ctx: &egui::Context, window: Rect, bar: Option<Rect>) {
+/// when the bar shows. Returns where the sign is.
+fn connection_lost(ctx: &egui::Context, window: Rect, bar: Option<Rect>) -> Rect {
     let top = bar.map_or(10.0, |bar| bar.bottom() - window.top() + 8.0);
     egui::Area::new(Id::unique("stream-lost"))
         .order(Order::Foreground)
@@ -919,7 +950,9 @@ fn connection_lost(ctx: &egui::Context, window: Rect, bar: Option<Rect>) {
                         ui.label(text);
                     });
                 });
-        });
+        })
+        .response
+        .rect
 }
 
 /// What the sign says.
@@ -1453,6 +1486,38 @@ mod tests {
         player.leave_to_close();
         assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, None).0), 1);
         assert!(!player.pc_hides_pointer(&view));
+    }
+
+    #[test]
+    fn what_shows_over_pictures_shown_behind_the_window_is_left_free_of_them() {
+        let ctx = egui::Context::default();
+        let settings = quiet(true);
+        let view = view(InputAllowed::ALL);
+        let mut player = Player::default();
+        player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(960.0, 540.0));
+        let in_the_corner = |player: &Player| {
+            player
+                .over()
+                .iter()
+                .any(|over| over.left() < 12.0 && over.top() < 12.0 && over.width() > 50.0)
+        };
+
+        // The pictures fill the window, and nothing stands in its corner.
+        frame(&ctx, &view, &mut player, &settings, None);
+        assert_eq!(player.hole(), Some(window));
+        assert!(!in_the_corner(&player), "{:?}", player.over());
+
+        // The statistics do, once asked for, and for as long as they show.
+        player.statistics = Some(Statistics::new(None, 0, 0.0));
+        for _ in 0..2 {
+            frame(&ctx, &view, &mut player, &settings, None);
+            assert!(in_the_corner(&player), "{:?}", player.over());
+            assert!(player.over().iter().all(|over| over.is_positive()), "{:?}", player.over());
+        }
+        player.statistics = None;
+        frame(&ctx, &view, &mut player, &settings, None);
+        assert!(!in_the_corner(&player), "{:?}", player.over());
     }
 
     #[test]

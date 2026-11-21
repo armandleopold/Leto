@@ -35,7 +35,7 @@ crates/
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
-  leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
+  leto-system/    What the app asks of the system itself: every key for a stream, what the screen is like, and a pane inside the window for pictures shown without it. Windows only for now, `unsafe` allowed
   leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
@@ -173,7 +173,8 @@ only, never), the PC's pointer drawn in the picture instead of this device's,
 the mouse buttons swapped, the wheel reversed, A and B and X
 and Y swapped on gamepads, Leto silent in the background, the statistics
 from the start, decoding on the processor only, a codec of their own, and on
-Windows pictures that stay on the graphics card, which is being tried. What the PC must know travels with the request
+Windows pictures that stay on the graphics card or go straight from it to
+the screen, both being tried. What the PC must know travels with the request
 (`Request::Play::choices`, `StreamSettings::chosen`); the rest stays in the
 app. The settings are kept as JSON: `settings.json` beside the paired PCs on
 the desktop, the page's local storage in a browser. A choice that is missing,
@@ -257,6 +258,33 @@ What this first version does, and what it leaves for later:
   one (a laptop that decodes on one card and draws on the other) says so,
   after which pictures come through memory until Leto starts again. Nothing
   of this has run on a real graphics card yet: no test here has one.
+- Behind another setting, off by default and being tried, the window does
+  not draw the pictures at all: the card that decoded one draws it itself
+  and shows it at once, with Direct3D 11 and no OpenGL, the way Moonlight
+  does on Windows (`leto-media/src/straight.rs`; `d3d11va.cpp` of
+  moonlight-qt was read for it, not copied). The app opens a pane over the
+  place of the pictures: a window of its own inside Leto's, which takes no
+  click and no key (`leto_system::pane`). On the decoder's thread the card
+  copies each picture to be shown out of the decoder's textures into one a
+  small program reads, that program turns brightness and colours into
+  pixels as it draws them over the whole pane (the numbers of `card.rs`,
+  colour to the left of its pixels), and the pane's pictures are swapped at
+  once (`Present` with no interval, torn where Windows allows it and V-Sync
+  is off). A picture shown that way has nothing left to show
+  (`Planes::shown`): the interface hears only how large the pictures are,
+  leaves them their place as it does in a browser (`Picture::Behind`), and
+  draws only when it has something of its own to show. What it shows over
+  the pictures (the bar, its grip, the statistics, the signs) shows through
+  holes cut in the pane, on black (`Player::over`, `LetoApp::place_pane`).
+  The app asks for it each frame of a stream, only when the setting is on
+  (`Outlet::set_pane`, `VideoDecoder::show_on`), and it falls back by
+  itself with one line in the log: a card that makes no such program or
+  shows no picture there leaves the pictures to the paths above. Only
+  pictures of eight bits a colour in NV12 go that way. None of it has run
+  anywhere: the container that builds Leto has no Windows, no graphics card
+  and no compiler for the card's programs, so the program itself has never
+  been compiled. Whether Windows honours holes in such a pane is not known
+  either.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.
@@ -844,8 +872,10 @@ with a comment that says why it does not apply and when to remove it.
 operating system directly (capture, codecs, virtual devices) opts back in with
 `#![allow(unsafe_code)]` at its top, and keeps that code in as few modules as
 possible. `leto-system` is one: its `unsafe` is in the modules for Windows,
-each call with the reason it is sound. `leto-media` opts in for three modules
+each call with the reason it is sound. `leto-media` opts in for four modules
 only: its Windows video decoder (`video/windows.rs`), which calls Media
 Foundation and Direct3D 11, the drawing of pictures by the graphics card
-(`card.rs`), which calls OpenGL, and the pictures that stay on the card
-(`kept.rs`), which calls Direct3D 11 and the driver's sharing with OpenGL.
+(`card.rs`), which calls OpenGL, the pictures that stay on the card
+(`kept.rs`), which calls Direct3D 11 and the driver's sharing with OpenGL,
+and the pictures the card shows itself (`straight.rs`), which calls
+Direct3D 11 and DXGI.

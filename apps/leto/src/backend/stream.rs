@@ -81,6 +81,11 @@ pub struct Outlet {
     /// Pictures decoded on the graphics card may stay there: the window
     /// draws them from where they are.
     kept: AtomicBool,
+    /// The pane the graphics card is to show the pictures on itself.
+    pane: Mutex<Option<leto_media::Pane>>,
+    /// How large the pictures are that the graphics card shows itself,
+    /// until the interface heard of it.
+    straight: Mutex<Option<[usize; 2]>>,
     /// Why the stream has no pictures, when it has none.
     picture_problem: Mutex<Option<String>>,
     /// What happened to the sound so far.
@@ -118,6 +123,25 @@ impl Outlet {
     /// The latest picture, once.
     pub fn take_picture(&self) -> Option<Planes> {
         self.picture.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    /// How large the pictures are that the graphics card now shows itself,
+    /// once: the interface leaves them their place.
+    pub fn take_straight(&self) -> Option<[usize; 2]> {
+        self.straight.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    /// The graphics card is to show the pictures itself on `pane`, or no
+    /// longer.
+    pub fn set_pane(&self, pane: Option<leto_media::Pane>) {
+        let mut asked = self.pane.lock().unwrap_or_else(PoisonError::into_inner);
+        if *asked != pane {
+            log::debug!(
+                "pictures decoded on the graphics card {}",
+                if pane.is_some() { "may go straight to the screen" } else { "go to the window" }
+            );
+            *asked = pane;
+        }
     }
 
     /// What happened to the pictures of the stream so far.
@@ -255,6 +279,9 @@ pub struct Screen {
     stale: bool,
     /// The pictures stay on the graphics card, as the log was told.
     kept: bool,
+    /// How large the pictures are that the graphics card shows itself, as
+    /// the interface was told.
+    straight: Option<[usize; 2]>,
 }
 
 impl Screen {
@@ -269,6 +296,7 @@ impl Screen {
             left: None,
             stale: false,
             kept: false,
+            straight: None,
         }
     }
 
@@ -330,6 +358,7 @@ impl VideoSink for Screen {
         let Some(decoder) = &mut self.decoder else { return Decoded::Ok };
         let fate = fate(pace, frame.waiting, self.left.map(|left| left.elapsed()));
         let seen = fate == Fate::Shown;
+        decoder.show_on(*self.outlet.pane.lock().unwrap_or_else(PoisonError::into_inner));
         decoder.keep_on_card(self.outlet.kept.load(Ordering::Relaxed));
         let kept = decoder.keeps_on_card();
         if self.kept != kept {
@@ -359,11 +388,42 @@ impl VideoSink for Screen {
                 });
                 Decoded::Ok
             }
-            Ok(true) => {
+            Ok(true) if self.picture.shown => {
+                // The graphics card showed it already: the interface only
+                // hears how large the pictures are, once.
                 let copying = decoder.copying();
                 self.outlet.count(|counts| {
                     counts.decoded(Some(took));
                     counts.copied(copying);
+                    counts.straight = true;
+                    *counts.shown.get_or_insert(0) += 1;
+                });
+                self.left = Some(Instant::now());
+                let size = [self.picture.width, self.picture.height];
+                if self.straight != Some(size) {
+                    self.straight = Some(size);
+                    log::info!("pictures go straight from the graphics card to the screen");
+                    let outlet = &self.outlet;
+                    *outlet.straight.lock().unwrap_or_else(PoisonError::into_inner) = Some(size);
+                    // A picture the window was still to draw is older.
+                    outlet.picture.lock().unwrap_or_else(PoisonError::into_inner).take();
+                    self.ctx.request_repaint();
+                }
+                Decoded::Ok
+            }
+            Ok(true) => {
+                let copying = decoder.copying();
+                let was_straight = self.straight.take().is_some();
+                if was_straight {
+                    log::info!("pictures go through the window again");
+                }
+                self.outlet.count(|counts| {
+                    counts.decoded(Some(took));
+                    counts.copied(copying);
+                    if was_straight {
+                        counts.straight = false;
+                        counts.shown = None;
+                    }
                 });
                 self.left = Some(Instant::now());
                 let planes = std::mem::take(&mut self.picture);

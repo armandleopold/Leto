@@ -203,6 +203,29 @@ pub(crate) mod windows {
         shared: Arc<Shared>,
     }
 
+    /// Where the picture in `sample` is on the card: the texture, which is
+    /// one of an array of them, which one of the array, and how they are
+    /// laid out: pixels across and down, and what is in them.
+    ///
+    /// # Safety
+    ///
+    /// `sample` is one a decoder gave that decodes on a graphics card.
+    pub(crate) unsafe fn texture_of(
+        sample: &IMFSample,
+    ) -> windows::core::Result<(ID3D11Texture2D, u32, (u32, u32, DXGI_FORMAT))> {
+        // SAFETY: as the caller promises: the buffer of such a sample is a
+        // texture of the card's.
+        unsafe {
+            let buffer = sample.GetBufferByIndex(0)?.cast::<IMFDXGIBuffer>()?;
+            let mut texture = std::ptr::null_mut();
+            buffer.GetResource(&ID3D11Texture2D::IID, &mut texture)?;
+            let source = ID3D11Texture2D::from_raw(texture);
+            let mut laid = D3D11_TEXTURE2D_DESC::default();
+            source.GetDesc(&mut laid);
+            Ok((source, buffer.GetSubresourceIndex()?, (laid.Width, laid.Height, laid.Format)))
+        }
+    }
+
     /// The ways to ask for the texture pictures are copied into. The first
     /// the card's video processor reads from is used: as a decoder's own
     /// textures, which the processor read before pictures were copied, then
@@ -235,17 +258,8 @@ pub(crate) mod windows {
             fps: u32,
         ) -> windows::core::Result<Kept> {
             let size = (u32::try_from(shown.0).unwrap_or(0), u32::try_from(shown.1).unwrap_or(0));
-            // SAFETY: reading the sample the decoder just gave: its buffer
-            // is a texture of the card's, one of an array of them.
-            let (source, slice, laid) = unsafe {
-                let buffer = sample.GetBufferByIndex(0)?.cast::<IMFDXGIBuffer>()?;
-                let mut texture = std::ptr::null_mut();
-                buffer.GetResource(&ID3D11Texture2D::IID, &mut texture)?;
-                let source = ID3D11Texture2D::from_raw(texture);
-                let mut laid = D3D11_TEXTURE2D_DESC::default();
-                source.GetDesc(&mut laid);
-                (source, buffer.GetSubresourceIndex()?, (laid.Width, laid.Height, laid.Format))
-            };
+            // SAFETY: reading the sample the decoder just gave.
+            let (source, slice, laid) = unsafe { texture_of(sample) }?;
             if self.made.as_ref().is_none_or(|made| made.size != size || made.laid != laid) {
                 self.made = Some(self.make(device, size, laid, fps)?);
             }
