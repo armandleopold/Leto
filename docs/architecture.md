@@ -280,11 +280,12 @@ What this first version does, and what it leaves for later:
   (`Outlet::set_pane`, `VideoDecoder::show_on`), and it falls back by
   itself with one line in the log: a card that makes no such program or
   shows no picture there leaves the pictures to the paths above. Only
-  pictures of eight bits a colour in NV12 go that way. None of it has run
-  anywhere: the container that builds Leto has no Windows, no graphics card
-  and no compiler for the card's programs, so the program itself has never
-  been compiled. Whether Windows honours holes in such a pane is not known
-  either.
+  pictures of eight bits a colour in NV12 go that way. The tests on Windows
+  compile the card's programs and have Windows' own card made of software
+  (WARP) draw a picture, laid out as a decoder lays it, on a pane inside
+  another window, read its pixels back and show it. No real graphics card
+  and no decoder has run it yet, and whether Windows honours holes in such
+  a pane is not known.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.

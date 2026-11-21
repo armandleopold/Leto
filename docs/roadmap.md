@@ -77,7 +77,7 @@ Progress:
 - Being tried: on Windows, the graphics card that decodes a picture draws
   and shows it itself with Direct3D 11, as Moonlight does, with no OpenGL
   and without waiting for the window. Behind a setting under Advanced, off
-  by default, and never run anywhere yet. See
+  by default, and run so far only by Windows' software card in the tests. See
   [architecture.md](architecture.md#a-stream).
 - Done: decoding on the graphics card on Windows, and AV1 and H.265 with it.
   The PC is offered what the card decodes, AV1 first, then H.265, and H.264
