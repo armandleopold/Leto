@@ -53,29 +53,65 @@ def words(path):
 
 
 def pin(path):
-    """The PIN: the tallest group of four digits on the screen.
+    """The PIN: four large light glyphs side by side, read one by one.
 
-    Its digits sit in boxes outlined in the accent colour, which tesseract
-    reads as more digits; a threshold keeps only the light digits, and the
-    clock and status icons are smaller.
+    Read as a whole, the boxes around the digits make tesseract see other
+    digits, so each digit is cut out and read on its own.
     """
     light = path + ".digits.png"
     subprocess.run(
-        ["convert", path, "-alpha", "off", "-colorspace", "Gray", "-threshold", "70%",
-         "-negate", light], check=True
+        ["convert", path, "-alpha", "off", "-colorspace", "Gray", "-threshold", "60%", light],
+        check=True,
     )
-    read = subprocess.run(
-        ["tesseract", light, "-", "--psm", "11", "-c", "tessedit_char_whitelist=0123456789",
-         "tsv"],
+    listing = subprocess.run(
+        ["convert", light, "-define", "connected-components:verbose=true",
+         "-define", "connected-components:area-threshold=100",
+         "-connected-components", "8", "null:"],
         capture_output=True, text=True, check=True,
-    )
-    groups = []
-    for line in read.stdout.splitlines()[1:]:
-        cells = line.split("\t")
-        if len(cells) >= 12 and re.fullmatch(r"\d{4}", cells[11].strip()):
-            groups.append((int(cells[9]), cells[11].strip()))
-    print("four digits read:", groups)
-    return max(groups)[1] if groups else None
+    ).stdout
+    width = int(subprocess.run(
+        ["identify", "-format", "%w", light], capture_output=True, text=True, check=True
+    ).stdout)
+    glyphs = []
+    for line in listing.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 5 or fields[-1] not in ("srgb(255,255,255)", "gray(255)"):
+            continue
+        match = re.fullmatch(r"(\d+)x(\d+)\+(\d+)\+(\d+)", fields[1])
+        if not match:
+            continue
+        w, h, x, y = map(int, match.groups())
+        # A PIN digit is about a twelfth of the screen's width tall.
+        if width * 0.06 < h < width * 0.15 and w < h:
+            glyphs.append((y, x, w, h))
+    # The four whose tops line up, left to right.
+    for top, *_ in sorted(glyphs):
+        row = sorted((g for g in glyphs if abs(g[0] - top) < width * 0.02), key=lambda g: g[1])
+        if len(row) != 4:
+            continue
+        code = ""
+        for y, x, w, h in row:
+            pad = h // 4
+            read = subprocess.run(
+                ["convert", light, "-crop", f"{w + 2 * pad}x{h + 2 * pad}+{x - pad}+{y - pad}",
+                 "+repage", "-negate", "-bordercolor", "white", "-border", "20", "png:-"],
+                capture_output=True, check=True,
+            ).stdout
+            # Read as a word, which tesseract does better than as one
+            # character; as a line when that finds nothing.
+            for mode in ("8", "7"):
+                digit = subprocess.run(
+                    ["tesseract", "-", "-", "--psm", mode, "-c",
+                     "tessedit_char_whitelist=0123456789"],
+                    input=read, capture_output=True, check=True,
+                ).stdout.decode().strip()
+                if digit:
+                    break
+            code += digit[:1]
+        print("digits read:", code)
+        if re.fullmatch(r"\d{4}", code):
+            return code
+    return None
 
 
 # Leto's accent, the fill of its main buttons (`leto_core::brand`).
