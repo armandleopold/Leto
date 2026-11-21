@@ -6,12 +6,13 @@
 //! same from either, and says the same things when something goes wrong.
 
 use std::{
+    iter,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use leto_core::{
@@ -29,6 +30,19 @@ const LISTEN_TIME: Duration = Duration::from_secs(2);
 /// How long a PC asked to wake up may take to answer: a PC that was off
 /// starts its system and its streaming software first.
 pub const WAKE_PATIENCE: Duration = Duration::from_secs(120);
+
+/// How long a lost stream waits before it is asked for again: longer each
+/// time, then the last for as long as it takes.
+const AGAIN_AFTER: [Duration; 4] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(3),
+    Duration::from_secs(5),
+];
+
+/// How often a lost stream, waiting to be asked for again, checks that the
+/// person still wants it.
+const STILL_WANTED_EVERY: Duration = Duration::from_millis(100);
 
 /// Whoever the engine works for: where its news goes, and where the streams
 /// it starts end up.
@@ -151,7 +165,8 @@ impl<S: Shell> Service<S> {
                 // A screen this device knows is filled as it is, unless the
                 // person chose otherwise.
                 let settings = StreamSettings::chosen(screen, choices);
-                play(&client, &shell, &watching, &host, app, attempt, settings);
+                let stream = Stream { client, shell, watching, host, app, attempt, settings };
+                play(&Arc::new(stream));
             }
             Request::Leave => {
                 // Winding a stream down takes a moment: not on the
@@ -347,69 +362,183 @@ fn apps(client: &Client, shell: &impl Shell, host: &HostId, apps_asked: &AtomicU
     }
 }
 
-fn play<S: Shell>(
-    client: &Arc<Client>,
-    shell: &Arc<S>,
-    watching: &Arc<Mutex<Watching>>,
-    host: &HostId,
+/// A stream the person asked for: all it takes to ask the PC for it, again
+/// if it is lost.
+struct Stream<S: Shell> {
+    client: Arc<Client>,
+    shell: Arc<S>,
+    watching: Arc<Mutex<Watching>>,
+    host: HostId,
     app: u32,
     attempt: u64,
     settings: StreamSettings,
-) {
-    let started = shell.sinks().and_then(|(video, audio)| {
-        let ended = {
-            let (client, shell) = (Arc::clone(client), Arc::clone(shell));
-            let watching = Arc::clone(watching);
-            move |reason| {
-                {
-                    // The camera went along with this stream.
-                    let mut watching = lock(&watching);
-                    if watching.wanted == Some(attempt) {
-                        watching.camera = None;
-                    }
-                }
-                let why = match reason {
-                    Ended::ByHost => StreamEnd::AppClosed,
-                    Ended::ConnectionLost => StreamEnd::ConnectionLost,
-                    Ended::HostError(code) => StreamEnd::HostError(code),
-                };
-                shell.tell(Event::Hosts(client.hosts()));
-                shell.tell(Event::StreamEnded { attempt, why });
-            }
-        };
-        client.play(host, app, settings, video, audio, ended).map_err(|error| explain(&error))
-    });
+}
+
+/// Why a stream did not start.
+enum NotStarted {
+    /// The shell cannot show it, in words for the person.
+    Shell(String),
+    Client(Error),
+}
+
+/// Whether asking again later may change `error`: a PC that did not
+/// answer, or answered in a way Leto did not expect, as one still busy with
+/// the stream it lost does. Every other answer stays.
+fn passing(error: &Error) -> bool {
+    matches!(error, Error::Offline | Error::Protocol(_) | Error::Discovery(_))
+}
+
+impl NotStarted {
+    /// In words for the person; the log gets the details.
+    fn explain(&self) -> String {
+        match self {
+            Self::Shell(words) => words.clone(),
+            Self::Client(error) => explain(error),
+        }
+    }
+}
+
+fn play<S: Shell>(stream: &Arc<Stream<S>>) {
+    if let Err(not_started) = start(stream) {
+        let message = not_started.explain();
+        stream.shell.tell(Event::PlayFailed { attempt: stream.attempt, message });
+    }
+}
+
+/// Asks the PC for `stream`, and tells once it plays.
+fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
+    let Stream { client, shell, watching, host, app, attempt, settings } = &**stream;
+    let attempt = *attempt;
+    let (video, audio) = shell.sinks().map_err(NotStarted::Shell)?;
+    let ended = {
+        let stream = Arc::clone(stream);
+        move |reason| ended(&stream, reason)
+    };
+    let started = client.play(host, *app, *settings, video, audio, ended);
     // The PC is running the app now, or still runs another one.
     shell.tell(Event::Hosts(client.hosts()));
+    let session = started.map_err(NotStarted::Client)?;
 
-    match started {
-        Ok(session) => {
-            let mut watching = lock(watching);
-            if watching.wanted == Some(attempt) {
-                let (input, microphone) = (session.input_allowed(), session.takes_microphone());
-                let before = watching.session.replace(session);
-                watching.host = Some(host.clone());
-                drop(watching);
-                // Winding down a stream waits for its threads, and one of
-                // them may be waiting to say that it ended.
-                drop(before);
-                shell.tell(Event::Playing { attempt, input, microphone });
-                if shell.sends_camera() {
-                    // After the news that the stream plays: a PC without
-                    // Leto's API can take seconds not to answer.
-                    let offer = client.camera_offer(host).unwrap_or_else(|error| {
-                        log::debug!("no camera for this stream: {error}");
-                        None
-                    });
-                    shell.tell(Event::Camera { attempt, offer });
+    let mut watching = lock(watching);
+    if watching.wanted != Some(attempt) {
+        // The person left while the PC was starting the app.
+        drop(watching);
+        session.stop();
+        return Ok(());
+    }
+    let (input, microphone) = (session.input_allowed(), session.takes_microphone());
+    let before = watching.session.replace(session);
+    watching.host = Some(host.clone());
+    drop(watching);
+    // Winding down a stream waits for its threads, and one of them may be
+    // waiting to say that it ended.
+    drop(before);
+    shell.tell(Event::Playing { attempt, input, microphone });
+    if shell.sends_camera() {
+        // After the news that the stream plays: a PC without Leto's API can
+        // take seconds not to answer.
+        let offer = client.camera_offer(host).unwrap_or_else(|error| {
+            log::debug!("no camera for this stream: {error}");
+            None
+        });
+        shell.tell(Event::Camera { attempt, offer });
+    }
+    Ok(())
+}
+
+/// `stream` ended without the person asking. A stream that lost its PC
+/// while the person watches it is asked for again until they leave.
+fn ended<S: Shell>(stream: &Arc<Stream<S>>, reason: Ended) {
+    let (shell, attempt) = (&stream.shell, stream.attempt);
+    let wanted = lock(&stream.watching).wanted == Some(attempt);
+    let why = match reason {
+        Ended::ByHost => StreamEnd::AppClosed,
+        Ended::ConnectionLost => StreamEnd::ConnectionLost,
+        Ended::HostError(code) => StreamEnd::HostError(code),
+    };
+    let again = wanted && why == StreamEnd::ConnectionLost;
+    if again {
+        log::info!("the stream was lost, and is asked for again until the person leaves it");
+        // Before the camera's way goes: a shell stops the camera it sends
+        // rather than find that way gone, and sends it again once the
+        // stream is back.
+        shell.tell(Event::Reconnecting { attempt });
+    }
+    {
+        // The camera went along with this stream.
+        let mut watching = lock(&stream.watching);
+        if watching.wanted == Some(attempt) {
+            watching.camera = None;
+        }
+    }
+    shell.tell(Event::Hosts(stream.client.hosts()));
+    if again {
+        let stream = Arc::clone(stream);
+        let spawned = thread::Builder::new()
+            .name("leto: reconnect".to_owned())
+            .spawn(move || reconnect(&stream));
+        match spawned {
+            Ok(_) => return,
+            Err(error) => log::error!("could not start a worker thread: {error}"),
+        }
+    }
+    shell.tell(Event::StreamEnded { attempt, why });
+}
+
+/// Asks the PC for a lost stream again and again, until it plays, the
+/// person leaves it, or the PC refuses it for good.
+fn reconnect<S: Shell>(stream: &Arc<Stream<S>>) {
+    // What is left of the lost stream goes first: its pictures and its
+    // sound make way for the next ones.
+    let lost = {
+        let mut watching = lock(&stream.watching);
+        if watching.wanted != Some(stream.attempt) {
+            return;
+        }
+        watching.session.take()
+    };
+    if let Some(lost) = lost {
+        lost.stop();
+    }
+    let last = AGAIN_AFTER[AGAIN_AFTER.len() - 1];
+    let waits = AGAIN_AFTER.into_iter().chain(iter::repeat(last));
+    for (tried, wait) in (1_u64..).zip(waits) {
+        if !still_wanted_after(stream, wait) {
+            log::info!("the person left the lost stream");
+            return;
+        }
+        match start(stream) {
+            Ok(()) => {
+                log::info!("the lost stream is back, asked for {tried} times");
+                return;
+            }
+            Err(NotStarted::Client(error)) if passing(&error) => {
+                log::debug!("the lost stream is not back yet: {error}");
+            }
+            Err(not_started) => {
+                let message = not_started.explain();
+                if still_wanted_after(stream, Duration::ZERO) {
+                    stream.shell.tell(Event::PlayFailed { attempt: stream.attempt, message });
                 }
-            } else {
-                // The person left while the PC was starting the app.
-                drop(watching);
-                session.stop();
+                return;
             }
         }
-        Err(message) => shell.tell(Event::PlayFailed { attempt, message }),
+    }
+}
+
+/// Waits `wait`, unless the person leaves `stream` meanwhile. Says whether
+/// they still want it.
+fn still_wanted_after<S: Shell>(stream: &Stream<S>, wait: Duration) -> bool {
+    let until = Instant::now() + wait;
+    loop {
+        if lock(&stream.watching).wanted != Some(stream.attempt) {
+            return false;
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        thread::sleep(left.min(STILL_WANTED_EVERY));
     }
 }
 

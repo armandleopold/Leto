@@ -30,7 +30,8 @@ No gaming PC at hand? This keeps a stand-in host running on this machine. The
 app finds it, and you type the PIN the app shows into its terminal. It streams
 a test card and a melody, and draws on the card what your keyboard, mouse and
 gamepad do. Type `close` to close the running app as its owner would, `drop`
-to break the stream, or `inputs` to list what it received:
+to break the stream, `busy` and `free` to refuse new streams for a while, or
+`inputs` to list what it received:
 
 ```sh
 cargo run -p leto-testhost --example serve -- --port 47989 --announce

@@ -218,6 +218,8 @@ struct Shared {
     https_port: u16,
     /// Where the camera of a client arrives, when the host takes one.
     cameras: Option<Arc<camera::Cameras>>,
+    /// Starts no stream for now: see [`FakeHost::refuse_streams`].
+    busy: AtomicBool,
     stop: AtomicBool,
 }
 
@@ -294,6 +296,7 @@ impl FakeHost {
             http_port: http.local_addr().unwrap().port(),
             https_port: https.local_addr().unwrap().port(),
             cameras,
+            busy: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
 
@@ -408,6 +411,12 @@ impl FakeHost {
     /// The last picture of the camera a client is sending.
     pub fn seen(&self) -> Option<Arc<Seen>> {
         self.shared.cameras.as_ref().and_then(|cameras| cameras.seen())
+    }
+
+    /// Starts no stream, for now, and says that it is busy: as a host that
+    /// has not noticed yet that the client it streamed to is gone.
+    pub fn refuse_streams(&self, refused: bool) {
+        self.shared.busy.store(refused, Ordering::SeqCst);
     }
 
     /// The host's owner stops letting devices send their camera, or lets
@@ -761,6 +770,10 @@ fn respond(
             let needed = if joins { VIEW_OR_LAUNCH } else { permission::LAUNCH_APPS };
             if !allowed(needed) {
                 return failure(403, "Permission denied");
+            }
+            if shared.busy.load(Ordering::SeqCst) {
+                // As a host still busy with a client it has not missed yet.
+                return failure(503, "The host is busy");
             }
             launch(shared, path == "/resume", &query, local)
         }

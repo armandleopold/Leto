@@ -235,6 +235,38 @@ impl Gate {
     }
 }
 
+/// A key as a window hears of it: the virtual-key code of a key message and
+/// the flags Windows packs with it. A window hears of Shift, Ctrl and Alt
+/// without their side, which the scan code and the mark of the added keys
+/// tell.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn at_window(virtual_key: u16, flags: u32) -> Raw {
+    let scan = ((flags >> 16) & 0xFF) as u16;
+    let extended = flags & 1 << 24 != 0;
+    let down = flags & 1 << 31 == 0;
+    let virtual_key = match virtual_key {
+        0x10 if scan == 0x36 => 0xA1,
+        0x10 => 0xA0,
+        0x11 if extended => 0xA3,
+        0x11 => 0xA2,
+        0x12 if extended => 0xA5,
+        0x12 => 0xA4,
+        other => other,
+    };
+    Raw { virtual_key, scan, extended, down }
+}
+
+/// Whether `raw`, heard by a window, is the Ctrl a layout with AltGr makes
+/// up with each press of it. A window hears it as a left Ctrl like any
+/// other, but just before AltGr, `next`, and at the same moment: `together`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn made_up_at_window(raw: Raw, next: Option<Raw>, together: bool) -> bool {
+    raw.down
+        && raw.virtual_key == 0xA2
+        && together
+        && next.is_some_and(|next| next.down && next.virtual_key == 0xA5)
+}
+
 /// Whether the keyboard, or Windows for it, made `raw` up.
 ///
 /// A layout with AltGr reports a Ctrl with each press of it, with a scan
@@ -467,6 +499,87 @@ mod tests {
         assert_eq!(gate.tally, Tally { taken: 1, elsewhere: 1 });
         gate.disarm();
         assert_eq!(gate.tally, Tally::default());
+    }
+
+    /// The flags Windows packs with a key message.
+    fn flags(scan: u16, extended: bool, down: bool) -> u32 {
+        let mut flags = 1 | u32::from(scan) << 16;
+        if extended {
+            flags |= 1 << 24;
+        }
+        if !down {
+            flags |= 1 << 30 | 1 << 31;
+        }
+        flags
+    }
+
+    #[test]
+    fn a_key_that_reached_the_window_is_the_same_key() {
+        let windows_key = at_window(0x5B, flags(0x5B, true, true));
+        assert_eq!(windows_key, raw(0x5B, 0x5B, true, true));
+        assert_eq!(at_window(0x5B, flags(0x5B, true, false)), raw(0x5B, 0x5B, true, false));
+        // The key right of Tab on a French keyboard, which prints A.
+        assert_eq!(at_window(0x41, flags(0x10, false, true)), raw(0x41, 0x10, false, true));
+        // Shift, Ctrl and Alt get their side back.
+        assert_eq!(at_window(0x10, flags(0x2A, false, true)).virtual_key, 0xA0);
+        assert_eq!(at_window(0x10, flags(0x36, false, true)).virtual_key, 0xA1);
+        assert_eq!(at_window(0x11, flags(0x1D, false, true)).virtual_key, 0xA2);
+        assert_eq!(at_window(0x11, flags(0x1D, true, true)).virtual_key, 0xA3);
+        assert_eq!(at_window(0x12, flags(0x38, false, false)).virtual_key, 0xA4);
+        assert_eq!(at_window(0x12, flags(0x38, true, true)).virtual_key, 0xA5);
+
+        // The stream gets them as it gets them from the hook: Windows+E,
+        // then Alt+F4, which would close Leto.
+        let mut gate = Gate::new();
+        gate.arm(|_| false);
+        let presses = [
+            (0x5B, flags(0x5B, true, true)),
+            (0x45, flags(0x12, false, true)),
+            (0x45, flags(0x12, false, false)),
+            (0x5B, flags(0x5B, true, false)),
+            (0x12, flags(0x38, false, true)),
+            (0x73, flags(0x3E, false, true)),
+            (0x73, flags(0x3E, false, false)),
+            (0x12, flags(0x38, false, false)),
+        ];
+        let heard: Vec<_> = presses
+            .into_iter()
+            .map(|(code, flags)| match gate.decide(at_window(code, flags), true) {
+                Verdict::Take(stroke) => (stroke.key, stroke.down),
+                other => panic!("{code:#x} was not taken: {other:?}"),
+            })
+            .collect();
+        let f4 = Key::function(4).expect("F4 is a key");
+        assert_eq!(
+            heard,
+            [
+                (Key::LEFT_SUPER, true),
+                (letter('E'), true),
+                (letter('E'), false),
+                (Key::LEFT_SUPER, false),
+                (Key::LEFT_ALT, true),
+                (f4, true),
+                (f4, false),
+                (Key::LEFT_ALT, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_ctrl_altgr_makes_up_is_found_at_the_window_too() {
+        let ctrl = at_window(0x11, flags(0x1D, false, true));
+        let altgr = at_window(0x12, flags(0x38, true, true));
+        assert!(made_up_at_window(ctrl, Some(altgr), true));
+        // A Ctrl pressed on its own, or before Alt Gr a moment later.
+        assert!(!made_up_at_window(ctrl, None, true));
+        assert!(!made_up_at_window(ctrl, Some(altgr), false));
+        let a = at_window(0x41, flags(0x1E, false, true));
+        assert!(!made_up_at_window(ctrl, Some(a), true));
+        // Nor is the right Ctrl, or a Ctrl let go of.
+        let right = at_window(0x11, flags(0x1D, true, true));
+        assert!(!made_up_at_window(right, Some(altgr), true));
+        let up = at_window(0x11, flags(0x1D, false, false));
+        assert!(!made_up_at_window(up, Some(altgr), true));
     }
 
     #[test]
