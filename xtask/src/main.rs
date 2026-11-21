@@ -3,6 +3,8 @@
 //! The continuous-integration workflow calls these same commands, so a green
 //! `cargo xtask ci` locally means a green pipeline.
 
+mod android;
+
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
@@ -34,8 +36,9 @@ const PORTABLE: &[&str] = &["leto-core", "leto-protocol", "leto-return"];
 /// for macOS. Windows has no such shortcut, so its build is covered by the
 /// Windows job of the pipeline instead.
 ///
-/// The graphical app joins the Android and iOS lists when their app shells
-/// land.
+/// The graphical app is not in the Android list: it needs the NDK, and
+/// `cargo xtask android` lints and builds it. It joins the iOS list when
+/// that app shell lands.
 const TARGETS: &[Target] = &[
     Target { triple: "aarch64-apple-darwin", packages: &[], zig: Some("aarch64-macos") },
     Target {
@@ -71,6 +74,7 @@ Commands:
   test      Run the tests
   targets   Check that the code compiles for every supported target
   web       Build the web client into dist/web
+  android   Lint the Android app and build it into dist/android/leto.apk
 ";
 
 fn main() -> ExitCode {
@@ -85,6 +89,7 @@ fn main() -> ExitCode {
         "test" => test(),
         "targets" => targets(),
         "web" => web(),
+        "android" => android::apk(),
         _ => {
             eprint!("{USAGE}");
             return ExitCode::FAILURE;

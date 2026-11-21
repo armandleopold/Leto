@@ -16,6 +16,7 @@ cargo run -p leto          # the app
 cargo run -p leto-cli -- pcs
 cargo xtask ci             # everything the pipeline checks
 cargo xtask web            # the web client, into dist/web
+cargo xtask android        # the Android app, into dist/android/leto.apk
 cargo run -p leto-cli -- bridge   # serves the web client to browsers
 ```
 
@@ -76,6 +77,16 @@ away. No WireGuard server at hand? `crates/leto-client/tests/tunnel.rs` puts
 the stand-in host behind a tunnel end of Leto's own (`leto_tunnel::Relay`).
 A host reached through a tunnel must use the ports of a real one, counted
 from its own: `--port` on the stand-in host, `Options::real_ports` in a test.
+
+`cargo xtask android` lints the Android app and builds its APK. It needs the
+Android SDK in `ANDROID_HOME` with build tools, a platform and the NDK, plus
+Java and `zip`, as GitHub's Ubuntu runners have. The APK is signed with the
+keystore in `LETO_ANDROID_KEYSTORE` (its password in
+`LETO_ANDROID_KEY_PASSWORD`), or else with a test key made once in
+`target/android`: a phone only takes an update signed with the key of the
+version it has. The `Android` workflow runs the APK on an emulator against the
+stand-in host (`apps/leto-android/ci/emulator.sh`) and keeps its
+screenshots. The emulator reaches the computer it runs on at `10.0.2.2`.
 
 The web client needs its bridge: `cargo xtask web` builds the client, then
 `leto-cli bridge` serves it on port 5386 and prints the address to open and

@@ -53,36 +53,65 @@ pub fn show(ui: &mut Ui, state: &mut State, now: f64) -> bool {
 /// the settings, the camera and the rest, and searching again. Returns
 /// whether the person asked for the settings.
 fn header(ui: &mut Ui, state: &mut State, now: f64) -> bool {
-    let mut settings = false;
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            widgets::title(ui, "Your PCs");
-            if state.searching {
-                widgets::waiting(ui, "Looking on your network…");
-            } else {
-                ui.label(widgets::dim(match state.hosts.len() {
-                    0 => "PCs running Apollo or Sunshine show up here.".to_owned(),
-                    1 => "1 PC".to_owned(),
-                    count => format!("{count} PCs"),
-                }));
-            }
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let again = ui.add_enabled_ui(!state.searching, |ui| {
-                widgets::icon_button(ui, icons::refresh, "Search again")
-            });
-            if again.inner.clicked() {
-                state.search(now);
-            }
-            if widgets::icon_button(ui, icons::camera, super::devices::NAME).clicked() {
-                state.check_devices();
-            }
-            settings = widgets::icon_button(ui, icons::gear, "Settings").clicked();
-        });
-    });
-    settings
+    if ui.available_width() < NARROW {
+        // A phone held upright: the buttons go on a line of their own.
+        let settings = ui
+            .allocate_ui_with_layout(
+                vec2(ui.available_width(), 36.0),
+                Layout::right_to_left(Align::Center),
+                |ui| header_buttons(ui, state, now),
+            )
+            .inner;
+        titles(ui, state);
+        settings
+    } else {
+        ui.horizontal(|ui| {
+            titles(ui, state);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                header_buttons(ui, state, now)
+            })
+            .inner
+        })
+        .inner
+    }
 }
+
+/// The title of the list of PCs and the line under it.
+fn titles(ui: &mut Ui, state: &State) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        widgets::title(ui, "Your PCs");
+        if state.searching {
+            widgets::waiting(ui, "Looking on your network…");
+        } else {
+            let line = match state.hosts.len() {
+                0 => "PCs running Apollo or Sunshine show up here.".to_owned(),
+                1 => "1 PC".to_owned(),
+                count => format!("{count} PCs"),
+            };
+            ui.add(egui::Label::new(widgets::dim(line)).wrap());
+        }
+    });
+}
+
+/// The buttons of the header, from the right. Returns whether the settings
+/// were asked for.
+fn header_buttons(ui: &mut Ui, state: &mut State, now: f64) -> bool {
+    let again = ui.add_enabled_ui(!state.searching, |ui| {
+        widgets::icon_button(ui, icons::refresh, "Search again")
+    });
+    if again.inner.clicked() {
+        state.search(now);
+    }
+    if widgets::icon_button(ui, icons::camera, super::devices::NAME).clicked() {
+        state.check_devices();
+    }
+    widgets::icon_button(ui, icons::gear, "Settings").clicked()
+}
+
+/// Below this width, in points, the header puts its buttons above the
+/// titles rather than beside them.
+const NARROW: f32 = 520.0;
 
 /// The grid of PCs, ending with the card that adds one.
 fn cards(ui: &mut Ui, hosts: &[HostSummary], waking: &[HostId], adding: bool) -> Option<Chosen> {
@@ -215,7 +244,7 @@ fn nothing_found(ui: &mut Ui, state: &mut State, now: f64) {
 
         ui.label(RichText::new("No PC found yet").size(20.0));
         ui.scope(|ui| {
-            ui.set_max_width(440.0);
+            ui.set_max_width(ui.available_width().min(440.0));
             let advice = if state.network_searched {
                 "Leto finds PCs that run Apollo or Sunshine on the same network as this device. \
                  Check that yours is on, or add it by its address."

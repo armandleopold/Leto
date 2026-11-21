@@ -198,8 +198,13 @@ Questions settled in this step:
 
 ## 3. The Android client
 
-- Start from Super Artemis, renamed and restyled as Leto, with a simpler
-  default interface.
+- Started as the Leto app itself in a NativeActivity (`apps/leto-android`),
+  rather than from Super Artemis: one Rust app everywhere, as the goal is.
+  Super Artemis stays the reference for what a phone needs.
+- The v0 lists and pairs PCs, streams with sound, a finger as the mouse
+  and the phone's keyboard. Next: hardware decoding with MediaCodec, the
+  clipboard, gamepads, the microphone and the cameras, and a touch
+  interface beyond the desktop one.
 - Microphone (already there) and the phone's cameras over the return channel.
 - Move protocol code to the shared Rust core where it pays off.
 

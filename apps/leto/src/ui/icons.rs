@@ -109,6 +109,19 @@ pub fn mouse(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([at(rect, 0.5, 0.2), at(rect, 0.5, 0.42)], stroke);
 }
 
+/// A keyboard: the one on the screen of a phone.
+pub fn keyboard(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let body = Rect::from_min_max(at(rect, 0.02, 0.2), at(rect, 0.98, 0.8));
+    painter.rect_stroke(body, rect.width() * 0.08, stroke, StrokeKind::Inside);
+    for row in [0.38, 0.52] {
+        for column in [0.22, 0.38, 0.54, 0.7] {
+            painter.circle_filled(at(rect, column + 0.04, row), stroke.width * 0.6, color);
+        }
+    }
+    painter.line_segment([at(rect, 0.3, 0.67), at(rect, 0.7, 0.67)], stroke);
+}
+
 /// The arrow of a pointer, as wide and high as `rect`.
 fn arrow(rect: Rect) -> Vec<Pos2> {
     [

@@ -97,7 +97,7 @@ fn state(ui: &mut Ui, summary: &TunnelSummary) {
         let key = RichText::new(&summary.public_key).monospace().size(theme::SMALL);
         ui.add(egui::Label::new(key).truncate());
         if ui.small_button("Copy").clicked() {
-            ui.ctx().copy_text(summary.public_key.clone());
+            copy(ui.ctx(), summary.public_key.clone());
         }
     });
 }
@@ -116,6 +116,37 @@ fn status(summary: &TunnelSummary) -> (Color32, String) {
             (theme::dim(), format!("To {end}. It opens when a PC it leads to is looked for."))
         }
     }
+}
+
+/// A button that pastes the file: a phone has no menu to paste into the
+/// field with, and no keyboard shortcut either.
+#[cfg(not(target_arch = "wasm32"))]
+fn paste_button(ui: &mut Ui, form: &mut TunnelForm) {
+    let paste = ui.add_enabled_ui(!form.busy, |ui| widgets::quiet_button(ui, "Paste"));
+    if paste.inner.clicked() {
+        match crate::clipboard::pasted() {
+            Some(text) => {
+                form.draft.0 = text;
+                form.refused = None;
+            }
+            None => form.refused = Some("There is no text to paste.".to_owned()),
+        }
+    }
+}
+
+/// A browser page cannot read the clipboard when it likes: Ctrl+V it is.
+#[cfg(target_arch = "wasm32")]
+fn paste_button(_ui: &mut Ui, _form: &mut TunnelForm) {}
+
+/// Puts the key on the clipboard. A browser page goes through egui.
+#[cfg(not(target_arch = "wasm32"))]
+fn copy(ctx: &egui::Context, text: String) {
+    crate::clipboard::copy(ctx, text);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn copy(ctx: &egui::Context, text: String) {
+    ctx.copy_text(text);
 }
 
 /// Where the file is pasted or dropped.
@@ -142,6 +173,7 @@ fn file_form(ui: &mut Ui, form: &mut TunnelForm) -> Option<Asked> {
         if used.inner.clicked() {
             asked = Some(Asked::Use);
         }
+        paste_button(ui, form);
         let cancelled = ui.add_enabled_ui(!form.busy, |ui| widgets::quiet_button(ui, "Cancel"));
         if cancelled.inner.clicked() {
             // The key leaves the window with the form.

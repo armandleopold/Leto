@@ -1,0 +1,84 @@
+name: Android
+
+# The Android app: lints and builds the APK, then runs it on an emulator
+# against the stand-in PC. Its own workflow, so it runs only when what the
+# app is made of changes.
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "crates/**"
+      - "vendor/**"
+      - "xtask/**"
+      - "assets/brand/android/**"
+      - "Cargo.*"
+      - ".github/workflows/android.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "crates/**"
+      - "vendor/**"
+      - "xtask/**"
+      - "assets/brand/android/**"
+      - "Cargo.*"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  android:
+    name: APK and emulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # The runner has the Android SDK and NDK (ANDROID_HOME). The stand-in
+      # PC needs the ALSA and udev headers like the rest of the workspace,
+      # and the emulator check reads the screen with tesseract.
+      - name: Install the headers and tesseract
+        run: >
+          sudo apt-get update && sudo apt-get install --yes
+          libasound2-dev libudev-dev libclang-dev tesseract-ocr imagemagick
+      - name: Lint and build the APK
+        run: cargo xtask android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: leto-apk
+          path: dist/android/leto.apk
+      - name: Build the stand-in PC
+        run: cargo build --release --locked -p leto-testhost --example serve
+      # The emulator needs the processor's virtualisation, which the runner
+      # has but does not give to every user.
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # An x86_64 image with Google's APIs runs arm64 apps by translating
+      # them: slower than a phone, but the same APK.
+      - name: Run the app on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash apps/leto-android/ci/emulator.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-screenshots
+          path: shots/

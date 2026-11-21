@@ -56,6 +56,12 @@ Each is marked with a comment that starts with `Leto:`.
   to 7 ms above the truth and stays, so a host 1 ms away read 8 ms. Its
   tests are at the end of `enet.rs`; like the rest of this crate's, they
   do not build here (the crate's test helper needs what Leto leaves out).
+- `src/high/std.rs` (`pair`): before pairing, one step out of order makes
+  the host drop an attempt that never got its PIN. Sunshine and Apollo keep
+  one such attempt under the unique id every Moonlight client shares, and
+  a later pairing went on with the earlier attempt's certificate, so its
+  last step was refused ("The PC refused the pairing."). Tested against the
+  stand-in host, which keeps attempts the same way.
 
 ## Updating
 

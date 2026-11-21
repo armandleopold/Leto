@@ -28,7 +28,8 @@ organised so that it stays one product. It follows the structure of
 
 ```
 apps/
-  leto/           The graphical app (egui): desktop, and the browser through WebAssembly
+  leto/           The graphical app (egui), a library with a thin `main.rs`: desktop, and the browser through WebAssembly
+  leto-android/   The same app on Android, in a NativeActivity: its entry, its log, its Wi-Fi lock, its manifest
   leto-cli/       The command line: the same engine, for scripts and diagnostics
 crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
@@ -52,7 +53,6 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 | Crate | Purpose | Step |
 |---|---|---|
 | `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 4 |
-| `apps/leto-android` | The Android app, started from Super Artemis | 3 |
 | `leto-host` | The host, ported from Apollo | 4 |
 
 ## Platforms
@@ -61,7 +61,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 |---|---|---|---|
 | Windows | Yes | Yes | Tests run on Windows in the pipeline, and by hand |
 | Web | Yes, through the bridge | No | Built in the pipeline, and by hand |
-| Android | Yes | No | Compile check for now, and by hand once the app exists |
+| Android | Yes | No | APK built and run on an emulator against the stand-in host in the pipeline, and by hand |
 | Linux | Yes | Yes | Tests run on Linux in the pipeline |
 | macOS | Yes | Yes | Compile check on every change (with zig as the C and C++ compiler), tests on `main` |
 | iOS | Yes | No | Compile check only |
@@ -72,8 +72,17 @@ instead of scattering `cfg` attributes through the interface.
 ## The app
 
 `apps/leto` is an [egui](https://github.com/emilk/egui) app. The same code
-draws the native window and, compiled to WebAssembly, the web client
+draws the native window, the Android app (`cargo xtask android` builds it
+into `dist/android/leto.apk`) and, compiled to WebAssembly, the web client
 (`cargo xtask web` builds it into `dist/web`).
+
+On Android the app runs in a NativeActivity with no Java of its own:
+`apps/leto-android` hands the activity to `leto::run_android`, which keeps
+the settings in the app's own folder. A finger is the mouse; two fingers
+tapped are the right button and moved together are the wheel
+(`touch.rs`); the stream's bar has a button for the phone's keyboard.
+Pictures are decoded by OpenH264 in software for now, and the sound plays
+through AAudio.
 
 The look is the "Braise" palette from `leto_core::brand`, by night and by day
 (`theme.rs`): a warm black ground with ivory text, or the same turned over,

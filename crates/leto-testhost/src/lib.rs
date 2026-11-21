@@ -220,6 +220,12 @@ struct HostIdentity {
 /// What one pairing attempt has established so far.
 #[derive(Default)]
 struct Pairing {
+    /// Whether an attempt is under way. Like Sunshine and Apollo, the host
+    /// keeps one that never got its PIN, and holds one attempt at a time:
+    /// every Moonlight client sends the same unique id.
+    open: bool,
+    /// The last step the attempt went through, from 1 to 4.
+    step: u8,
     client_certificate: Option<pem::Pem>,
     key: [u8; 16],
     server_secret: [u8; 16],
@@ -936,6 +942,22 @@ fn pair(shared: &Shared, query: &HashMap<&str, &str>, secure: bool) -> (&'static
             return failed();
         };
         let Ok(certificate) = pem::parse(certificate) else { return failed() };
+        {
+            let mut pairing = shared.pairing.lock().unwrap();
+            if pairing.open && pairing.step != 0 {
+                *pairing = Pairing::default();
+                return failed();
+            }
+            // An attempt that never got its PIN stays, with its certificate:
+            // this one goes on with it, as on Sunshine and Apollo.
+            if !pairing.open {
+                *pairing = Pairing {
+                    open: true,
+                    client_certificate: Some(certificate),
+                    ..Pairing::default()
+                };
+            }
+        }
 
         let deadline = Instant::now() + shared.options.pin_patience;
         let pin = loop {
@@ -951,7 +973,7 @@ fn pair(shared: &Shared, query: &HashMap<&str, &str>, secure: bool) -> (&'static
         let mut salted = salt;
         salted.extend(pin.to_string().bytes());
         let mut pairing = shared.pairing.lock().unwrap();
-        *pairing = Pairing { client_certificate: Some(certificate), ..Pairing::default() };
+        pairing.step = 1;
         pairing.key.copy_from_slice(&sha256(&salted)[..16]);
 
         let plain = shared.identity.lock().unwrap().certificate_pem.replace("\r\n", "\n");
@@ -960,6 +982,29 @@ fn pair(shared: &Shared, query: &HashMap<&str, &str>, secure: bool) -> (&'static
 
     let mut pairing = shared.pairing.lock().unwrap();
     let identity = shared.identity.lock().unwrap();
+
+    // Without an attempt under way, the host does not know the client; a
+    // step out of order ends the attempt.
+    if !pairing.open {
+        return failed();
+    }
+    let step = if query.contains_key("clientchallenge") {
+        2
+    } else if query.contains_key("serverchallengeresp") {
+        3
+    } else if query.contains_key("clientpairingsecret") {
+        4
+    } else {
+        return failed();
+    };
+    if pairing.step + 1 != step {
+        *pairing = Pairing::default();
+        return failed();
+    }
+    pairing.step = step;
+    if step == 4 {
+        pairing.open = false;
+    }
 
     // Step 2: the client sends a random challenge, encrypted with the key
     // both sides derived from the PIN.
