@@ -9,12 +9,12 @@ use egui::{
 };
 use std::time::Duration;
 
-use leto_core::{engine::Codec, input::Input};
+use leto_core::{engine::Codec, input::Input, model::HostId};
 
 use super::{icons, widgets};
 use crate::{
     backend::{Filming, Picture},
-    input::{Controls, Shortcut},
+    input::{Controls, Shortcut, hides_its_pointer},
     settings::Settings,
     state::{Cam, Mic, State, StreamView},
     stats::{Counts, Rates},
@@ -123,6 +123,14 @@ pub struct Player {
     shown: u64,
     /// The statistics over the picture, while they show.
     statistics: Option<Statistics>,
+    /// The PCs that leave their own pointer out of the pictures, because
+    /// Leto asked them to while this device's pointer shows instead. A PC
+    /// keeps doing so until asked again, even after a stream that ended
+    /// without Leto leaving it, so this outlives the stream.
+    hiding_pointer: Vec<HostId>,
+    /// The window is closing: the stream is left without closing the app
+    /// on the PC, whatever the settings say.
+    closing: bool,
 }
 
 /// What the statistics show, and what they were worked out from.
@@ -219,7 +227,19 @@ impl Player {
             window::keep_pointer(ctx, false);
         }
         window::keep_keyboard(false);
-        *self = Self::default();
+        let hiding_pointer = std::mem::take(&mut self.hiding_pointer);
+        *self = Self { hiding_pointer, ..Self::default() };
+    }
+
+    /// Leaves the stream at the next frame, because the window is closing.
+    pub fn leave_to_close(&mut self) {
+        self.closing = true;
+    }
+
+    /// Whether the PC of `view` leaves its pointer out of the pictures, as
+    /// far as Leto knows.
+    fn pc_hides_pointer(&self, view: &StreamView) -> bool {
+        self.hiding_pointer.contains(&view.host.id)
     }
 }
 
@@ -257,7 +277,8 @@ pub fn show(
     let window = ui.max_rect();
     let (now, focused) = ui.input(|input| (input.time, input.focused));
     let fills_screen = window::fills_screen(ui.ctx());
-    let mut asked = Asked::default();
+    let closing = std::mem::take(&mut player.closing);
+    let mut asked = Asked { leave: closing, ..Asked::default() };
     player.controls.choose(settings.swap_mouse_buttons, settings.reverse_scroll);
     // Once connected, every key is the PC's, the system's shortcuts too
     // where the system lets go of them and the person did not choose
@@ -444,9 +465,27 @@ pub fn show(
         player.filled_screen = !fills_screen;
         window::fill_screen(ui.ctx(), !fills_screen);
     }
+    // This device's pointer shows on the picture instead of the PC's, where
+    // the PC can leave its own out and hears both keyboard and mouse. The
+    // PC draws its own again for the game mouse, which has no pointer here,
+    // and before the stream is left.
+    let hide = settings.local_pointer
+        && hides_its_pointer(view.host.kind)
+        && view.input.keyboard
+        && view.input.mouse
+        && !player.game_mouse
+        && !asked.leave;
+    if view.connected && hide != player.pc_hides_pointer(view) {
+        player.controls.switch_pc_pointer();
+        if hide {
+            player.hiding_pointer.push(view.host.id.clone());
+        } else {
+            player.hiding_pointer.retain(|host| *host != view.host.id);
+        }
+    }
     if asked.leave {
         player.controls.release_all();
-        state.leave_stream(settings.quit_on_leave);
+        state.leave_stream(settings.quit_on_leave && !closing);
     }
     player.controls.take()
 }
@@ -602,8 +641,10 @@ fn overlay(
     if !view.connected || !has_picture {
         return;
     }
-    if game_mouse || (pointer.is_some() && !on_bar && !player.released) {
-        // The PC draws its own pointer in the picture.
+    let pc_draws_pointer = !player.pc_hides_pointer(view);
+    if game_mouse || (pointer.is_some() && !on_bar && !player.released && pc_draws_pointer) {
+        // The PC draws its own pointer in the picture, or the game mouse
+        // has none.
         ui.ctx().set_cursor_icon(CursorIcon::None);
     }
     if pointing.is_some() && opacity == 0.0 && idle < GRIP_STAYS {
@@ -1100,11 +1141,12 @@ fn around(place: Rect, window: Rect) -> [Rect; 4] {
 mod tests {
     use egui::pos2;
     use leto_core::{
-        input::InputAllowed,
+        input::{InputAllowed, Key as PcKey},
         model::{AppSummary, HostId, HostKind, HostSummary, Reachability},
     };
 
     use super::*;
+    use crate::settings::Capture;
 
     #[test]
     fn a_key_pressed_that_reaches_the_window_while_the_stream_keeps_them_slipped_past() {
@@ -1182,6 +1224,122 @@ mod tests {
             input,
             microphone: Mic::Off,
             camera: Cam::Off,
+        }
+    }
+
+    /// Settings that leave the window and the system's keys alone.
+    fn quiet(local_pointer: bool) -> Settings {
+        Settings {
+            local_pointer,
+            full_screen: false,
+            capture_shortcuts: Capture::Never,
+            ..Settings::default()
+        }
+    }
+
+    /// Draws one frame of the stream screen with the pointer at `pointer`,
+    /// and returns what the PC hears and the pointer this device shows.
+    fn frame(
+        ctx: &egui::Context,
+        view: &StreamView,
+        player: &mut Player,
+        settings: &Settings,
+        pointer: Option<Pos2>,
+    ) -> (Vec<Input>, CursorIcon) {
+        let mut state = State::new();
+        let status = Status {
+            sound_problem: None,
+            picture_problem: None,
+            voice: None,
+            film: None,
+            counts: None,
+            round_trip: None,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(960.0, 540.0))),
+            events: pointer.map(Event::PointerMoved).into_iter().collect(),
+            ..Default::default()
+        };
+        let mut heard = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| {
+            heard = show(ui, &mut state, view, player, settings, status);
+        });
+        output.textures_delta.clear();
+        (heard, output.platform_output.cursor_icon)
+    }
+
+    /// How many times the PC was asked to switch its pointer.
+    fn switches(heard: &[Input]) -> usize {
+        let n = PcKey::letter('N');
+        heard
+            .iter()
+            .filter(|input| matches!(input, Input::Key { key, down: true, .. } if Some(*key) == n))
+            .count()
+    }
+
+    #[test]
+    fn the_pc_hides_its_pointer_while_this_devices_pointer_shows() {
+        let ctx = egui::Context::default();
+        let settings = quiet(true);
+        let view = view(InputAllowed::ALL);
+        let mut player = Player::default();
+        player.picture(&ctx, Picture::Behind([1920, 1080]));
+        let middle = Some(pos2(480.0, 270.0));
+
+        // Connected: the PC is asked once, and this device's pointer shows
+        // from the next frame.
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, middle).0), 1);
+        assert!(player.pc_hides_pointer(&view));
+        let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+        assert_eq!(switches(&heard), 0);
+        assert_eq!(shown, CursorIcon::Default);
+        assert!(
+            heard.iter().any(|input| matches!(input, Input::MousePosition { .. })),
+            "the PC still hears where the pointer goes: {heard:?}"
+        );
+
+        // The game mouse has no pointer here: the PC draws its own again,
+        // and hides it once more when the pointer is back.
+        player.game_mouse = true;
+        let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+        assert_eq!(switches(&heard), 1);
+        assert_eq!(shown, CursorIcon::None);
+        player.game_mouse = false;
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, middle).0), 1);
+
+        // A stream that ended without leaving it left the PC hiding its
+        // pointer: the next stream to that PC does not switch it back on.
+        player.clear(&ctx);
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, None).0), 0);
+
+        // Leaving, here because the window closes, has the PC draw it again.
+        player.leave_to_close();
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, None).0), 1);
+        assert!(!player.pc_hides_pointer(&view));
+    }
+
+    #[test]
+    fn the_pc_draws_its_pointer_where_it_cannot_leave_it_out_or_nobody_wants_it_to() {
+        let ctx = egui::Context::default();
+        let no_keyboard = InputAllowed { keyboard: false, ..InputAllowed::ALL };
+        let no_mouse = InputAllowed { mouse: false, ..InputAllowed::ALL };
+        for (kind, input, local_pointer) in [
+            (HostKind::GameStream, InputAllowed::ALL, true),
+            (HostKind::Apollo, no_keyboard, true),
+            (HostKind::Apollo, no_mouse, true),
+            (HostKind::Sunshine, InputAllowed::ALL, false),
+        ] {
+            let mut view = view(input);
+            view.host.kind = kind;
+            let mut player = Player::default();
+            player.picture(&ctx, Picture::Behind([1920, 1080]));
+            let settings = quiet(local_pointer);
+            let middle = Some(pos2(480.0, 270.0));
+            for _ in 0..2 {
+                let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+                assert_eq!(switches(&heard), 0, "{kind:?}, {input:?}");
+                assert_eq!(shown, CursorIcon::None, "{kind:?}, {input:?}");
+            }
         }
     }
 

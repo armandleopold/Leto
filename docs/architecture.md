@@ -131,7 +131,8 @@ bit rate (from 0.5 to 150 Mbit/s, as in Moonlight), no screen of its own on
 the PC, the PC's speakers playing too, no optimized game settings, the app
 closed on the PC when the stream is left, no full screen when it connects,
 V-Sync off, when the system's shortcuts go to the PC (always, in full screen
-only, never), the mouse buttons swapped, the wheel reversed, A and B and X
+only, never), the PC's pointer drawn in the picture instead of this device's,
+the mouse buttons swapped, the wheel reversed, A and B and X
 and Y swapped on gamepads, Leto silent in the background, the statistics
 from the start, decoding on the processor only, and a codec of their own. What the PC must know travels with the request
 (`Request::Play::choices`, `StreamSettings::chosen`); the rest stays in the
@@ -230,6 +231,25 @@ passes them on.
   the pointer of this device is on the picture. The "game mouse" sends how
   far the mouse moved instead, with the pointer kept inside the window, for
   games that turn the view with it.
+- **The pointer on the picture is this device's own**, which moves the
+  moment the mouse does, rather than the PC's, which shows a round trip and
+  a picture later. Sunshine, Apollo and Foundation Sunshine leave their
+  pointer out of the pictures when they hear Ctrl+Alt+Shift+N, and put it
+  back the next time: Leto sends that as the stream connects
+  (`Controls::switch_pc_pointer`), and again for the game mouse, which has
+  no pointer here, and before leaving, closing the window included (it
+  waits `CLOSES_AFTER_LEAVING` for that). Only the PC's pictures change, not
+  its own screen. The switch is the host's, global and never reset by
+  itself, so Leto remembers for each PC whether it hides its pointer, until
+  Leto quits: a stream that ends without being left, or a host that
+  restarts, can leave the two out of step, with two pointers or none, and
+  Ctrl+Alt+Shift+N, which Leto keeps no shortcut on, puts them back in step.
+  A PC that refuses the keyboard or the mouse, or GameStream, draws its own
+  pointer, and so does a person who turns "This device's pointer" off. The
+  pointer here is an arrow whatever the PC shows: the protocol does not say
+  the PC's shapes. Leaving lets the last keys go out first (`LAST_WORDS` in
+  `Session::stop`): stopping the stream drops what still waits to be sent,
+  which the stand-in host showed for almost half of the streams left.
 - **While a stream is connected the keyboard is the PC's.** The app takes
   the keys away from egui before it acts on them (`raw_input_hook`), Tab and
   Escape included. Some combinations stay on this device, as in Moonlight,

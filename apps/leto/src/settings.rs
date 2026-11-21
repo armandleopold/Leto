@@ -52,6 +52,10 @@ pub struct Settings {
     // Keyboard, mouse and gamepads.
     /// When the system's own shortcuts go to the PC.
     pub capture_shortcuts: Capture,
+    /// The pointer on the picture is this device's own, which follows the
+    /// mouse at once: the PC hears where it goes and is asked not to draw
+    /// its own, where it can be.
+    pub local_pointer: bool,
     pub swap_mouse_buttons: bool,
     /// The wheel scrolls the other way on the PC.
     pub reverse_scroll: bool,
@@ -135,6 +139,7 @@ impl Default for Settings {
             optimize_games: true,
             quit_on_leave: false,
             capture_shortcuts: Capture::Always,
+            local_pointer: true,
             swap_mouse_buttons: false,
             reverse_scroll: false,
             swap_gamepad_buttons: false,

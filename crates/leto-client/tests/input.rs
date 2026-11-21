@@ -118,6 +118,28 @@ fn keys_arrive_with_their_modifiers() {
 }
 
 #[test]
+fn what_is_sent_just_before_leaving_still_reaches_the_host() {
+    // As a stream is left, what is held is let go of and the PC is asked to
+    // draw its pointer again: none of it may be lost on the way out.
+    let Playing { session, host, _client, _settings } = play();
+    let ctrl = Modifiers { ctrl: true, ..NO_MODIFIERS };
+    let n = Key::letter('N').unwrap();
+    let last = [
+        Input::Key { key: Key::LEFT_CTRL, down: true, modifiers: ctrl },
+        Input::Key { key: n, down: true, modifiers: ctrl },
+        Input::Key { key: n, down: false, modifiers: ctrl },
+        Input::Key { key: Key::LEFT_CTRL, down: false, modifiers: NO_MODIFIERS },
+    ];
+
+    for input in last {
+        session.send(input).unwrap();
+    }
+    session.stop();
+
+    assert_eq!(received(&host, 4), last);
+}
+
+#[test]
 fn a_held_key_is_sent_once() {
     let playing = play();
     let w = Key::letter('W').unwrap();

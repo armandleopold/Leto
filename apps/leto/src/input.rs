@@ -4,12 +4,29 @@
 //! the window reports and takes out the [`Input`]s to send, in order.
 
 use egui::{MouseWheelUnit, PointerButton, Pos2, Rect, Vec2, vec2};
-use leto_core::input::{Input, Key, Modifiers, MouseButton, WHEEL_NOTCH};
+use leto_core::{
+    input::{Input, Key, Modifiers, MouseButton, WHEEL_NOTCH},
+    model::HostKind,
+};
 
 /// Points of smooth scrolling, on a touchpad, that count as one wheel notch.
 const POINTS_PER_NOTCH: f32 = 50.0;
 /// Wheel notches that scrolling by a page counts as.
 const NOTCHES_PER_PAGE: f32 = 5.0;
+
+/// Whether the PC's streaming software leaves its pointer out of the
+/// pictures when asked, and puts it back when asked again: Sunshine and the
+/// software made from it switch on Ctrl+Alt+Shift+N, the shortcut Moonlight
+/// leaves for people to press. GameStream always draws it.
+pub const fn hides_its_pointer(kind: HostKind) -> bool {
+    match kind {
+        HostKind::Apollo | HostKind::Sunshine | HostKind::FoundationSunshine => true,
+        HostKind::GameStream => false,
+    }
+}
+
+/// The letter of [`hides_its_pointer`]'s shortcut.
+const POINTER_SWITCH: char = 'N';
 
 /// What Leto keeps for itself while a stream has the keyboard. Each is its
 /// letter pressed with Ctrl, Alt and Shift held, as in Moonlight.
@@ -358,6 +375,43 @@ impl Controls {
         self.motion = Vec2::ZERO;
     }
 
+    /// Asks the PC to stop drawing its pointer in the pictures, or to start
+    /// again: it switches. See [`hides_its_pointer`].
+    pub fn switch_pc_pointer(&mut self) {
+        if let Some(key) = Key::letter(POINTER_SWITCH) {
+            self.pc_shortcut(key);
+        }
+    }
+
+    /// Presses Ctrl+Alt+Shift and `key` on the PC and lets go again, for a
+    /// shortcut of the PC's streaming software. What the person holds of
+    /// Ctrl, Alt and Shift stays held. Told even while the controls are
+    /// muted: Leto asks this, not the person.
+    fn pc_shortcut(&mut self, key: Key) {
+        // A muted PC holds nothing.
+        // A muted PC holds nothing.
+        let mut modifiers = if self.muted { Modifiers::default() } else { self.modifiers() };
+        let all: [(Key, Flag); 3] = [
+            (Key::LEFT_CTRL, |held| &mut held.ctrl),
+            (Key::LEFT_ALT, |held| &mut held.alt),
+            (Key::LEFT_SHIFT, |held| &mut held.shift),
+        ];
+        let mut pressed = Vec::new();
+        for (modifier, flag) in all {
+            if !*flag(&mut modifiers) {
+                *flag(&mut modifiers) = true;
+                self.queue.push(Input::Key { key: modifier, down: true, modifiers });
+                pressed.push((modifier, flag));
+            }
+        }
+        self.queue.push(Input::Key { key, down: true, modifiers });
+        self.queue.push(Input::Key { key, down: false, modifiers });
+        while let Some((modifier, flag)) = pressed.pop() {
+            *flag(&mut modifiers) = false;
+            self.queue.push(Input::Key { key: modifier, down: false, modifiers });
+        }
+    }
+
     /// Whether a key or a button is held down.
     pub fn holds_anything(&self) -> bool {
         !self.keys.is_empty() || !self.buttons.is_empty()
@@ -413,6 +467,9 @@ impl Controls {
         }
     }
 }
+
+/// Where [`Modifiers`] says that one of them is held.
+type Flag = fn(&mut Modifiers) -> &mut bool;
 
 /// Takes the whole part out of `amount` and leaves the rest for next time.
 fn whole(amount: &mut Vec2) -> [i16; 2] {
@@ -602,6 +659,73 @@ mod tests {
         controls.mute(false);
         controls.stroke(Some(Key::LEFT_SHIFT), None, false);
         assert_eq!(controls.take().len(), 1);
+    }
+
+    #[test]
+    fn a_shortcut_of_the_pc_presses_what_is_missing_and_lets_go_of_it_alone() {
+        let n = letter('N');
+        let ctrl = Modifiers { ctrl: true, ..NO_MODIFIERS };
+        let ctrl_alt = Modifiers { alt: true, ..ctrl };
+        let all = Modifiers { shift: true, ..ctrl_alt };
+        let key = |key, down, modifiers| Input::Key { key, down, modifiers };
+
+        // Nothing held: all three go down, the letter is typed, and they
+        // come up again, the last pressed first.
+        let mut controls = Controls::default();
+        controls.pc_shortcut(n);
+        assert_eq!(
+            controls.take(),
+            [
+                key(Key::LEFT_CTRL, true, ctrl),
+                key(Key::LEFT_ALT, true, ctrl_alt),
+                key(Key::LEFT_SHIFT, true, all),
+                key(n, true, all),
+                key(n, false, all),
+                key(Key::LEFT_SHIFT, false, ctrl_alt),
+                key(Key::LEFT_ALT, false, ctrl),
+                key(Key::LEFT_CTRL, false, NO_MODIFIERS),
+            ]
+        );
+        assert!(!controls.holds_anything());
+
+        // What the person holds stays held, on either side.
+        controls.stroke(Some(Key::RIGHT_CTRL), None, true);
+        controls.stroke(Some(Key::LEFT_SHIFT), None, true);
+        controls.take();
+        controls.pc_shortcut(n);
+        let shift_ctrl = Modifiers { shift: true, ..ctrl };
+        assert_eq!(
+            controls.take(),
+            [
+                key(Key::LEFT_ALT, true, all),
+                key(n, true, all),
+                key(n, false, all),
+                key(Key::LEFT_ALT, false, shift_ctrl),
+            ]
+        );
+
+        // Muted, the PC holds nothing of it, and hears the shortcut all the
+        // same.
+        controls.mute(true);
+        controls.take();
+        controls.switch_pc_pointer();
+        let heard = controls.take();
+        assert_eq!(heard.len(), 8);
+        assert_eq!(heard[3], key(n, true, all));
+    }
+
+    #[test]
+    fn the_person_can_switch_the_pcs_pointer_too() {
+        // When Leto is wrong about the PC's pointer, as after a stream that
+        // ended badly, the person presses the PC's shortcut: Leto keeps
+        // none for itself on that letter.
+        assert_eq!(Shortcut::of(POINTER_SWITCH), None);
+        let mut controls = Controls::default();
+        for modifier in [Key::LEFT_CTRL, Key::LEFT_ALT, Key::LEFT_SHIFT] {
+            controls.stroke(Some(modifier), None, true);
+        }
+        assert_eq!(controls.stroke(Key::letter(POINTER_SWITCH), Some(POINTER_SWITCH), true), None);
+        assert_eq!(controls.take().len(), 4);
     }
 
     #[test]

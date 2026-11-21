@@ -18,6 +18,11 @@ use crate::{
     },
 };
 
+/// Seconds between leaving a stream because the window was closed and
+/// closing it: what was sent last, the PC's pointer asked back among it,
+/// gets the time to reach the PC before the app is gone.
+const CLOSES_AFTER_LEAVING: f64 = 0.3;
+
 /// Displayed size of the logo in the top bar, in points. The image is larger,
 /// so it stays sharp on high-density screens.
 const LOGO: Vec2 = Vec2::new(98.0, 28.0);
@@ -40,6 +45,9 @@ pub struct LetoApp {
     /// The settings are on screen, over whatever was there: it carries on
     /// underneath, and is back when they close.
     settings_open: bool,
+    /// App time at which the window closes, once the stream it was closed
+    /// on has been left.
+    closes_at: Option<f64>,
 }
 
 impl LetoApp {
@@ -59,6 +67,7 @@ impl LetoApp {
             settings,
             saved: settings,
             settings_open: false,
+            closes_at: None,
         }
     }
 }
@@ -147,6 +156,26 @@ impl eframe::App for LetoApp {
             _ => Devices::default(),
         };
         let heard = self.try_devices(ui.ctx(), &tried);
+
+        // Closing the window leaves a connected stream first, as the person
+        // would: the PC lets go of what was held, and draws its pointer
+        // again. The window closes a moment later.
+        let close = ui.input(|input| input.viewport().close_requested());
+        if close
+            && self.closes_at.is_none()
+            && matches!(&self.state.screen, Screen::Stream(view) if view.connected)
+        {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.player.leave_to_close();
+            self.closes_at = Some(now + CLOSES_AFTER_LEAVING);
+        }
+        if let Some(at) = self.closes_at {
+            if now >= at {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ui.ctx().request_repaint_after_secs((at - now) as f32);
+            }
+        }
 
         match (&door, self.state.screen.clone()) {
             // A stream takes the whole window: no bar, no margins.
