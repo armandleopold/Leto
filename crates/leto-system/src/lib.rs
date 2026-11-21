@@ -12,8 +12,12 @@
 
 #![allow(unsafe_code)]
 
+pub mod bars;
 pub mod clipboard;
 pub mod clock;
 pub mod display;
 pub mod keyboard;
 pub mod pane;
+
+#[cfg(target_os = "android")]
+mod java;

@@ -376,7 +376,14 @@ impl eframe::App for LetoApp {
                 self.player.clear(ui.ctx());
                 self.backend.place_picture(None);
                 self.close_pane();
-                let ground = egui::Frame::new().fill(theme::ground());
+                // Clear of the system's bars, where the window goes under them.
+                let ppp = ui.ctx().pixels_per_point();
+                let [top, bottom] = leto_system::bars::heights().map(|pixels| pixels / ppp);
+                let ground = egui::Frame::new().fill(theme::ground()).inner_margin(egui::Margin {
+                    top: top.round() as i8,
+                    bottom: bottom.round() as i8,
+                    ..egui::Margin::ZERO
+                });
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
                     // Escape closes the settings, as their back button does.

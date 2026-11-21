@@ -1079,7 +1079,7 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
     let usable = !content.game_mouse;
     egui::Area::new(Id::unique("stream-bar-area"))
         .order(Order::Foreground)
-        .anchor(Align2::CENTER_TOP, vec2(0.0, 10.0))
+        .anchor(Align2::CENTER_TOP, vec2(0.0, 10.0 + top_bar_height(ctx)))
         .interactable(usable)
         .show(ctx, |ui| {
             ui.set_opacity(content.opacity);
@@ -1166,6 +1166,12 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
         })
         .response
         .rect
+}
+
+/// How far down the system's own bar reaches over the window, in points:
+/// the stream's bar goes below it.
+fn top_bar_height(ctx: &egui::Context) -> f32 {
+    leto_system::bars::heights()[0] / ctx.pixels_per_point()
 }
 
 /// The switch between this device's pointer and the PC's own, which shows
