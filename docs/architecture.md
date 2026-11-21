@@ -307,6 +307,14 @@ passes them on.
   the pointer of this device is on the picture. The "game mouse" sends how
   far the mouse moved instead, with the pointer kept inside the window, for
   games that turn the view with it.
+- **The last pixel of the picture is the far edge of the PC's screen.** The
+  PC is told which pixel of the window the pointer is on, counted from the
+  picture's corner, out of one less than the pixels the picture covers
+  there (`Controls::pointer_at`), as Moonlight tells it. Told a place on
+  the picture out of the picture's size, a PC stops one row and one column
+  short of its far edges, since a pointer is never further than on the last
+  pixel: a taskbar that hides at the bottom of the PC's screen then never
+  comes out.
 - **The pointer on the picture is this device's own**, which moves the
   moment the mouse does, rather than the PC's, which shows a round trip and
   a picture later. Sunshine, Apollo and Foundation Sunshine leave their
@@ -323,19 +331,23 @@ passes them on.
   A PC that refuses the keyboard or the mouse, or GameStream, draws its own
   pointer, and so does a person who turns "This device's pointer" off. The
   pointer here is an arrow whatever the PC shows: the protocol does not say
-  the PC's shapes. Leaving lets the last keys go out first (`LAST_WORDS` in
-  `Session::stop`): stopping the stream drops what still waits to be sent,
-  which the stand-in host showed for almost half of the streams left.
+  the PC's shapes, so the arrows that resize a window or the bar of a text
+  field only show in the PC's own pointer. Ctrl+Alt+Shift+P and a button
+  of the bar switch between the two during a stream, where there is a
+  choice: they turn the same setting, which is kept. Leaving lets the last
+  keys go out first (`LAST_WORDS` in `Session::stop`): stopping the stream
+  drops what still waits to be sent, which the stand-in host showed for
+  almost half of the streams left.
 - **While a stream is connected the keyboard is the PC's.** The app takes
   the keys away from egui before it acts on them (`raw_input_hook`), Tab and
   Escape included. Some combinations stay on this device, as in Moonlight,
   found by the letter the layout prints: Ctrl+Alt+Shift with Q leaves, with X
   fills the screen, with M switches the mouse mode, with T turns the
-  microphone on or off, with C the camera, with S the statistics, and with Z
-  gives the keyboard and the mouse back to this device until Z again or a
-  click on the picture. Everything held down is let go of when the window
-  loses the keyboard, when it is given back and before leaving, so nothing
-  stays stuck on the PC.
+  microphone on or off, with C the camera, with S the statistics, with P
+  shows the other pointer, and with Z gives the keyboard and the mouse back
+  to this device until Z again or a click on the picture. Everything held
+  down is let go of when the window loses the keyboard, when it is given
+  back and before leaving, so nothing stays stuck on the PC.
 - **On Windows the system's own shortcuts are the PC's too**: the Windows
   key, Alt+Tab, Alt+F4. Windows acts on them before any window hears of them,
   so while a stream has the keyboard `leto-system` listens to the keyboard

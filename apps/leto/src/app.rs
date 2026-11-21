@@ -276,7 +276,7 @@ impl eframe::App for LetoApp {
                             counts,
                             round_trip,
                         };
-                        let settings = &self.settings;
+                        let settings = &mut self.settings;
                         ui::stream::show(
                             ui,
                             &mut self.state,

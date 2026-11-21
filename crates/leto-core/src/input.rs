@@ -247,7 +247,8 @@ pub enum Input {
         dx: i16,
         dy: i16,
     },
-    /// The pointer is at (`x`, `y`) of a picture `width` by `height`.
+    /// The pointer is at (`x`, `y`), where (0, 0) is the corner of the PC's
+    /// screen and (`width`, `height`) its far edge.
     MousePosition {
         x: i16,
         y: i16,
