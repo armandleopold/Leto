@@ -15,7 +15,7 @@ use leto_core::{engine::Codec, input::Input};
 use super::{card::OnCard, frame, icons, widgets};
 use crate::{
     backend::{Filming, Picture},
-    input::{Controls, PC_POINTER_KEYS, Shortcut, hides_its_pointer},
+    input::{Controls, HAS_POINTER, PC_POINTER_KEYS, Shortcut, hides_its_pointer},
     settings::Settings,
     state::{Cam, Mic, State, StreamView},
     stats::{Counts, Rates},
@@ -490,9 +490,11 @@ pub fn show(
         }
     }
 
-    // Whose pointer shows, where there is a choice: the PC can leave its
-    // own out of the pictures and hears both keyboard and mouse.
+    // Whose pointer shows, where there is a choice: this device has one,
+    // and the PC can leave its own out of the pictures and hears both
+    // keyboard and mouse.
     let choice = view.connected
+        && HAS_POINTER
         && hides_its_pointer(view.host.kind)
         && view.input.keyboard
         && view.input.mouse;
@@ -579,6 +581,7 @@ pub fn show(
     // PC draws its own again for the game mouse, which has no pointer here,
     // and before the stream is left.
     let hide = settings.local_pointer
+        && HAS_POINTER
         && hides_its_pointer(view.host.kind)
         && view.input.keyboard
         && view.input.mouse

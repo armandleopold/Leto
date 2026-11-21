@@ -403,7 +403,10 @@ passes them on.
   keeps no shortcut on, puts them back in step: the bar says so with the
   game mouse and when the pointer is switched.
   A PC that refuses the keyboard or the mouse, or GameStream, draws its own
-  pointer, and so does a person who turns "This device's pointer" off. The
+  pointer, and so does a person who turns "This device's pointer" off. A
+  phone has no pointer of its own (`input::HAS_POINTER`): there the PC
+  always draws its pointer, the setting and the switch are not offered, and
+  an app closed in the middle of a stream leaves nothing to put back. The
   pointer here is an arrow whatever the PC shows: the protocol does not say
   the PC's shapes, so the arrows that resize a window or the bar of a text
   field only show in the PC's own pointer. Ctrl+Alt+Shift+P and a button

@@ -25,6 +25,14 @@ pub const fn hides_its_pointer(kind: HostKind) -> bool {
     }
 }
 
+/// Whether this device has a pointer of its own to show on the pictures. A
+/// phone has none: a finger puts the PC's pointer where it touches, so the
+/// PC's own is the only sign of where the mouse is, and stays in the
+/// pictures. A phone that asked it out also left the PC without one for
+/// the next device whenever the app was closed while it streamed, since
+/// nothing then asks the pointer back.
+pub const HAS_POINTER: bool = !cfg!(target_os = "android");
+
 /// The letter of [`hides_its_pointer`]'s shortcut.
 const POINTER_SWITCH: char = 'N';
 
