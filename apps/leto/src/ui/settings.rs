@@ -7,7 +7,7 @@ use leto_core::engine::{BITRATES_KBPS, Codec, Decodable, ScreenMode};
 
 use super::{tunnel, widgets};
 use crate::{
-    input::Shortcut,
+    input::{HAS_POINTER, Shortcut},
     settings::{CODECS, Capture, Decoder, FRAME_RATES, RESOLUTIONS, SCALES, Settings, codec_name},
     state::TunnelForm,
     theme,
@@ -254,15 +254,19 @@ fn hands_and_more(ui: &mut Ui, settings: &mut Settings, decodable: Decodable) {
                     });
             });
         }
-        let about = format!(
-            "The pointer moves here at once and the PC stops drawing its own. It keeps the shape \
-             of an arrow. Off, the PC draws its pointer in the picture. {} switches during a \
-             stream.",
-            Shortcut::Pointer.keys()
-        );
-        row(ui, "This device's pointer", &about, SWITCH_WIDTH, |ui| {
-            widgets::switch(ui, &mut settings.local_pointer, "This device's pointer");
-        });
+        // A phone has no pointer of its own to show: the PC keeps drawing its
+        // own there, and there is nothing to choose.
+        if HAS_POINTER {
+            let about = format!(
+                "The pointer moves here at once and the PC stops drawing its own. It keeps the \
+                 shape of an arrow. Off, the PC draws its pointer in the picture. {} switches \
+                 during a stream.",
+                Shortcut::Pointer.keys()
+            );
+            row(ui, "This device's pointer", &about, SWITCH_WIDTH, |ui| {
+                widgets::switch(ui, &mut settings.local_pointer, "This device's pointer");
+            });
+        }
         let about = "The left button clicks right on the PC, and the right one left.";
         row(ui, "Swap the mouse buttons", about, SWITCH_WIDTH, |ui| {
             widgets::switch(ui, &mut settings.swap_mouse_buttons, "Swap the mouse buttons");
