@@ -37,6 +37,10 @@ pub struct SavedHost {
     /// The host's certificate from pairing, as PEM. `None` until paired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate: Option<String>,
+    /// The address of the host's network card, as in `00:11:22:33:44:55`,
+    /// to wake it with. `None` until the host has told it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<String>,
 }
 
 /// One more address of a saved host.
@@ -144,6 +148,7 @@ mod tests {
             other_addresses: vec![SavedAddress { address: "10.8.0.3".into(), port: 47989 }],
             kind: HostKind::Apollo,
             certificate: Some("PEM".into()),
+            card: Some("00:11:22:33:44:55".into()),
         };
         let saved = Saved {
             identity: Some(Identity { certificate: "C".into(), private_key: "K".into() }),

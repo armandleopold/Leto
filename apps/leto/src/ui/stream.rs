@@ -1175,6 +1175,7 @@ mod tests {
                 reachability: Reachability::Online,
                 busy: true,
                 running_app: Some(1),
+                wakeable: false,
             },
             app: AppSummary { id: 1, title: "Desktop".into(), hdr: false },
             attempt: 1,

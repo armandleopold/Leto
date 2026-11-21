@@ -24,6 +24,7 @@ pub mod service;
 pub mod session;
 pub mod store;
 mod transport;
+pub mod wake;
 
 use std::{
     collections::BTreeMap,
@@ -31,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub use camera::{CameraLink, CameraRefusal, CameraSettings};
@@ -69,6 +70,11 @@ pub fn default_directory() -> Result<PathBuf, Error> {
 }
 
 type Host = MoonlightHost<Transport>;
+
+/// How long [`Client::wake_up`] waits between two looks at a host it woke,
+/// and between two signals.
+const WAKE_LOOKS: Duration = Duration::from_secs(2);
+const WAKE_AGAIN: Duration = Duration::from_secs(10);
 
 /// How many addresses Leto keeps for one PC. The ones that answered least
 /// recently go first.
@@ -112,6 +118,18 @@ pub enum Error {
     Discovery(String),
     #[error("the PC answered in a way Leto did not expect: {0}")]
     Protocol(String),
+    #[error(
+        "Leto cannot wake this PC yet: the PC tells the address of its network card once it is \
+         on and paired"
+    )]
+    CannotWake,
+    #[error("the signal to wake the PC could not be sent: {0}")]
+    WakeNotSent(String),
+    #[error(
+        "the PC did not wake up within {0} seconds. Wake-on-LAN may be off in its BIOS or in \
+         the settings of its network card, or this device is on another network"
+    )]
+    DidNotWake(u64),
 }
 
 /// Something the owner of a PC allows or refuses device by device.
@@ -175,6 +193,9 @@ struct Entry {
     addresses: Vec<(String, u16)>,
     /// The host's certificate from pairing, as PEM.
     certificate: Option<String>,
+    /// The address of its network card, to wake it with. A host tells a
+    /// device it is paired with.
+    card: Option<wake::Card>,
     /// Kept between runs: paired, or added by hand.
     saved: bool,
     /// The live connection state for this host, once it has answered.
@@ -231,6 +252,7 @@ impl Client {
                         host.other_addresses.into_iter().map(|other| (other.address, other.port)),
                     )
                     .collect();
+                let card = host.card.as_deref().and_then(wake::parse_card);
                 let summary = HostSummary {
                     id: host.id.clone(),
                     name: host.name,
@@ -241,11 +263,13 @@ impl Client {
                     reachability: Reachability::Unknown,
                     busy: false,
                     running_app: None,
+                    wakeable: card.is_some(),
                 };
                 let entry = Entry {
                     summary,
                     addresses,
                     certificate: host.certificate,
+                    card,
                     saved: true,
                     handle: None,
                 };
@@ -353,18 +377,67 @@ impl Client {
             })?;
 
         let (_, _, server) = handle.identity().ok_or(Error::PairingFailed)?;
+        // A paired device is told the address of the PC's network card.
+        let card = handle
+            .update()
+            .ok()
+            .and_then(|()| handle.mac().ok().flatten())
+            .map(|card| card.to_bytes());
         let summary = {
             let mut hosts = self.lock();
             let entry = hosts.get_mut(id).ok_or(Error::UnknownHost)?;
             entry.certificate = Some(server.to_pem().to_string());
+            entry.card = card.or(entry.card);
             entry.saved = true;
             entry.summary.paired = true;
+            entry.summary.wakeable = entry.card.is_some();
             entry.summary.reachability = Reachability::Online;
             entry.summary.clone()
         };
         self.persist()?;
         log::info!("paired with {}", self.for_log(id));
         Ok(summary)
+    }
+
+    /// Sends a host the signal that wakes it from sleep, or starts it when it
+    /// is off and its network card listens. Returns at once: see
+    /// [`Client::wake_up`] to wait for it.
+    pub fn wake(&self, id: &HostId) -> Result<(), Error> {
+        let (card, addresses) = {
+            let hosts = self.lock();
+            let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
+            (entry.card.ok_or(Error::CannotWake)?, entry.addresses.clone())
+        };
+        let sent =
+            wake::send(card, &addresses).map_err(|error| Error::WakeNotSent(error.to_string()))?;
+        log::info!("sent {} the signal to wake up, {sent} times", self.for_log(id));
+        Ok(())
+    }
+
+    /// Wakes a host and waits until it answers, for at most `patience`. A
+    /// host that answers already is left as it is. The signal goes again
+    /// every few seconds, in case one was lost on the way.
+    pub fn wake_up(&self, id: &HostId, patience: Duration) -> Result<HostSummary, Error> {
+        if let Ok(summary) = self.reach(id) {
+            return Ok(summary);
+        }
+        let start = Instant::now();
+        let mut sent: Option<Instant> = None;
+        while start.elapsed() < patience {
+            if sent.is_none_or(|sent| sent.elapsed() >= WAKE_AGAIN) {
+                self.wake(id)?;
+                sent = Some(Instant::now());
+            }
+            match self.reach(id) {
+                Ok(summary) => {
+                    log::info!("{} woke up after {:?}", self.for_log(id), start.elapsed());
+                    return Ok(summary);
+                }
+                Err(_) => thread::sleep(WAKE_LOOKS),
+            }
+        }
+        self.mark_offline(id);
+        Err(Error::DidNotWake(patience.as_secs()))
     }
 
     /// The name and address of a host, for the log.
@@ -629,17 +702,23 @@ impl Client {
     /// Keeps what a host answered, and the address it answered at as the one
     /// to use. A saved host that learns an address is saved again.
     fn record(&self, answer: Answer) -> HostSummary {
-        let Answer { summary, handle, local } = answer;
+        let Answer { mut summary, handle, local, card } = answer;
         let learned = {
             let mut hosts = self.lock();
             let entry = hosts.entry(summary.id.clone()).or_insert_with(|| Entry {
                 summary: summary.clone(),
                 addresses: Vec::new(),
                 certificate: None,
+                card: None,
                 saved: false,
                 handle: None,
             });
             let before = entry.addresses.clone();
+            let card_before = entry.card;
+            // A card is kept even while the host does not tell it, as when
+            // it no longer knows this device: it sleeps the same.
+            entry.card = card.or(entry.card);
+            summary.wakeable = entry.card.is_some();
             let reached = (summary.address.clone(), summary.port);
             entry.addresses.retain(|known| *known != reached);
             entry.addresses.insert(0, reached);
@@ -663,10 +742,10 @@ impl Client {
             }
             entry.summary = summary.clone();
             entry.handle = Some(Arc::new(handle));
-            entry.saved && entry.addresses != before
+            entry.saved && (entry.addresses != before || entry.card != card_before)
         };
         if learned && let Err(error) = self.persist() {
-            log::warn!("could not keep the addresses of {}: {error}", summary.name);
+            log::warn!("could not keep what Leto learned of {}: {error}", summary.name);
         }
         summary
     }
@@ -717,6 +796,7 @@ impl Client {
                     .collect(),
                 kind: entry.summary.kind,
                 certificate: entry.certificate.clone(),
+                card: entry.card.map(wake::card_text),
             })
             .collect();
         let identity = Identity {
@@ -748,6 +828,8 @@ struct Answer {
     handle: Host,
     /// The address the host gives itself on its own network.
     local: Option<String>,
+    /// The address of its network card, when it tells.
+    card: Option<wake::Card>,
 }
 
 impl Asker {
@@ -797,13 +879,18 @@ impl Asker {
             reachability: Reachability::Online,
             busy: handle.state()? == ServerState::Busy,
             running_app: Some(handle.current_game()?).filter(|app| *app != 0),
+            // Known once recorded.
+            wakeable: false,
         };
+        // Only to a device it is paired with: the others get zeros.
+        let card =
+            if paired { handle.mac().ok().flatten().map(|card| card.to_bytes()) } else { None };
         // Sunshine and Apollo give the address of theirs that the question
         // came in on: their address on the local network when asked from
         // further away, for example through a forwarded port.
         let local =
             handle.local_ip().ok().filter(|ip| !ip.is_unspecified()).map(|ip| ip.to_string());
-        Ok(Answer { summary, handle, local })
+        Ok(Answer { summary, handle, local, card })
     }
 }
 

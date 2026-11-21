@@ -101,6 +101,9 @@ pub mod permission {
 
 pub const HOST_NAME: &str = "Salon";
 pub const HOST_ID: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+/// The address of the host's network card, told only to a paired device
+/// over HTTPS, as Apollo does. Everyone else is told zeros.
+pub const HOST_CARD: &str = "00:11:22:33:44:55";
 
 /// One app the host offers.
 #[derive(Debug, Clone)]
@@ -693,11 +696,12 @@ fn respond(
                 (false, Some(_)) => "<Permission>0</Permission>".to_owned(),
                 (_, None) => String::new(),
             };
+            let card = if authorized { HOST_CARD } else { "00:00:00:00:00:00" };
             xml(&format!(
                 "<appversion>{}</appversion><hostname>{}</hostname>\
              <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
              <HttpsPort>{}</HttpsPort><ExternalPort>{}</ExternalPort>\
-             <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>00:11:22:33:44:55</mac>\
+             <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>{card}</mac>\
              <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>{}</ServerCodecModeSupport>\
              <PairStatus>{}</PairStatus><currentgame>{}</currentgame>\
              <state>{}</state>{permission}",

@@ -47,6 +47,8 @@ pub enum Request {
     Leave,
     /// Close the app running on a PC.
     Quit(HostId),
+    /// Wake a PC that sleeps or is off, and wait for it to answer.
+    Wake(HostId),
 }
 
 /// News from the engine.
@@ -113,6 +115,11 @@ pub enum Event<Image = ImageFile> {
         host: HostId,
         result: Result<(), String>,
     },
+    /// The PC asked to wake up answers, or the engine gave up waiting.
+    WakeEnded {
+        host: HostId,
+        result: Result<HostSummary, String>,
+    },
     /// Something the person should know that belongs to no screen.
     Notice(String),
 }
@@ -138,6 +145,7 @@ impl<Image> Event<Image> {
             Self::PlayFailed { attempt, message } => Event::PlayFailed { attempt, message },
             Self::StreamEnded { attempt, why } => Event::StreamEnded { attempt, why },
             Self::QuitEnded { host, result } => Event::QuitEnded { host, result },
+            Self::WakeEnded { host, result } => Event::WakeEnded { host, result },
             Self::Notice(message) => Event::Notice(message),
         }
     }

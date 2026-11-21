@@ -26,6 +26,9 @@ use crate::{
 
 /// How long a search listens for PCs announcing themselves.
 const LISTEN_TIME: Duration = Duration::from_secs(2);
+/// How long a PC asked to wake up may take to answer: a PC that was off
+/// starts its system and its streaming software first.
+pub const WAKE_PATIENCE: Duration = Duration::from_secs(120);
 
 /// Whoever the engine works for: where its news goes, and where the streams
 /// it starts end up.
@@ -161,6 +164,11 @@ impl<S: Shell> Service<S> {
                 let result = client.quit_app(&host).map(|_| ()).map_err(|error| explain(&error));
                 shell.tell(Event::Hosts(client.hosts()));
                 shell.tell(Event::QuitEnded { host, result });
+            }
+            Request::Wake(host) => {
+                let result = client.wake_up(&host, WAKE_PATIENCE).map_err(|error| explain(&error));
+                shell.tell(Event::Hosts(client.hosts()));
+                shell.tell(Event::WakeEnded { host, result });
             }
         });
         if let Err(error) = spawned {
@@ -459,6 +467,17 @@ fn words(error: &Error) -> String {
             "This PC cannot take the pictures of this camera.".to_owned()
         }
         Error::Storage(error) => format!("Leto could not read or write its settings: {error}"),
+        Error::CannotWake => "Leto cannot wake this PC yet. It learns how the next time the PC \
+                              is on, once it is paired."
+            .to_owned(),
+        Error::WakeNotSent(why) => {
+            format!("Leto could not send the signal that wakes this PC: {why}.")
+        }
+        Error::DidNotWake(seconds) => format!(
+            "The PC did not wake up within {seconds} seconds. Check that Wake-on-LAN is on in \
+             its BIOS and in the settings of its network card, and that this device is on the \
+             same network as the PC."
+        ),
         Error::Discovery(_) | Error::Protocol(_) => sentence(&error.to_string()),
     }
 }
