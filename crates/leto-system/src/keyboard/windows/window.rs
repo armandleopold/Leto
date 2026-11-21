@@ -9,9 +9,15 @@
 //! Windows+D and the rest. Each key is taken from the window's messages for
 //! the stream before the window acts on it, so that Alt+F4 does not close
 //! Leto either. And the shortcuts Windows keeps for itself, Alt+Tab and
-//! Alt+Esc, which never reach a window, are registered as Leto's own: a
-//! program in front may have them, and Windows then tells it of them
-//! instead of switching windows. Windows+L and Ctrl+Alt+Del still act here.
+//! Alt+Esc, never reach a window: Windows sees them as the Tab or the Esc
+//! goes down with Alt held. So each time an Alt goes down for the stream,
+//! Leto tells Windows that it came up again, with a key of its own making:
+//! the stream still holds Alt, Windows sees only a Tab, and the window gets
+//! it for the stream. That Alt coming up reaches the window too, and goes no
+//! further. Alt+Tab and Alt+Esc are also registered as Leto's own, for a Tab
+//! that comes before Windows heard of that Alt: a program in front may have
+//! them, and Windows then tells it of them instead of switching windows.
+//! Windows+L and Ctrl+Alt+Del still act here.
 //!
 //! All of it happens on the window's thread, the one that asks for the
 //! keyboard.
@@ -25,15 +31,16 @@ use windows_sys::Win32::{
         Input::{
             GetRegisteredRawInputDevices,
             KeyboardAndMouse::{
-                GetAsyncKeyState, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT,
-                RegisterHotKey, UnregisterHotKey,
+                GetAsyncKeyState, HOT_KEY_MODIFIERS, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+                KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_SHIFT,
+                RegisterHotKey, SendInput, UnregisterHotKey,
             },
             RAWINPUTDEVICE, RIDEV_NOHOTKEYS, RIDEV_REMOVE, RegisterRawInputDevices,
         },
         WindowsAndMessaging::{
-            CallNextHookEx, HC_ACTION, HHOOK, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
-            SetWindowsHookExW, UnhookWindowsHookEx, WH_GETMESSAGE, WM_HOTKEY, WM_KEYDOWN,
-            WM_KEYFIRST, WM_KEYLAST, WM_KEYUP, WM_NULL, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            CallNextHookEx, GetMessageExtraInfo, HC_ACTION, HHOOK, MSG, PM_NOREMOVE, PM_REMOVE,
+            PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_GETMESSAGE, WM_HOTKEY,
+            WM_KEYDOWN, WM_KEYFIRST, WM_KEYLAST, WM_KEYUP, WM_NULL, WM_SYSKEYDOWN, WM_SYSKEYUP,
         },
     },
 };
@@ -77,6 +84,12 @@ const fn switch(held: HOT_KEY_MODIFIERS, (virtual_key, scan): (u16, u16)) -> Swi
 /// program's own are below 0xC000.
 pub(super) const FIRST_SWITCH: i32 = 0x4C00;
 
+/// What Leto writes on the keys it makes up, to know them again: "LETO".
+pub(super) const MADE_BY_LETO: usize = 0x4C45_544F;
+
+/// The left and the right Alt, by their virtual-key codes.
+const ALTS: [u16; 2] = [0xA4, 0xA5];
+
 /// What the window's thread keeps while the stream has the keyboard.
 struct Kept {
     /// Watches the window's messages, or null where Windows did not let it.
@@ -88,6 +101,8 @@ struct Kept {
     taken: u32,
     /// Which of `SWITCHES` Windows let Leto register.
     switches: [bool; SWITCHES.len()],
+    /// Windows did not take a key Leto made up.
+    refused: bool,
 }
 
 thread_local! {
@@ -124,7 +139,7 @@ pub(super) fn arm() {
     // What is down now went down for the window, and comes up there.
     // SAFETY: `GetAsyncKeyState` takes any number.
     gate.arm(|code| unsafe { GetAsyncKeyState(i32::from(code)) } < 0);
-    KEPT.set(Some(Kept { hook, gate, read_before, taken: 0, switches }));
+    KEPT.set(Some(Kept { hook, gate, read_before, taken: 0, switches, refused: false }));
 }
 
 /// Registers `SWITCHES` for this thread, and says which Windows let it
@@ -204,8 +219,12 @@ unsafe extern "system" fn heard(code: i32, wparam: WPARAM, lparam: LPARAM) -> LR
         let message = unsafe { &mut *(lparam as *mut MSG) };
         if matches!(message.message, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP) {
             let raw = at_window((message.wParam & 0xFFFF) as u16, message.lParam as u32);
-            let made_up = made_up(message, raw);
-            if keep(raw, made_up) {
+            // SAFETY: no arguments: what came with the message just taken.
+            let extra = unsafe { GetMessageExtraInfo() } as usize;
+            if !raw.down && ALTS.contains(&raw.virtual_key) && extra == MADE_BY_LETO {
+                // An Alt Leto let go of: Windows only was to hear of it.
+                *message = MSG { message: WM_NULL, ..*message };
+            } else if keep(raw, made_up(message, raw)) {
                 *message = MSG { message: WM_NULL, ..*message };
             }
         } else if message.message == WM_HOTKEY
@@ -263,8 +282,11 @@ fn keep(raw: Raw, made_up: bool) -> bool {
     match verdict {
         Some(Verdict::Take(stroke)) => {
             super::taken(stroke);
-            // The hook should have had it: it is set again.
             if raw.down {
+                if ALTS.contains(&raw.virtual_key) {
+                    let_go(raw);
+                }
+                // The hook should have had it: it is set again.
                 super::slipped();
             }
             true
@@ -272,4 +294,42 @@ fn keep(raw: Raw, made_up: bool) -> bool {
         Some(Verdict::Drop) => true,
         Some(Verdict::PassOn) | None => false,
     }
+}
+
+/// Tells Windows that the Alt `raw` went down for the stream came up again,
+/// though the person still holds it: when the next key goes down, Windows
+/// then sees no Alt+Tab or Alt+Esc, and the window gets the key for the
+/// stream, which still holds Alt. Each press of a key held down says it
+/// again, Alt's too, so it is told each time. That Alt coming up reaches the
+/// window marked as Leto's, and goes no further.
+fn let_go(raw: Raw) {
+    let mut flags = KEYEVENTF_KEYUP;
+    if raw.extended {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: raw.virtual_key,
+                wScan: raw.scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: MADE_BY_LETO,
+            },
+        },
+    };
+    // SAFETY: one keyboard input, and its size.
+    let sent = unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) } == 1;
+    if sent {
+        return;
+    }
+    KEPT.with(|kept| {
+        let Ok(mut kept) = kept.try_borrow_mut() else { return };
+        if let Some(kept) = kept.as_mut()
+            && !std::mem::replace(&mut kept.refused, true)
+        {
+            log::warn!("Windows did not take the Alt Leto let go of, so Alt+Tab may act here");
+        }
+    });
 }

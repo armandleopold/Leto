@@ -20,8 +20,9 @@
 //! between, not even one Windows was handing to the old one.
 //!
 //! Where Windows never calls the hook all the same, the keys that reach
-//! Leto's window are taken there, and Alt+Tab, which never reaches a
-//! window, is registered as Leto's own shortcut (`windows/window.rs`).
+//! Leto's window are taken there, and Windows is told that each Alt taken
+//! came up again, so that it sees no Alt+Tab (`windows/window.rs`). The
+//! hook lets that Alt go its way.
 
 use std::{
     cell::{Cell, RefCell},
@@ -381,6 +382,11 @@ unsafe extern "system" fn hear(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
     if code == HC_ACTION as i32 && !PASSING_ON.get() {
         // SAFETY: for HC_ACTION, `lparam` points to the key's description.
         let event = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        if event.dwExtraInfo == window::MADE_BY_LETO {
+            // An Alt Leto let go of, for Windows only: it is on its way.
+            // SAFETY: passing on what Windows gave, as it asks of every hook.
+            return unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) };
+        }
         // SAFETY: no arguments.
         let waited = unsafe { GetTickCount() }.wrapping_sub(event.time);
         let raw = Raw {
@@ -656,6 +662,11 @@ mod tests {
             heard(4),
             [(Key::LEFT_ALT, true), (Key::TAB, true), (Key::TAB, false), (Key::LEFT_ALT, false)]
         );
+        // The Alt went down for the stream, so Windows was told it came up,
+        // with a key Leto made up: the hook let it go its way, and the
+        // stream heard nothing of it.
+        thread::sleep(Duration::from_millis(200));
+        assert!(take().is_empty(), "the stream heard of the Alt Leto let go of");
         // A shortcut that is not Leto's is left alone.
         assert_eq!(switch(window::FIRST_SWITCH - 1, 0x09), WM_HOTKEY);
 
