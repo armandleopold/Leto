@@ -98,6 +98,12 @@ environment, the screen "Camera and microphone" shows a test card instead of
 the system's camera, read and converted as a camera's pictures are. The same
 card is what the app and `leto-cli play --camera` then send to a PC.
 
+The app is light or dark as the system asks. To see one look on a system
+that does not say which it wants, as the container, set `LETO_THEME=light`
+or `LETO_THEME=dark` in the app's environment. A colour is asked of
+`theme.rs` when it is used (`theme::text()`), never kept: the look can change
+between two frames.
+
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
 and `targets` (a compile check for macOS, the web, Android and iOS). Each is
 also a command of its own, for example `cargo xtask clippy`. Run
@@ -129,7 +135,8 @@ builds and tests it for real.
   goes in `backend/`, and `ui/` only draws. See `docs/architecture.md`.
 - What the app asks of the operating system beyond what egui does (the
   keyboard below the window, the mode of a screen) goes in `leto-system`,
-  and the app asks for it through `window.rs`.
+  and the app asks for it through `window.rs`. The engine asks it for one
+  thing, a clock that counts finely while a stream runs.
 - `leto-client` hands a stream over still encoded and `leto-media` decodes
   it. Neither depends on the other, outside the tests of `leto-client`: the
   app's backend joins them. The camera goes the other way under the same

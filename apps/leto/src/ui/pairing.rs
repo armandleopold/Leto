@@ -27,7 +27,7 @@ pub fn show(ui: &mut Ui, state: &mut State, pairing: &Pairing, now: f64) {
         match &pairing.step {
             PairingStep::Preparing => {
                 ui.add_space(24.0);
-                ui.add(egui::Spinner::new().size(22.0).color(theme::SUN));
+                ui.add(egui::Spinner::new().size(22.0).color(theme::sun()));
             }
             PairingStep::ShowingPin { pin, since } => {
                 let lead = format!("Type this code on {} to let this device connect.", host.name);
@@ -60,7 +60,7 @@ pub fn show(ui: &mut Ui, state: &mut State, pairing: &Pairing, now: f64) {
             }
             PairingStep::Failed(message) => {
                 ui.add_space(8.0);
-                centred(ui, 460.0, RichText::new(message).color(theme::PROBLEM));
+                centred(ui, 460.0, RichText::new(message).color(theme::problem()));
                 ui.add_space(18.0);
                 if widgets::primary_button(ui, "Try again").clicked() {
                     state.start_pairing(host.clone());
@@ -94,14 +94,14 @@ fn digits(ui: &mut Ui, pin: Pin) {
     for (index, digit) in pin.digits().into_iter().enumerate() {
         let min = rect.min + vec2((TILE.x + GAP) * index as f32, 0.0);
         let tile = Rect::from_min_size(min, TILE);
-        let border = Stroke::new(1.5, theme::SUN.gamma_multiply(0.8));
-        painter.rect(tile, theme::CARD_RADIUS, theme::SURFACE, border, StrokeKind::Inside);
+        let border = Stroke::new(1.5, theme::sun().gamma_multiply(0.8));
+        painter.rect(tile, theme::CARD_RADIUS, theme::surface(), border, StrokeKind::Inside);
         painter.text(
             tile.center(),
             Align2::CENTER_CENTER,
             digit,
             FontId::proportional(42.0),
-            theme::MOON,
+            theme::text(),
         );
     }
 }
@@ -110,10 +110,10 @@ fn digits(ui: &mut Ui, pin: Pin) {
 fn patience(ui: &mut Ui, spent: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(284.0, 3.0), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, 2, theme::LINE);
+    painter.rect_filled(rect, 2, theme::line());
     let mut left = rect;
     left.set_width(rect.width() * (1.0 - spent.clamp(0.0, 1.0)));
-    painter.rect_filled(left, 2, theme::SUN);
+    painter.rect_filled(left, 2, theme::sun());
     ui.add_space(4.0);
     ui.label(widgets::dim("Waiting for the code…").size(theme::SMALL));
 }

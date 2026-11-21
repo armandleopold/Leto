@@ -166,6 +166,10 @@ pub struct Options {
     /// with a `port`. Without it every other port is any free one, so that
     /// many hosts run side by side.
     pub real_ports: bool,
+    /// Never give up on a client that went silent, where a host gives up
+    /// after seconds: such a host sees a client leave only when the client
+    /// says so.
+    pub waits_for_goodbye: bool,
 }
 
 impl Options {
@@ -198,6 +202,7 @@ impl Default for Options {
             encodes: Codecs::of(Codec::H264),
             answer_after: Duration::ZERO,
             real_ports: false,
+            waits_for_goodbye: false,
         }
     }
 }
@@ -430,6 +435,15 @@ impl FakeHost {
     /// The last picture of the camera a client is sending.
     pub fn seen(&self) -> Option<Arc<Seen>> {
         self.shared.cameras.as_ref().and_then(|cameras| cameras.seen())
+    }
+
+    /// The next picture of the stream leaves `late`, once, as on a PC that
+    /// was busy with something else for a moment: made at its time, and
+    /// sent that much after it. For what a client makes of a late picture.
+    pub fn hold_a_picture(&self, late: Duration) {
+        if let Some(session) = &self.shared.playing.lock().unwrap().session {
+            session.hold_a_picture(late);
+        }
     }
 
     /// Starts no stream, for now, and says that it is busy: as a host that
@@ -739,7 +753,7 @@ fn respond(
              <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
              <HttpsPort>{}</HttpsPort><ExternalPort>{}</ExternalPort>\
              <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>{card}</mac>\
-             <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>{}</ServerCodecModeSupport>\
+             <LocalIP>{local}</LocalIP><ServerCodecModeSupport>{}</ServerCodecModeSupport>\
              <PairStatus>{}</PairStatus><currentgame>{}</currentgame>\
              <state>{}</state>{permission}",
                 stream::APP_VERSION,
@@ -851,6 +865,7 @@ fn launch(
         microphone: shared.options.microphone,
         camera: shared.cameras.clone(),
         encodes: shared.options.encodes,
+        waits_for_goodbye: shared.options.waits_for_goodbye,
     };
 
     playing.screen_asked = Some(ScreenAsked {

@@ -15,8 +15,8 @@ use std::{
 };
 
 use leto_client::{
-    Client, Counter, Decoded, Ended, Error, HostKind, HostSummary, Permission, StreamSettings,
-    Tally, VideoFrame, VideoSetup, VideoSink,
+    Client, Counter, Decoded, Ended, Error, HostKind, HostSummary, Permission, Session,
+    StreamSettings, Tally, VideoFrame, VideoSetup, VideoSink,
     engine::{Codec, Codecs},
 };
 use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, Options, permission};
@@ -84,6 +84,35 @@ fn wait_for_stream(counter: &Counter) -> Tally {
     counter.tally()
 }
 
+/// A picture that leaves the PC late is not waited for: the engine gives it
+/// up after a tenth of a second, asks for a keyframe and hands over nothing
+/// that builds on the picture it gave up. This is the way from one end to
+/// the other, whatever the clocks of the computer that runs it are like.
+#[test]
+fn after_a_picture_that_came_too_late_the_stream_goes_on_from_a_keyframe() {
+    let settings = Settings::new();
+    let host = FakeHost::start();
+    let client = settings.open();
+    let paired = pair(&client, &host);
+    let counter = Counter::default();
+    let session =
+        client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+    let before = wait_for_stream(&counter);
+
+    // Far longer than the engine waits, and than a busy computer stalls.
+    host.hold_a_picture(Duration::from_millis(500));
+    wait_for("the stream to go on", || {
+        let tally = counter.tally();
+        tally.frames >= before.frames + 15 && tally.keyframes > before.keyframes
+    });
+
+    let tally = counter.tally();
+    assert_eq!(tally.frames_orphaned, 0, "a picture that follows a missing one is a keyframe");
+    let report = host.stream_report().expect("the host is streaming");
+    assert!(report.keyframes_requested >= 1, "{report:?}");
+    drop(session);
+}
+
 #[test]
 fn a_stream_delivers_pictures_and_sound() {
     let settings = Settings::new();
@@ -99,7 +128,9 @@ fn a_stream_delivers_pictures_and_sound() {
     let video = tally.setup.expect("the video was set up");
     assert_eq!((video.width, video.height, video.fps), (320, 180, 30));
     assert!(tally.keyframes >= 1, "the stream starts with a keyframe");
-    assert_eq!(tally.frames_missing, 0, "nothing is lost on the loopback interface");
+    // Not that none is missing: a computer busy enough sends one late, and
+    // the engine stops waiting for a picture after a tenth of a second.
+    assert_eq!(tally.frames_orphaned, 0, "a picture that follows a missing one is a keyframe");
     let audio = tally.audio_setup.expect("the sound was set up");
     assert_eq!((audio.sample_rate, audio.channels, audio.samples_per_packet), (48_000, 2, 240));
     // Sixty bytes per packet: 96 kbit/s in packets of five milliseconds.
@@ -118,7 +149,9 @@ fn a_stream_delivers_pictures_and_sound() {
 }
 
 /// A screen too slow for the stream: it takes longer over each picture
-/// than the PC takes to make the next.
+/// than the PC takes to make the next. Not as long as the engine waits for
+/// a picture before it gives it up, a tenth of a second: a screen that slow
+/// loses the pictures that wait whenever it is a little late.
 struct SlowScreen(mpsc::Sender<usize>);
 
 impl VideoSink for SlowScreen {
@@ -126,7 +159,7 @@ impl VideoSink for SlowScreen {
 
     fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
         let _ = self.0.send(frame.waiting);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(50));
         Decoded::Ok
     }
 }
@@ -142,12 +175,15 @@ fn a_screen_that_falls_behind_is_told_how_many_pictures_wait() {
     let session =
         client.play(&paired.id, 1, SMALL, SlowScreen(sender), Counter::default().audio(), |_| {});
     let session = session.unwrap();
-    // Thirty pictures a second, ten taken: they pile up.
+    // Thirty pictures a second, twenty taken at most: they pile up. How high
+    // depends on the clocks of the computer this runs on, which can make the
+    // engine give pictures up: that some wait, and are counted, does not.
     let waiting: Vec<usize> =
-        (0..10).map(|_| told.recv_timeout(Duration::from_secs(10)).unwrap()).collect();
+        (0..20).map(|_| told.recv_timeout(Duration::from_secs(10)).unwrap()).collect();
     session.stop();
 
-    assert!(waiting[9] >= 5, "pictures pile up behind a slow screen: {waiting:?}");
+    let most = waiting.iter().copied().max().unwrap_or(0);
+    assert!(most >= 2, "pictures wait behind a slow screen, and it is told: {waiting:?}");
 }
 
 #[test]
@@ -207,8 +243,8 @@ fn leaving_keeps_the_app_running_and_playing_again_resumes_it() {
     wait_for_stream(&first);
     session.stop();
 
-    // Nobody tells the host: it has to miss the client, which takes it
-    // seconds at best.
+    // The host is told. Were that one packet lost, it would have to miss
+    // the client, which takes it seconds at best.
     let start = Instant::now();
     while !host.stream_report().is_some_and(|report| report.client_left) {
         assert!(start.elapsed() < CLIENT_MISSED_WITHIN, "the host never noticed the client left");
@@ -225,6 +261,32 @@ fn leaving_keeps_the_app_running_and_playing_again_resumes_it() {
     let tally = wait_for_stream(&second);
     assert!(tally.keyframes >= 1, "a resumed stream starts with a keyframe");
     session.stop();
+}
+
+#[test]
+fn a_client_that_leaves_tells_the_host() {
+    let stopped: fn(Session) = Session::stop;
+    let dropped: fn(Session) = drop;
+    for (how, leave) in [("stopped", stopped), ("dropped", dropped)] {
+        let settings = Settings::new();
+        // This host never gives up on a silent client: it knows that one
+        // left only because the client said so.
+        let host = FakeHost::start_with(Options { waits_for_goodbye: true, ..Options::default() });
+        let client = settings.open();
+        let paired = pair(&client, &host);
+        let counter = Counter::default();
+
+        let session =
+            client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+        wait_for_stream(&counter);
+        assert!(!host.stream_report().unwrap().client_left);
+        leave(session);
+
+        wait_for(&format!("the host to hear that a {how} stream is left"), || {
+            host.stream_report().is_some_and(|report| report.client_left)
+        });
+        assert_eq!(host.running_app(), Some(1), "the app keeps running");
+    }
 }
 
 #[test]

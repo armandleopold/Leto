@@ -147,9 +147,100 @@ impl Rates {
     }
 }
 
+/// How often the log is told how a stream does, in seconds.
+pub const TOLD_EVERY: f64 = 10.0;
+
+impl Rates {
+    /// How the stream did, in a line for the log: what the statistics over
+    /// the picture show, for whoever reads the log afterwards. `round_trip`
+    /// is how long a message takes to reach the PC and come back.
+    pub fn told(&self, round_trip: Option<Duration>) -> String {
+        let mut line = format!(
+            "a second of the stream: {:.0} pictures arrived, {:.0} decoded, {:.0} skipped, {:.1} \
+             Mbit/s",
+            self.received, self.decoded, self.skipped, self.megabits
+        );
+        if let Some((share, _)) = self.lost {
+            line += &format!(", {share:.1} % lost");
+        }
+        if let Some(decoding) = self.decoding_ms {
+            line += &format!("; a picture took {decoding:.1} ms to decode");
+            if let Some(copying) = self.copying_ms {
+                line += &format!(", {copying:.1} ms of them to leave the decoder when shown");
+            }
+        }
+        if let Some(host) = self.host_ms {
+            line += &format!("; the PC took {host:.1} ms to make one");
+        }
+        if let Some(round_trip) = round_trip {
+            let milliseconds = round_trip.as_secs_f64() * 1000.0;
+            line += &format!("; {milliseconds:.1} ms to the PC and back");
+        }
+        line
+    }
+}
+
+/// What the log is told of how the pictures are drawn: on how many pixels
+/// of the screen, when that is not one for each of theirs. Pictures drawn
+/// larger or smaller are less sharp than the PC made them.
+pub fn drawn(drawn: Option<([usize; 2], [u32; 2])>) -> String {
+    match drawn {
+        Some(([width, height], [across, down]))
+            if width == across as usize && height == down as usize =>
+        {
+            format!("; drawn pixel for pixel, {width} by {height}")
+        }
+        Some(([width, height], [across, down])) => {
+            format!("; pictures of {width} by {height} drawn on {across} by {down} pixels")
+        }
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_log_is_told_when_pictures_are_not_drawn_pixel_for_pixel() {
+        assert_eq!(
+            drawn(Some(([3840, 1080], [3840, 1080]))),
+            "; drawn pixel for pixel, 3840 by 1080"
+        );
+        assert_eq!(
+            drawn(Some(([3840, 1080], [3826, 1076]))),
+            "; pictures of 3840 by 1080 drawn on 3826 by 1076 pixels"
+        );
+        assert_eq!(drawn(None), "");
+    }
+
+    #[test]
+    fn the_log_is_told_what_was_measured_and_nothing_else() {
+        let mut counts = Counts::default();
+        let before = counts;
+        for _ in 0..1440 {
+            counts.received(54_000, Some(0), Some(Duration::from_micros(3800)));
+            counts.decoded(Some(Duration::from_millis(17)));
+            counts.copied(Duration::from_millis(15));
+        }
+        let rates = Rates::between(&before, &counts, 0, 10.0).expect("ten seconds went by");
+        assert_eq!(
+            rates.told(Some(Duration::from_micros(1400))),
+            "a second of the stream: 144 pictures arrived, 144 decoded, 0 skipped, 62.2 Mbit/s, \
+             0.0 % lost; a picture took 17.0 ms to decode, 15.0 ms of them to leave the decoder \
+             when shown; the PC took 3.8 ms to make one; 1.4 ms to the PC and back"
+        );
+
+        // A backend that measures little says little.
+        let mut counts = Counts::default();
+        counts.received(125_000, None, None);
+        counts.decoded(None);
+        let rates = Rates::between(&before, &counts, 0, 1.0).expect("a second went by");
+        assert_eq!(
+            rates.told(None),
+            "a second of the stream: 1 pictures arrived, 1 decoded, 0 skipped, 1.0 Mbit/s"
+        );
+    }
 
     #[test]
     fn two_counts_a_second_apart_make_rates() {

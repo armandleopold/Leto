@@ -1,5 +1,7 @@
 //! The app's single window: a top bar and one screen at a time.
 
+use std::time::Duration;
+
 use egui::{Align, Id, Layout, Rect, RichText, Sense, UiBuilder, Vec2, pos2};
 use leto_core::{brand, platform::Platform};
 use leto_system::pane::Pane;
@@ -8,6 +10,7 @@ use crate::{
     backend::{Backend, Door, Pace, Unavailable},
     settings::{self, Settings},
     state::{Cam, Device, Devices, Event, Mic, Screen, State, Trial},
+    stats::{self, Counts, Rates, TOLD_EVERY},
     theme,
     ui::{
         self,
@@ -60,6 +63,8 @@ pub struct LetoApp {
     /// App time at which the window closes, once the stream it was closed
     /// on has been left.
     closes_at: Option<f64>,
+    /// When the log was last told how the stream does, and the counts then.
+    told: Option<(f64, Counts)>,
 }
 
 impl LetoApp {
@@ -84,6 +89,7 @@ impl LetoApp {
             settings,
             settings_open: false,
             closes_at: None,
+            told: None,
         }
     }
 
@@ -292,6 +298,8 @@ impl eframe::App for LetoApp {
         }
 
         let streaming = matches!((&door, &self.state.screen), (Door::Open, Screen::Stream(_)));
+        // Light or dark as the system asks, and dark around a stream.
+        theme::follow(ui, streaming);
         match (&door, self.state.screen.clone()) {
             // A stream takes the whole window: no bar, no margins.
             (Door::Open, Screen::Stream(view)) => {
@@ -331,6 +339,8 @@ impl eframe::App for LetoApp {
                     self.state.camera_failed(problem);
                     None
                 });
+                let (counts, round_trip) = (self.backend.counts(), self.backend.round_trip());
+                self.tell_the_log(now, counts, round_trip);
                 // The stream screen paints its own ground: on the web the
                 // pictures show through the window.
                 let inputs = egui::CentralPanel::default()
@@ -341,10 +351,10 @@ impl eframe::App for LetoApp {
                             picture_problem: picture_problem.as_deref(),
                             voice,
                             film,
-                            counts: self.backend.counts(),
-                            round_trip: self.backend.round_trip(),
+                            counts,
+                            round_trip,
                         };
-                        let settings = &self.settings;
+                        let settings = &mut self.settings;
                         ui::stream::show(
                             ui,
                             &mut self.state,
@@ -362,10 +372,11 @@ impl eframe::App for LetoApp {
                 self.place_pane(ui.ctx(), window);
             }
             (door, screen) => {
+                self.told = None;
                 self.player.clear(ui.ctx());
                 self.backend.place_picture(None);
                 self.close_pane();
-                let ground = egui::Frame::new().fill(theme::GROUND);
+                let ground = egui::Frame::new().fill(theme::ground());
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
                     // Escape closes the settings, as their back button does.
@@ -499,6 +510,28 @@ impl eframe::App for LetoApp {
     }
 }
 
+impl LetoApp {
+    /// Tells the log now and then how the stream does, at `now`: the numbers
+    /// the statistics show over the picture, for whoever reads the log of a
+    /// stream that was slow.
+    fn tell_the_log(&mut self, now: f64, counts: Option<Counts>, round_trip: Option<Duration>) {
+        let Some(counts) = counts else { return };
+        let Some((then, before)) = self.told else {
+            self.told = Some((now, counts));
+            return;
+        };
+        // A new stream counts from nothing again.
+        if counts.received < before.received {
+            self.told = Some((now, counts));
+        } else if now - then >= TOLD_EVERY {
+            if let Some(rates) = Rates::between(&before, &counts, 0, now - then) {
+                log::debug!("{}{}", rates.told(round_trip), stats::drawn(self.player.drawn()));
+            }
+            self.told = Some((now, counts));
+        }
+    }
+}
+
 /// The bar at the top: the logo and nothing else. Where Leto draws the
 /// window's frame, the bar moves the window, and the buttons that minimize,
 /// maximize and close it sit in its top right corner.
@@ -529,10 +562,13 @@ fn top_bar(ui: &mut egui::Ui) {
     let mut line_ui =
         ui.new_child(UiBuilder::new().max_rect(line).layout(Layout::left_to_right(Align::Center)));
     line_ui.add_space(margin);
-    line_ui.add(
-        egui::Image::new(egui::include_image!("../../../assets/brand/png/leto-logo.png"))
-            .fit_to_exact_size(LOGO),
-    );
+    // The moon of the logo is ivory by night and ink by day.
+    let logo = if theme::by_day() {
+        egui::include_image!("../../../assets/brand/png/leto-logo-on-light.png")
+    } else {
+        egui::include_image!("../../../assets/brand/png/leto-logo.png")
+    };
+    line_ui.add(egui::Image::new(logo).fit_to_exact_size(LOGO));
     ui.advance_cursor_after_rect(bar);
 }
 
@@ -552,7 +588,7 @@ fn out_of_order(ui: &mut egui::Ui, problem: &Unavailable) {
     ui.add_space((ui.available_height() * 0.16).clamp(16.0, 120.0));
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-        icons::monitor(ui.painter(), rect, theme::LINE);
+        icons::monitor(ui.painter(), rect, theme::line());
         ui.add_space(6.0);
         ui.label(RichText::new(problem.title).size(20.0));
         ui.scope(|ui| {

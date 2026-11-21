@@ -178,8 +178,8 @@ fn column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
 
 fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::LINE))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::line()))
         .corner_radius(theme::CARD_RADIUS)
         .inner_margin(egui::Margin::same(18))
         .show(ui, |ui| {
@@ -217,7 +217,7 @@ fn top<R>(
     let size = vec2(ui.available_width(), 40.0);
     ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
-        icon(ui.painter(), rect, if lit { theme::SUN } else { theme::DIM });
+        icon(ui.painter(), rect, if lit { theme::sun() } else { theme::dim() });
         ui.label(RichText::new(name).size(18.0));
         ui.with_layout(Layout::right_to_left(Align::Center), button).inner
     })
@@ -303,7 +303,7 @@ fn camera_card(
         let width = ui.available_width();
         let (view, _) =
             ui.allocate_exact_size(vec2(width, (width * 9.0 / 16.0).round()), Sense::hover());
-        ui.painter().rect_filled(view, theme::CONTROL_RADIUS, theme::GROUND);
+        ui.painter().rect_filled(view, theme::CONTROL_RADIUS, theme::ground());
         match (trial, &preview.texture) {
             (Trial::On, Some(texture)) => {
                 // The whole picture, whatever its shape.
@@ -319,16 +319,16 @@ fn camera_card(
                     .paint_at(ui, shown);
             }
             (Trial::On, None) => inside(ui, view, 50.0, |ui| {
-                ui.add(egui::Spinner::new().size(22.0).color(theme::SUN));
+                ui.add(egui::Spinner::new().size(22.0).color(theme::sun()));
                 ui.label(widgets::dim("Waiting for the camera…"));
             }),
             (Trial::Off, _) => inside(ui, view, 68.0, |ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
-                icons::camera(ui.painter(), rect, theme::LINE);
+                icons::camera(ui.painter(), rect, theme::line());
                 ui.label(widgets::dim("The camera is off."));
             }),
             (Trial::Failed(why), _) => inside(ui, view, 60.0, |ui| {
-                let why = RichText::new(why).color(theme::PROBLEM);
+                let why = RichText::new(why).color(theme::problem());
                 ui.add(egui::Label::new(why).wrap().halign(Align::Center));
             }),
         }
@@ -379,10 +379,10 @@ fn microphone_card(
 
         // How loud it is: a bar that fills from the left.
         let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
-        ui.painter().rect_filled(bar, 5.0, theme::GROUND);
+        ui.painter().rect_filled(bar, 5.0, theme::ground());
         if level > 0.0 {
             let full = Rect::from_min_size(bar.min, vec2(bar.width() * level, bar.height()));
-            ui.painter().with_clip_rect(full).rect_filled(bar, 5.0, theme::SUN);
+            ui.painter().with_clip_rect(full).rect_filled(bar, 5.0, theme::sun());
         }
 
         ui.add_space(2.0);
@@ -395,7 +395,7 @@ fn microphone_card(
                 ui.label(widgets::dim("It stays off until you turn it on.").size(theme::SMALL));
             }
             (Trial::Failed(why), _) => {
-                ui.add(egui::Label::new(RichText::new(why).color(theme::PROBLEM)).wrap());
+                ui.add(egui::Label::new(RichText::new(why).color(theme::problem())).wrap());
             }
         }
     });
@@ -424,7 +424,7 @@ fn sound_card(
         match chime {
             Chime::Playing => live(ui, "Playing the test sound…"),
             Chime::Failed(why) => {
-                ui.add(egui::Label::new(RichText::new(why).color(theme::PROBLEM)).wrap());
+                ui.add(egui::Label::new(RichText::new(why).color(theme::problem())).wrap());
             }
             Chime::Silent => {
                 let about = "The sound of your PCs plays here, from the next stream on.";
@@ -439,7 +439,7 @@ fn live(ui: &mut Ui, text: &str) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let (dot, _) = ui.allocate_exact_size(vec2(8.0, 18.0), Sense::hover());
-        ui.painter().circle_filled(dot.center(), 4.0, theme::SUN);
+        ui.painter().circle_filled(dot.center(), 4.0, theme::sun());
         ui.label(RichText::new(text).size(theme::SMALL));
     });
 }

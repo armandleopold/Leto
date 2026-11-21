@@ -146,7 +146,7 @@ fn picture_and_sound(ui: &mut Ui, settings: &mut Settings, native: Option<Screen
                 // The rail, then the number, and the rail shows on a card.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     ui.spacing_mut().slider_width = SLIDER_WIDTH - 130.0;
-                    ui.visuals_mut().widgets.inactive.bg_fill = theme::GROUND;
+                    ui.visuals_mut().widgets.inactive.bg_fill = theme::ground();
                     let mut mbps = f64::from(*kbps) / 1000.0;
                     let range =
                         f64::from(BITRATES_KBPS.0) / 1000.0..=f64::from(BITRATES_KBPS.1) / 1000.0;
@@ -232,8 +232,13 @@ fn hands_and_more(ui: &mut Ui, settings: &mut Settings, decodable: Decodable) {
                     });
             });
         }
-        let about = "The pointer moves here at once and the PC stops drawing its own. It keeps the shape of an arrow. Off, the PC draws its pointer in the picture.";
-        row(ui, "This device's pointer", about, SWITCH_WIDTH, |ui| {
+        let about = format!(
+            "The pointer moves here at once and the PC stops drawing its own. It keeps the shape \
+             of an arrow. Off, the PC draws its pointer in the picture. {} switches during a \
+             stream.",
+            Shortcut::Pointer.keys()
+        );
+        row(ui, "This device's pointer", &about, SWITCH_WIDTH, |ui| {
             widgets::switch(ui, &mut settings.local_pointer, "This device's pointer");
         });
         let about = "The left button clicks right on the PC, and the right one left.";
@@ -356,8 +361,8 @@ fn megabits(kbps: u32) -> String {
 /// A group of settings, under its name.
 fn card(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::LINE))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::line()))
         .corner_radius(theme::CARD_RADIUS)
         .inner_margin(egui::Margin::same(18))
         .show(ui, |ui| {
@@ -378,13 +383,13 @@ fn row(ui: &mut Ui, name: &str, about: &str, control_width: f32, control: impl F
     let name = ui.painter().layout(
         name.to_owned(),
         FontId::proportional(theme::BODY),
-        theme::MOON,
+        theme::text(),
         text_width,
     );
     let about = ui.painter().layout(
         about.to_owned(),
         FontId::proportional(theme::SMALL),
-        theme::DIM,
+        theme::dim(),
         text_width,
     );
     let text_height = name.size().y + 2.0 + about.size().y;
@@ -392,8 +397,8 @@ fn row(ui: &mut Ui, name: &str, about: &str, control_width: f32, control: impl F
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let top = rect.top() + (height - text_height) / 2.0;
     let below = top + name.size().y + 2.0;
-    ui.painter().galley(Pos2::new(rect.left(), top), name, theme::MOON);
-    ui.painter().galley(Pos2::new(rect.left(), below), about, theme::DIM);
+    ui.painter().galley(Pos2::new(rect.left(), top), name, theme::text());
+    ui.painter().galley(Pos2::new(rect.left(), below), about, theme::dim());
 
     let place = if beside {
         Rect::from_min_size(

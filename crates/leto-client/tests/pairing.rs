@@ -270,6 +270,91 @@ fn a_paired_pc_stays_paired_at_each_of_its_addresses() {
     assert!(saved.contains("other_addresses"), "{saved}");
 }
 
+/// A PC that Leto only knows from further away, as through a VPN, is found
+/// nearby by its name: this device's system knows where the name leads,
+/// and the PC proves there that it is the one Leto paired with. From then
+/// on the nearest address is the one used.
+#[test]
+fn a_pc_known_from_further_away_is_found_nearby_by_its_name() {
+    // Another address of this machine stands for the one further away.
+    const AFAR: &str = "127.77.0.4";
+    assert!(
+        std::net::UdpSocket::bind((AFAR, 0)).is_ok(),
+        "this machine has no local address {AFAR}: on macOS, add it with \
+         `sudo ifconfig lo0 alias {AFAR}`"
+    );
+    let settings = Settings::new();
+    // The one name every system knows where to find.
+    let host = FakeHost::start_with(Options {
+        name: "localhost".to_owned(),
+        interface: "0.0.0.0".to_owned(),
+        ..Options::default()
+    });
+    let client = settings.open();
+    let added = client.add(&format!("{AFAR}:{}", host.port())).unwrap();
+    let pin = client.new_pin().unwrap();
+    host.type_pin(pin);
+    let paired = client.pair(&added.id, pin).unwrap();
+    assert_eq!(paired.address, AFAR);
+
+    // Nothing announces itself here, and where that cannot even be listened
+    // for the names are asked all the same.
+    let _ = client.discover(Duration::from_secs(2));
+
+    let found = client.hosts();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].address, "127.0.0.1");
+    assert!(found[0].paired);
+    // Both are kept, and the PC is still reached when one is gone.
+    let saved = fs::read_to_string(settings.0.join("client.json")).unwrap();
+    assert!(saved.contains(AFAR) && saved.contains("127.0.0.1"), "{saved}");
+    assert_eq!(client.apps(&paired.id).unwrap().len(), 2);
+}
+
+/// A PC that Leto only knows from further away, as through a VPN, and
+/// whose name leads nowhere, is found by asking the addresses around this
+/// device: what takes a connection there is asked who it is, and the PC
+/// proves that it is the one Leto paired with.
+#[test]
+fn a_pc_known_from_further_away_is_found_among_the_addresses_around() {
+    use leto_client::discovery::Around;
+
+    // Another address of this machine stands for the one further away.
+    const AFAR: &str = "127.77.0.4";
+    assert!(
+        std::net::UdpSocket::bind((AFAR, 0)).is_ok(),
+        "this machine has no local address {AFAR}: on macOS, add it with \
+         `sudo ifconfig lo0 alias {AFAR}`"
+    );
+    let settings = Settings::new();
+    let host = FakeHost::start_on("0.0.0.0");
+    let client = settings.open();
+    let added = client.add(&format!("{AFAR}:{}", host.port())).unwrap();
+
+    // A network of four around this machine, with one address for another
+    // device: 127.0.0.1, where the PC also listens.
+    let around = [Around::new("127.0.0.2".parse().unwrap(), 30).unwrap()];
+
+    // A PC that is not paired is not looked for.
+    client.look_around_on(&around);
+    assert_eq!(client.host(&added.id).unwrap().address, AFAR);
+
+    let pin = client.new_pin().unwrap();
+    host.type_pin(pin);
+    let paired = client.pair(&added.id, pin).unwrap();
+    assert_eq!(paired.address, AFAR);
+
+    client.look_around_on(&around);
+    let found = client.hosts();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].address, "127.0.0.1");
+    assert!(found[0].paired);
+    // Both are kept, and the PC is still reached at either.
+    let saved = fs::read_to_string(settings.0.join("client.json")).unwrap();
+    assert!(saved.contains(AFAR) && saved.contains("127.0.0.1"), "{saved}");
+    assert_eq!(client.apps(&paired.id).unwrap().len(), 2);
+}
+
 /// The address this machine uses on its network, if it has one.
 fn network_address() -> Option<std::net::IpAddr> {
     // Connecting a UDP socket sends nothing. It only picks the outgoing route.
