@@ -2,8 +2,8 @@
 # The emulator check of the pipeline (.github/workflows/android.yml): the
 # APK on an Android emulator, against the stand-in PC on the runner, which
 # the emulator reaches at 10.0.2.2. It installs the app, adds the PC by its
-# address, pairs, starts Desktop, touches the picture and asks the stand-in
-# PC what it received. Screenshots go to shots/, the logs are printed.
+# address, pairs, starts Desktop, touches the picture, presses a gamepad's
+# A and asks the stand-in PC what it received. Screenshots go to shots/, the logs are printed.
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 screen() { python3 apps/leto-android/ci/screen.py "$@"; }
@@ -67,6 +67,8 @@ echo "the stream's screen is $shape"
 width=${shape% *}; height=${shape#* }
 adb shell input tap $((width / 2)) $((height / 2))
 adb shell input swipe $((width / 3)) $((height / 2)) $((width * 2 / 3)) $((height / 2)) 500
+# A gamepad's A, which Android tells of in the window's input events.
+adb shell input gamepad keyevent KEYCODE_BUTTON_A
 sleep 3
 screen shot 9-touched
 echo inputs >&3
@@ -77,6 +79,8 @@ step "What the stand-in PC saw"
 cat host.log
 # The count, not the help text, which names the mouse too.
 grep -q "Mouse" host.log || fail "the PC heard no touch"
+grep -q "GamepadArrived" host.log || fail "the PC heard of no gamepad"
+grep -q "buttons: GamepadButtons(1)" host.log || fail "the PC heard no A"
 done_
 
 step "The app's log"

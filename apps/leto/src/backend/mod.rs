@@ -7,7 +7,11 @@
 // The rules of the web build that need no browser, tested on the desktop.
 #[cfg(any(target_arch = "wasm32", test))]
 mod flow;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+mod gamepad;
+// Android tells of gamepads in the window's input events.
+#[cfg(target_os = "android")]
+#[path = "phone_pads.rs"]
 mod gamepad;
 #[cfg(not(target_arch = "wasm32"))]
 mod leave;

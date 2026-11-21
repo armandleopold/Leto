@@ -114,7 +114,8 @@ pub fn apk() -> Result<(), String> {
     cargo_with(
         &["clippy", "--locked", "--release", "--target", TARGET, "--package", "leto-android"]
             .into_iter()
-            .chain(["--package", "leto", "--", "-D", "warnings"])
+            .chain(["--package", "leto", "--package", "leto-system", "--package", "leto-media"])
+            .chain(["--", "-D", "warnings"])
             .collect::<Vec<_>>(),
         &sdk.compilers(),
     )?;
