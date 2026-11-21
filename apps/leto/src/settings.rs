@@ -13,6 +13,15 @@ pub const RESOLUTIONS: [[u32; 2]; 4] = [[1280, 720], [1920, 1080], [2560, 1440],
 /// The paces offered besides the screen's own, in pictures per second.
 pub const FRAME_RATES: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
 
+/// How much larger the PC draws everything than at its own size, in
+/// percent: the stream then has that many times fewer pixels each way.
+pub const SCALES: [u32; 7] = [100, 125, 150, 175, 200, 250, 300];
+
+/// The scale by default. A phone's screen is small and dense: at its own
+/// pixels, the PC's text is too small to read, and at 200% it is about
+/// the size it is on a laptop held further away.
+pub const DEFAULT_SCALE: u32 = if cfg!(target_os = "android") { 200 } else { 100 };
+
 /// A screen as a PC makes one when the window does not know its own.
 const PLAIN: ScreenMode = ScreenMode { width: 1920, height: 1080, refresh_hz: 60 };
 
@@ -22,6 +31,9 @@ pub struct Settings {
     // The picture.
     /// Width and height of the stream. `None`: those of this screen.
     pub resolution: Option<[u32; 2]>,
+    /// With the screen's own resolution, how much larger the PC draws, in
+    /// percent: a stream of 2856 by 1280 at 200% is one of 1424 by 640.
+    pub scale: u32,
     /// Pictures per second. `None`: as many as this screen shows.
     pub frame_rate: Option<u32>,
     /// Video bit rate, in kilobits per second. `None`: what the size and
@@ -152,6 +164,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             resolution: None,
+            scale: DEFAULT_SCALE,
             frame_rate: None,
             bitrate_kbps: None,
             full_screen: true,
@@ -239,6 +252,7 @@ impl Settings {
     /// The screen a stream is made for. `None` when there is nothing to go
     /// by: the stream is then the engine's default.
     pub fn screen(&self, native: Option<ScreenMode>) -> Option<ScreenMode> {
+        let native = native.map(|native| self.scaled(native));
         if self.resolution.is_none() && self.frame_rate.is_none() {
             return native;
         }
@@ -246,6 +260,24 @@ impl Settings {
         let base = native.unwrap_or(PLAIN);
         let [width, height] = self.resolution.unwrap_or([base.width, base.height]);
         Some(ScreenMode { width, height, refresh_hz: self.frame_rate.unwrap_or(base.refresh_hz) })
+    }
+
+    /// `native` with [`Self::scale`]'s fewer pixels, in the same shape, with
+    /// a width the encoders take (a multiple of 8) and an even height.
+    fn scaled(&self, native: ScreenMode) -> ScreenMode {
+        let scale = u64::from(self.scale.clamp(100, 400));
+        if scale == 100 {
+            return native;
+        }
+        let shrink = |size: u32, step: u64| {
+            let size = u64::from(size) * 100 / scale;
+            (size / step * step).max(step) as u32
+        };
+        ScreenMode {
+            width: shrink(native.width, 8),
+            height: shrink(native.height, 2),
+            refresh_hz: native.refresh_hz,
+        }
     }
 
     /// The bit rate a stream gets when the person leaves it to Leto, in
@@ -358,6 +390,21 @@ mod tests {
         assert_eq!(choices, Choices::default());
         let plain = Settings::default().stream(None, Decodable::SOFTWARE);
         assert_eq!(plain, (None, Choices::default()));
+    }
+
+    #[test]
+    fn a_scale_shrinks_the_screens_own_size_and_keeps_its_shape() {
+        let phone = ScreenMode { width: 2856, height: 1280, refresh_hz: 120 };
+        let at = |scale| Settings { scale, ..Settings::default() }.screen(Some(phone));
+        assert_eq!(at(100), Some(phone));
+        assert_eq!(at(200), Some(ScreenMode { width: 1424, height: 640, refresh_hz: 120 }));
+        assert_eq!(at(150), Some(ScreenMode { width: 1904, height: 852, refresh_hz: 120 }));
+        assert_eq!(at(300), Some(ScreenMode { width: 952, height: 426, refresh_hz: 120 }));
+        // A resolution chosen is the one the PC is asked for.
+        let sized = Settings { scale: 200, resolution: Some([1920, 1080]), ..Settings::default() };
+        assert_eq!(sized.screen(Some(phone)).map(|mode| mode.width), Some(1920));
+        // Without a screen to go by, the stream is the engine's default.
+        assert_eq!(Settings { scale: 200, ..Settings::default() }.screen(None), None);
     }
 
     #[test]
