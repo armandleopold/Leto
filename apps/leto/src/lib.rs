@@ -79,6 +79,8 @@ pub fn run_android(activity: AndroidApp) -> eframe::Result {
         leto_client::logs::start("leto", &settings);
     }
     let settings = settings::load();
+    // Gamepads, which winit would make touches and unknown keys of.
+    winit::platform::android::set_input_hook(leto_system::gamepad::hear);
 
     let mut options = eframe::NativeOptions {
         android_app: Some(activity),

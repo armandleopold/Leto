@@ -34,14 +34,15 @@ serde_json = { workspace = true }
 leto-client = { workspace = true }
 # Decoders and speakers. The web build will use the browser's own.
 leto-media = { workspace = true }
-# Gamepads. On Linux it needs the udev headers (`libudev-dev`) to build.
-gilrs = { version = "0.11", default-features = false, features = ["wgi"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # A stand-in PC to stream from in tests.
 leto-testhost = { workspace = true }
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+# Gamepads. On Linux it needs the udev headers (`libudev-dev`) to build.
+# Android has none: its gamepads come with the window's input events.
+gilrs = { version = "0.11", default-features = false, features = ["wgi"] }
 # Reads what to paste into the app's text fields. The version eframe uses.
 # Android has no clipboard it can reach without Java.
 arboard = { version = "3.6", default-features = false }

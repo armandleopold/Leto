@@ -56,6 +56,8 @@ impl Pads {
         }
     }
 
+    // Android's gamepads are reported whole each time.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn plugged_in(&self) -> Vec<usize> {
         self.slots.iter().flatten().map(|pad| pad.id).collect()
     }

@@ -15,6 +15,8 @@
 pub mod bars;
 #[cfg(target_os = "android")]
 pub mod camera;
+#[cfg(target_os = "android")]
+pub mod gamepad;
 pub mod clipboard;
 pub mod clock;
 pub mod display;
