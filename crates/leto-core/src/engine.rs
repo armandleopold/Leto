@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::{
     input::InputAllowed,
-    model::{AppSummary, HostId, HostSummary, Pin},
+    model::{AppSummary, HostId, HostSummary, Pin, TunnelSummary},
 };
 
 /// Work for the engine.
@@ -49,6 +49,25 @@ pub enum Request {
     Quit(HostId),
     /// Wake a PC that sleeps or is off, and wait for it to answer.
     Wake(HostId),
+    /// Say how Leto's own WireGuard tunnel is doing.
+    Tunnel,
+    /// Use the tunnel that this WireGuard file describes instead of any
+    /// other, and keep it.
+    UseTunnel(WireGuardFile),
+    /// Stop using the tunnel and forget its file.
+    RemoveTunnel,
+}
+
+/// The text of a WireGuard file, as WireGuard apps and servers write it. It
+/// holds a private key, so it never shows in a log.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WireGuardFile(pub String);
+
+impl fmt::Debug for WireGuardFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("WireGuardFile(…)")
+    }
 }
 
 /// News from the engine.
@@ -120,6 +139,12 @@ pub enum Event<Image = ImageFile> {
         host: HostId,
         result: Result<HostSummary, String>,
     },
+    /// How Leto's own WireGuard tunnel is doing, or that it has none.
+    /// `refused` says why a file the person gave was not used.
+    Tunnel {
+        summary: Option<TunnelSummary>,
+        refused: Option<String>,
+    },
     /// Something the person should know that belongs to no screen.
     Notice(String),
 }
@@ -146,6 +171,7 @@ impl<Image> Event<Image> {
             Self::StreamEnded { attempt, why } => Event::StreamEnded { attempt, why },
             Self::QuitEnded { host, result } => Event::QuitEnded { host, result },
             Self::WakeEnded { host, result } => Event::WakeEnded { host, result },
+            Self::Tunnel { summary, refused } => Event::Tunnel { summary, refused },
             Self::Notice(message) => Event::Notice(message),
         }
     }
@@ -479,10 +505,23 @@ mod tests {
                 },
             },
             Request::Leave,
+            Request::Tunnel,
+            Request::UseTunnel(WireGuardFile("[Interface]\nPrivateKey = x\n".into())),
+            Request::RemoveTunnel,
         ];
         for request in requests {
             assert_eq!(there_and_back(&request), request);
         }
+    }
+
+    #[test]
+    fn a_wireguard_file_never_shows_in_a_log() {
+        let request = Request::UseTunnel(WireGuardFile("PrivateKey = secret".into()));
+        let shown = format!("{request:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        // Written down for the bridge, it is all there.
+        let text = serde_json::to_string(&request).expect("written");
+        assert_eq!(text, r#"{"UseTunnel":"PrivateKey = secret"}"#);
     }
 
     #[test]

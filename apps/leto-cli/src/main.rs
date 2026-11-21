@@ -7,6 +7,7 @@
 mod bridge;
 mod pcs;
 mod stream;
+mod tunnel;
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -82,6 +83,13 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         wait: u64,
     },
+    /// Show the WireGuard tunnel Leto runs itself, give it one, or take it
+    /// away. Through it Leto reaches a PC at home from anywhere, with no
+    /// WireGuard app and no administrator rights.
+    Tunnel {
+        #[command(subcommand)]
+        change: Option<TunnelChange>,
+    },
     /// Stream an app for a moment and report what arrived. Shows no picture.
     Play {
         /// Name, address or id of the PC.
@@ -146,6 +154,20 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum TunnelChange {
+    /// Use the tunnel a WireGuard file describes, instead of any other.
+    /// Give Leto a peer of its own: keys that the WireGuard app uses at
+    /// the same time would cut each other off.
+    Use {
+        /// The WireGuard file, as a server or the WireGuard app writes it.
+        /// `-` reads it from the standard input.
+        file: PathBuf,
+    },
+    /// Stop using the tunnel and forget its file.
+    Remove,
+}
+
 #[derive(Serialize)]
 struct About {
     name: &'static str,
@@ -197,6 +219,13 @@ fn run(cli: &Cli) -> Result<String, String> {
         Command::Apps { pc } => pcs::apps(&client(cli)?, pc, json),
         Command::Forget { pc } => pcs::forget(&client(cli)?, pc, json),
         Command::Wake { pc, wait } => pcs::wake(&client(cli)?, pc, *wait, json),
+        Command::Tunnel { change: None } => tunnel::show(&client(cli)?, json),
+        Command::Tunnel { change: Some(TunnelChange::Use { file }) } => {
+            tunnel::use_file(&client(cli)?, file, json)
+        }
+        Command::Tunnel { change: Some(TunnelChange::Remove) } => {
+            tunnel::remove(&client(cli)?, json)
+        }
         Command::Play {
             pc,
             app,

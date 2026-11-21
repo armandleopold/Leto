@@ -13,6 +13,9 @@
 //! The camera of this device goes the other way, to a PC that takes one:
 //! see [`Client::send_camera`].
 //!
+//! A PC away from home can be reached through a WireGuard tunnel Leto runs
+//! itself: see [`Client::use_tunnel`].
+//!
 //! It does not compile for the web: browsers have no sockets. The web client
 //! reaches hosts through a bridge instead.
 
@@ -24,11 +27,13 @@ pub mod service;
 pub mod session;
 pub mod store;
 mod transport;
+mod tunnel;
 pub mod wake;
 
 use std::{
     collections::BTreeMap,
     fmt, io,
+    net::Ipv4Addr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc},
     thread,
@@ -39,7 +44,8 @@ pub use camera::{CameraLink, CameraRefusal, CameraSettings};
 pub use leto_core::{
     engine, input,
     model::{
-        AppSummary, HostId, HostKind, HostSummary, Pin, Reachability, join_address, parse_address,
+        AppSummary, HostId, HostKind, HostSummary, Pin, Reachability, TunnelSummary, join_address,
+        parse_address,
     },
 };
 use moonlight_common::{
@@ -79,6 +85,12 @@ const WAKE_AGAIN: Duration = Duration::from_secs(10);
 /// How many addresses Leto keeps for one PC. The ones that answered least
 /// recently go first.
 const ADDRESSES_KEPT: usize = 4;
+/// How long the direct ways to a PC have to answer before the one through
+/// Leto's tunnel asks: at home, the local network answers within it.
+const TUNNEL_HEAD_START: Duration = Duration::from_millis(150);
+/// The largest video packet through the tunnel, which must carry it whole
+/// with its own headers: what Moonlight uses for a PC far away.
+const TUNNEL_PACKET: u32 = 1024;
 type ProtocolError = moonlight_common::error::Error;
 
 /// What can go wrong, in words meant for the person using Leto.
@@ -130,6 +142,8 @@ pub enum Error {
          the settings of its network card, or this device is on another network"
     )]
     DidNotWake(u64),
+    #[error("the WireGuard file cannot be used: {0}")]
+    Tunnel(String),
 }
 
 /// Something the owner of a PC allows or refuses device by device.
@@ -196,10 +210,21 @@ struct Entry {
     /// The address of its network card, to wake it with. A host tells a
     /// device it is paired with.
     card: Option<wake::Card>,
+    /// The local door that leads to the host through Leto's tunnel, when
+    /// that is the way it answered at.
+    door: Option<Ipv4Addr>,
     /// Kept between runs: paired, or added by hand.
     saved: bool,
     /// The live connection state for this host, once it has answered.
     handle: Option<Arc<Host>>,
+}
+
+impl Entry {
+    /// Where to connect to the host: its door when it answered through
+    /// Leto's tunnel.
+    fn reached_at(&self) -> String {
+        self.door.map_or_else(|| self.summary.address.clone(), |door| door.to_string())
+    }
 }
 
 /// The client engine. One per app.
@@ -212,6 +237,8 @@ pub struct Client {
     /// Held while the file is written: hosts can be saved from several
     /// threads at once.
     saving: Mutex<()>,
+    /// The way through Leto's WireGuard tunnel, if it has one.
+    ways: Arc<tunnel::Ways>,
 }
 
 impl Client {
@@ -264,12 +291,14 @@ impl Client {
                     busy: false,
                     running_app: None,
                     wakeable: card.is_some(),
+                    tunnel: false,
                 };
                 let entry = Entry {
                     summary,
                     addresses,
                     certificate: host.certificate,
                     card,
+                    door: None,
                     saved: true,
                     handle: None,
                 };
@@ -283,6 +312,7 @@ impl Client {
             secret,
             hosts: Arc::new(Mutex::new(hosts)),
             saving: Mutex::new(()),
+            ways: Arc::new(tunnel::Ways::open(directory)),
         })
     }
 
@@ -408,8 +438,14 @@ impl Client {
             let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
             (entry.card.ok_or(Error::CannotWake)?, entry.addresses.clone())
         };
+        // Through Leto's tunnel too, to the PC's addresses at home: a router
+        // there that still knows the card passes the packet on.
+        let doors = addresses.iter().filter_map(|(address, port)| {
+            Some((self.ways.door(address, *port)?.to_string(), *port))
+        });
+        let every = addresses.iter().cloned().chain(doors).collect::<Vec<_>>();
         let sent =
-            wake::send(card, &addresses).map_err(|error| Error::WakeNotSent(error.to_string()))?;
+            wake::send(card, &every).map_err(|error| Error::WakeNotSent(error.to_string()))?;
         log::info!("sent {} the signal to wake up, {sent} times", self.for_log(id));
         Ok(())
     }
@@ -525,6 +561,9 @@ impl Client {
                 handle.server_codec_mode_support()?,
             )
             .map_err(|error| Error::Unsupported(error.to_string()))?;
+        if self.lock().get(id).is_some_and(|entry| entry.door.is_some()) {
+            protocol.packet_size = TUNNEL_PACKET;
+        }
 
         // A fresh key for every stream. The host learns it over the paired
         // HTTPS connection, and both sides encrypt the stream with it.
@@ -566,7 +605,7 @@ impl Client {
                 hosts: Arc::clone(&self.hosts),
                 id: id.clone(),
                 app,
-                address: entry.summary.address.clone(),
+                address: entry.reached_at(),
                 port: entry.summary.port,
                 identifier: self.identifier.clone(),
                 secret: self.secret.clone(),
@@ -598,7 +637,7 @@ impl Client {
         let (address, port, certificate) = {
             let hosts = self.lock();
             let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
-            (entry.summary.address.clone(), entry.summary.port, entry.certificate.clone())
+            (entry.reached_at(), entry.summary.port, entry.certificate.clone())
         };
         camera::LetoApi::of(
             &address,
@@ -611,14 +650,15 @@ impl Client {
 
     /// Closes the app running on a paired host.
     pub fn quit_app(&self, id: &HostId) -> Result<HostSummary, Error> {
-        let (address, port, certificate) = {
+        let (address, reached_at, port, certificate) = {
             let hosts = self.lock();
             let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
-            (entry.summary.address.clone(), entry.summary.port, entry.certificate.clone())
+            let summary = &entry.summary;
+            (summary.address.clone(), entry.reached_at(), summary.port, entry.certificate.clone())
         };
         // Closing needs a handle of its own: the shared one cannot be changed.
         let mut handle = paired_handle(
-            &address,
+            &reached_at,
             port,
             &self.identifier,
             &self.secret,
@@ -639,36 +679,112 @@ impl Client {
         self.persist()
     }
 
-    /// Asks the host at `address` who it is and records the answer.
+    /// The WireGuard tunnel Leto runs itself, if it was given one.
+    pub fn tunnel(&self) -> Option<TunnelSummary> {
+        self.ways.summary()
+    }
+
+    /// Uses the tunnel that `text` describes, the content of a WireGuard file
+    /// as WireGuard apps and servers write it, instead of any other, and
+    /// keeps it. Leto then also reaches each PC through it, at the addresses
+    /// it leads to, and keeps the nearest way. Only Leto's own connections
+    /// go through it, and it needs no administrator rights.
+    ///
+    /// The file's keys should be a peer of their own: the same keys in use
+    /// elsewhere at the same time, as by the WireGuard app on this device,
+    /// would take the tunnel from each other.
+    pub fn use_tunnel(&self, text: &str) -> Result<TunnelSummary, Error> {
+        let summary = self.ways.set(text)?;
+        self.forget_doors();
+        Ok(summary)
+    }
+
+    /// Stops using the tunnel and forgets its file.
+    pub fn remove_tunnel(&self) -> Result<(), Error> {
+        self.ways.remove()?;
+        self.forget_doors();
+        Ok(())
+    }
+
+    /// The hosts reached through doors that closed are asked anew next time.
+    fn forget_doors(&self) {
+        for entry in self.lock().values_mut().filter(|entry| entry.door.is_some()) {
+            entry.door = None;
+            entry.handle = None;
+            entry.summary.tunnel = false;
+        }
+    }
+
+    /// Asks the host at `address` who it is and records the answer. Where
+    /// Leto's tunnel leads there too, both ways at once, and the first to
+    /// answer is kept.
     fn probe(&self, address: &str, port: u16) -> Result<HostSummary, Error> {
-        let answer = self.asker().ask(address, port)?;
-        Ok(self.record(answer))
+        if !self.ways.covers(address) {
+            let answer = self.asker().ask(address, port, None)?;
+            return Ok(self.record(answer));
+        }
+        let mut failure = None;
+        for answer in self.ask_every_way(vec![(address.to_owned(), port)]) {
+            match answer {
+                Ok(answer) => return Ok(self.record(answer)),
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        Err(failure.unwrap_or(Error::Offline))
+    }
+
+    /// Asks at each address at once, directly and, where Leto's tunnel leads,
+    /// through it, each way in a thread of its own. The answers come as they
+    /// arrive.
+    fn ask_every_way(
+        &self,
+        addresses: Vec<(String, u16)>,
+    ) -> mpsc::Receiver<Result<Answer, Error>> {
+        let (sender, answers) = mpsc::channel();
+        for (address, port) in addresses {
+            let ways = if self.ways.covers(&address) { &[false, true][..] } else { &[false][..] };
+            for &through_tunnel in ways {
+                let (asker, sender, address) = (self.asker(), sender.clone(), address.clone());
+                // Not waited for: an address that leads nowhere takes seconds
+                // to give up on, and the nearest one has answered long before.
+                let asking = thread::Builder::new().name("leto: Ask".to_owned()).spawn(move || {
+                    let door = match through_tunnel {
+                        // Opening the tunnel can take a moment: here too.
+                        true => match asker.ways.door(&address, port) {
+                            Some(door) => {
+                                thread::sleep(TUNNEL_HEAD_START);
+                                Some(door)
+                            }
+                            None => return,
+                        },
+                        false => None,
+                    };
+                    // Nobody listens any more once another way answered.
+                    let _ = sender.send(asker.ask(&address, port, door));
+                });
+                if let Err(error) = asking {
+                    log::error!("could not start a worker thread: {error}");
+                }
+            }
+        }
+        answers
     }
 
     /// Asks a known host at every address it was reached at, all at once,
     /// and keeps the first to answer: the nearest way there. That is how a
     /// PC reached through a VPN is still streamed over the local network
-    /// when both lead to it, as Moonlight prefers its address there.
+    /// when both lead to it, as Moonlight prefers its address there. Leto's
+    /// own tunnel starts a moment later, so that it is used only when no
+    /// direct way answers by then.
     fn reach(&self, id: &HostId) -> Result<HostSummary, Error> {
         let (addresses, paired) = {
             let hosts = self.lock();
             let entry = hosts.get(id).ok_or(Error::UnknownHost)?;
             (entry.addresses.clone(), entry.certificate.is_some())
         };
-        let (sender, answers) = mpsc::channel();
-        for (address, port) in addresses {
-            let (asker, sender) = (self.asker(), sender.clone());
-            // Not waited for: an address that leads nowhere takes seconds to
-            // give up on, and the nearest one has answered long before.
-            let asking = thread::Builder::new().name("leto: Ask".to_owned()).spawn(move || {
-                // Nobody listens any more once another address answered.
-                let _ = sender.send(asker.ask(&address, port));
-            });
-            if let Err(error) = asking {
-                log::error!("could not start a worker thread: {error}");
-            }
-        }
-        drop(sender);
+        let answers = self.ask_every_way(addresses);
 
         // An answer that does not prove the pairing is kept for when no
         // address gives a better one.
@@ -696,13 +812,14 @@ impl Client {
             hosts: Arc::clone(&self.hosts),
             identifier: self.identifier.clone(),
             secret: self.secret.clone(),
+            ways: Arc::clone(&self.ways),
         }
     }
 
     /// Keeps what a host answered, and the address it answered at as the one
     /// to use. A saved host that learns an address is saved again.
     fn record(&self, answer: Answer) -> HostSummary {
-        let Answer { mut summary, handle, local, card } = answer;
+        let Answer { mut summary, handle, local, card, door } = answer;
         let learned = {
             let mut hosts = self.lock();
             let entry = hosts.entry(summary.id.clone()).or_insert_with(|| Entry {
@@ -710,6 +827,7 @@ impl Client {
                 addresses: Vec::new(),
                 certificate: None,
                 card: None,
+                door: None,
                 saved: false,
                 handle: None,
             });
@@ -741,6 +859,7 @@ impl Client {
                 );
             }
             entry.summary = summary.clone();
+            entry.door = door;
             entry.handle = Some(Arc::new(handle));
             entry.saved && (entry.addresses != before || entry.card != card_before)
         };
@@ -820,6 +939,7 @@ struct Asker {
     hosts: Arc<Mutex<BTreeMap<HostId, Entry>>>,
     identifier: ClientIdentifier,
     secret: ClientSecret,
+    ways: Arc<tunnel::Ways>,
 }
 
 /// What a host answered, not yet recorded.
@@ -830,13 +950,17 @@ struct Answer {
     local: Option<String>,
     /// The address of its network card, when it tells.
     card: Option<wake::Card>,
+    /// The door through Leto's tunnel it answered at, if that was the way.
+    door: Option<Ipv4Addr>,
 }
 
 impl Asker {
     /// Asks the host at `address` who it is. A host this device is paired
     /// with must prove it still is that host.
-    fn ask(&self, address: &str, port: u16) -> Result<Answer, Error> {
-        let mut handle = Host::new(address.to_owned(), port, None)?;
+    /// Through the tunnel, `door` is where to connect.
+    fn ask(&self, address: &str, port: u16, door: Option<Ipv4Addr>) -> Result<Answer, Error> {
+        let reach_at = door.map_or_else(|| address.to_owned(), |door| door.to_string());
+        let mut handle = Host::new(reach_at.clone(), port, None)?;
         handle.update()?;
         let id = HostId(handle.unique_id()?.to_string());
 
@@ -858,7 +982,7 @@ impl Asker {
                 }
                 Err(error) => {
                     log::warn!("{address} no longer accepts this device's pairing: {error}");
-                    handle = Host::new(address.to_owned(), port, None)?;
+                    handle = Host::new(reach_at, port, None)?;
                     handle.update()?;
                 }
             }
@@ -881,6 +1005,7 @@ impl Asker {
             running_app: Some(handle.current_game()?).filter(|app| *app != 0),
             // Known once recorded.
             wakeable: false,
+            tunnel: door.is_some(),
         };
         // Only to a device it is paired with: the others get zeros.
         let card =
@@ -890,7 +1015,7 @@ impl Asker {
         // further away, for example through a forwarded port.
         let local =
             handle.local_ip().ok().filter(|ip| !ip.is_unspecified()).map(|ip| ip.to_string());
-        Ok(Answer { summary, handle, local, card })
+        Ok(Answer { summary, handle, local, card, door })
     }
 }
 

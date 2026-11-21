@@ -36,6 +36,7 @@ crates/
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
   leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
+  leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
@@ -562,6 +563,76 @@ answer that does not prove it is only taken when no address does better, and
 then shows the PC as not paired, as before. An address where another PC now
 answers adds that PC to the list. The addresses are kept in `client.json`,
 the one that answered last as `address` and the others as `other_addresses`.
+
+## Through a WireGuard tunnel
+
+Away from home, a PC is safest reached through a VPN rather than through
+ports opened on the router. With WireGuard that used to mean the WireGuard
+app, connected by hand before Leto. Leto can now open the tunnel itself:
+the person gives it a WireGuard file, as their server or the WireGuard app
+writes one, in the settings (pasted, or dropped on the window) or with
+`leto-cli tunnel use <file>`. `leto-cli tunnel` shows it, and `tunnel
+remove` takes it away.
+
+The system's WireGuard makes a network card of its own, which takes
+administrator rights, and carries everything. Leto's tunnel
+(`crates/leto-tunnel`) is a UDP socket like any other and carries only
+Leto's own connections to a PC. WireGuard itself is boringtun, which only
+turns packets into packets; TCP inside the tunnel (pairing, the list of
+apps, starting a stream) is smoltcp; UDP, the pictures, the sound and the
+input of a stream, is written by hand to stay out of a stack's way.
+
+The rest of Leto, and moonlight-common-rust, open ordinary sockets. So each
+address of a PC that the tunnel leads to (its `AllowedIPs`) gets a *door*: a
+local address, `127.77.0.1` for the first, that leads through the tunnel to
+that address, port for port. A door listens on the ports a host uses, all
+derived from its base port as Sunshine and Apollo do: what connects to
+`127.77.0.1:47989` reaches `10.8.0.3:47989`. The door is one more way in
+[the race for the nearest](#the-ways-to-a-pc), and starts 150 ms after the
+direct ways: at home the local network still wins, and with the system's
+WireGuard connected the PC is still reached through it. A PC reached
+through Leto's tunnel says "WireGuard" in the list, and its stream asks for
+video packets of 1024 bytes, as Moonlight does for a PC far away, so that
+each fits in a WireGuard packet.
+
+The tunnel opens the first time a PC it leads to is looked for, and tries
+again ten seconds after a failure. The settings show whether the other end
+answers, this device's address in the tunnel and its public key, which the
+server must know. The peer's name is looked up again when it stops
+answering, since an address at home changes.
+
+The file holds a private key. It is kept as `wireguard.conf` beside
+`client.json`, which holds the pairing key, and as private: readable by its
+owner alone on systems with Unix permissions, in the person's profile on
+Windows. Its text never reaches a log, and a browser
+cannot give or remove one through the bridge: the tunnel belongs to the
+device the engine runs on.
+
+What it does not do, and what was never tried:
+
+- It was never tried against a real WireGuard server. Two of Leto's own
+  tunnel ends talk to each other in the tests, and a whole session goes
+  through them to the stand-in host: finding it, pairing, the apps, pictures,
+  sound and input. boringtun is the WireGuard that Cloudflare runs, but
+  nothing here met `wg` or a router's WireGuard.
+- Leto should have a peer of its own on the server. The same keys in use at
+  the same time by the WireGuard app, on this device or another, take the
+  tunnel from each other every few seconds.
+- One file, with one peer, and IPv4 inside the tunnel. `MTU`,
+  `PersistentKeepalive` and a pre-shared key are followed; `DNS`, scripts
+  and routing lines mean nothing to a tunnel that carries Leto alone, and
+  are ignored.
+- Doors need local addresses other than `127.0.0.1`. Windows, Linux and
+  Android have all of `127.0.0.0/8`; macOS and iOS only have `127.0.0.1`
+  unless more are added by hand, so there the tunnel cannot open a door
+  yet.
+- The packet that wakes a PC goes through the tunnel too, to the PC's own
+  address, since a broadcast does not cross WireGuard. That wakes it only
+  while the device the tunnel ends on still knows which card has that
+  address, which routers forget after a while, and never when the tunnel
+  ends on the sleeping PC itself. See below.
+- Not in the browser: the web client reaches PCs through the bridge, which
+  uses the tunnel of the device it runs on.
 
 ## Waking a PC
 

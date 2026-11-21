@@ -170,6 +170,20 @@ impl<S: Shell> Service<S> {
                 shell.tell(Event::Hosts(client.hosts()));
                 shell.tell(Event::WakeEnded { host, result });
             }
+            Request::Tunnel => {
+                shell.tell(Event::Tunnel { summary: client.tunnel(), refused: None })
+            }
+            Request::UseTunnel(file) => {
+                let refused = client.use_tunnel(&file.0).err().map(|error| explain(&error));
+                shell.tell(Event::Tunnel { summary: client.tunnel(), refused });
+                // The PCs it leads to are looked for through it.
+                search(&client, &*shell);
+            }
+            Request::RemoveTunnel => {
+                let refused = client.remove_tunnel().err().map(|error| explain(&error));
+                shell.tell(Event::Tunnel { summary: client.tunnel(), refused });
+                search(&client, &*shell);
+            }
         });
         if let Err(error) = spawned {
             log::error!("could not start a worker thread: {error}");
@@ -477,6 +491,10 @@ fn words(error: &Error) -> String {
             "The PC did not wake up within {seconds} seconds. Check that Wake-on-LAN is on in \
              its BIOS and in the settings of its network card, and that this device is on the \
              same network as the PC."
+        ),
+        Error::Tunnel(why) => format!(
+            "Leto cannot use this WireGuard file: {why}. Paste the whole file the WireGuard \
+             app exports for this device."
         ),
         Error::Discovery(_) | Error::Protocol(_) => sentence(&error.to_string()),
     }

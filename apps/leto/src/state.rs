@@ -5,13 +5,15 @@
 //! work the backend has to do comes out of [`State::take_requests`].
 
 use leto_core::{
-    engine::{Choices, ScreenMode},
+    engine::{Choices, ScreenMode, WireGuardFile},
     input::InputAllowed,
-    model::{AppSummary, HostId, HostSummary, Pin, Reachability},
+    model::{AppSummary, HostId, HostSummary, Pin, Reachability, TunnelSummary},
 };
 
 /// Seconds between two searches while the list of PCs is on screen.
 const SEARCH_EVERY: f64 = 15.0;
+/// Seconds between two looks at the tunnel while the settings show it.
+const TUNNEL_EVERY: f64 = 2.0;
 
 /// Work for the backend, and its news. Covers arrive ready to draw.
 pub use leto_core::engine::{AppsProblem, Request, StreamEnd};
@@ -171,6 +173,26 @@ pub struct AddForm {
     pub error: Option<String>,
 }
 
+/// Leto's own WireGuard tunnel, as the settings show it, and the form that
+/// takes its file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TunnelForm {
+    /// The tunnel as the backend last told it. None without one, and
+    /// before the backend has said.
+    pub summary: Option<TunnelSummary>,
+    /// The backend has said at least once.
+    pub known: bool,
+    /// The form is open: the person is giving a file.
+    pub open: bool,
+    /// The file, as pasted or dropped so far. It holds a private key and
+    /// never shows in a log.
+    pub draft: WireGuardFile,
+    /// The backend is trying the file, or removing the tunnel.
+    pub busy: bool,
+    /// Why the file last given was not used.
+    pub refused: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct State {
     pub screen: Screen,
@@ -184,6 +206,8 @@ pub struct State {
     pub notice: Option<String>,
     /// The PCs asked to wake up, until they answer or Leto gives up.
     pub waking: Vec<HostId>,
+    pub tunnel: TunnelForm,
+    tunnel_asked: f64,
     last_search: f64,
     attempts: u64,
     requests: Vec<Request>,
@@ -200,6 +224,8 @@ impl State {
             add: AddForm::default(),
             notice: None,
             waking: Vec::new(),
+            tunnel: TunnelForm::default(),
+            tunnel_asked: f64::NEG_INFINITY,
             last_search: f64::NEG_INFINITY,
             attempts: 0,
             requests: Vec::new(),
@@ -471,6 +497,34 @@ impl State {
         }
     }
 
+    /// Called every frame while the settings show the tunnel: asks the
+    /// backend how it is doing, now and then.
+    pub fn watch_tunnel(&mut self, now: f64) {
+        if now - self.tunnel_asked >= TUNNEL_EVERY {
+            self.tunnel_asked = now;
+            self.requests.push(Request::Tunnel);
+        }
+    }
+
+    /// The person gave a WireGuard file to use from now on.
+    pub fn use_tunnel(&mut self) {
+        if self.tunnel.busy || self.tunnel.draft.0.trim().is_empty() {
+            return;
+        }
+        self.tunnel.busy = true;
+        self.tunnel.refused = None;
+        self.requests.push(Request::UseTunnel(self.tunnel.draft.clone()));
+    }
+
+    /// The person wants no tunnel any more.
+    pub fn remove_tunnel(&mut self) {
+        if !self.tunnel.busy {
+            self.tunnel.busy = true;
+            self.tunnel.refused = None;
+            self.requests.push(Request::RemoveTunnel);
+        }
+    }
+
     /// Takes in news from the backend. `now` is the app time in seconds.
     pub fn apply(&mut self, event: Event, now: f64) {
         match event {
@@ -593,6 +647,21 @@ impl State {
                     }
                 }
             }
+            Event::Tunnel { summary, refused } => {
+                let form = &mut self.tunnel;
+                form.summary = summary;
+                form.known = true;
+                // An answer to a look changes nothing of a form in use.
+                if form.busy {
+                    form.busy = false;
+                    if refused.is_none() {
+                        // Used, or removed: the key leaves the window.
+                        form.open = false;
+                        form.draft = WireGuardFile(String::new());
+                    }
+                    form.refused = refused;
+                }
+            }
             Event::WakeEnded { host, result } => {
                 if !self.waking.contains(&host) {
                     return;
@@ -637,6 +706,7 @@ mod tests {
             busy: false,
             running_app: None,
             wakeable: false,
+            tunnel: false,
         }
     }
 
@@ -1267,5 +1337,92 @@ mod tests {
         state.apply(Event::Hosts(vec![salon.clone()]), 100.0);
         assert_eq!(devices(&state).camera, Trial::On);
         assert_eq!(state.hosts, [salon]);
+    }
+
+    fn tunnel() -> TunnelSummary {
+        TunnelSummary {
+            address: "10.8.0.4".to_owned(),
+            endpoint: Some("home.example.org:51820".to_owned()),
+            covers: vec!["10.8.0.0/24".to_owned()],
+            public_key: "bGV0bw==".to_owned(),
+            running: false,
+            handshake: None,
+            problem: None,
+        }
+    }
+
+    #[test]
+    fn the_tunnel_is_looked_at_now_and_then_while_the_settings_show_it() {
+        let mut state = state_with(Vec::new());
+        state.watch_tunnel(1.0);
+        state.watch_tunnel(1.5);
+        assert_eq!(state.take_requests(), [Request::Tunnel]);
+        assert!(!state.tunnel.known);
+
+        state.apply(Event::Tunnel { summary: Some(tunnel()), refused: None }, 1.6);
+        assert!(state.tunnel.known);
+        assert_eq!(state.tunnel.summary, Some(tunnel()));
+
+        state.watch_tunnel(1.0 + TUNNEL_EVERY);
+        assert_eq!(state.take_requests(), [Request::Tunnel]);
+    }
+
+    #[test]
+    fn a_wireguard_file_is_given_once_and_leaves_the_window_when_it_is_used() {
+        let mut state = state_with(Vec::new());
+        state.tunnel.open = true;
+        // Nothing to give yet.
+        state.use_tunnel();
+        assert_eq!(state.take_requests(), []);
+
+        state.tunnel.draft = WireGuardFile("[Interface]".to_owned());
+        state.use_tunnel();
+        state.use_tunnel();
+        assert_eq!(
+            state.take_requests(),
+            [Request::UseTunnel(WireGuardFile("[Interface]".to_owned()))]
+        );
+        assert!(state.tunnel.busy);
+
+        // A look that was on its way answers first: the form stays as it is.
+        state.tunnel.busy = false;
+        state.apply(Event::Tunnel { summary: None, refused: None }, 2.0);
+        assert!(state.tunnel.open);
+        assert_eq!(state.tunnel.draft, WireGuardFile("[Interface]".to_owned()));
+
+        state.tunnel.busy = true;
+        state.apply(Event::Tunnel { summary: Some(tunnel()), refused: None }, 2.1);
+        assert!(!state.tunnel.busy);
+        assert!(!state.tunnel.open);
+        assert_eq!(state.tunnel.draft, WireGuardFile::default());
+        assert_eq!(state.tunnel.summary, Some(tunnel()));
+    }
+
+    #[test]
+    fn a_file_that_is_refused_stays_in_the_form_with_the_reason() {
+        let mut state = state_with(Vec::new());
+        state.tunnel.open = true;
+        state.tunnel.draft = WireGuardFile("hello".to_owned());
+        state.use_tunnel();
+        let why = "This is not a WireGuard file.".to_owned();
+        state.apply(Event::Tunnel { summary: None, refused: Some(why.clone()) }, 2.0);
+
+        assert!(state.tunnel.open);
+        assert!(!state.tunnel.busy);
+        assert_eq!(state.tunnel.refused, Some(why));
+        assert_eq!(state.tunnel.draft, WireGuardFile("hello".to_owned()));
+    }
+
+    #[test]
+    fn the_tunnel_is_removed_once_however_often_it_is_asked() {
+        let mut state = state_with(Vec::new());
+        state.apply(Event::Tunnel { summary: Some(tunnel()), refused: None }, 1.0);
+        state.remove_tunnel();
+        state.remove_tunnel();
+        assert_eq!(state.take_requests(), [Request::RemoveTunnel]);
+
+        state.apply(Event::Tunnel { summary: None, refused: None }, 2.0);
+        assert!(!state.tunnel.busy);
+        assert_eq!(state.tunnel.summary, None);
     }
 }

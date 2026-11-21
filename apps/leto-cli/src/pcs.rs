@@ -25,8 +25,10 @@ pub fn list(client: &Client, wait: u64, json: bool) -> Result<String, String> {
     let mut lines =
         vec![format!("{:<20} {:<21} {:<19} {}", "NAME", "ADDRESS", "SOFTWARE", "STATE")];
     for host in &hosts {
+        // Said when Leto reaches it through its own tunnel.
+        let through = if host.tunnel { ", through WireGuard" } else { "" };
         lines.push(format!(
-            "{:<20} {:<21} {:<19} {}",
+            "{:<20} {:<21} {:<19} {}{through}",
             host.name,
             join_address(&host.address, host.port),
             host.kind.name(),

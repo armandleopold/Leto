@@ -220,6 +220,17 @@ fn hear(
         },
         // Everything else is for browsers the gate let in. One that asks
         // without having been welcomed is told what it has to do first.
+        // The tunnel is the one of the device the bridge runs on: a browser
+        // may look at it, not change it.
+        Up::Ask(Request::UseTunnel(_) | Request::RemoveTunnel) if service.is_some() => {
+            log::warn!(
+                "a browser asked to change the WireGuard tunnel, which only this device can"
+            );
+            outbox.say(&Down::News(Event::Notice(
+                "The WireGuard tunnel can only be changed on the device the bridge runs on."
+                    .to_owned(),
+            )));
+        }
         Up::Ask(request) => match service {
             Some(service) => service.ask(in_h264(request)),
             None => outbox.say(&Down::CodeNeeded { refused: false }),

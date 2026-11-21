@@ -70,6 +70,11 @@ Progress:
   network card when pairing and sends it the packet that wakes it when the
   PC is chosen while offline, or with `leto-cli wake`. See
   [architecture.md](architecture.md#waking-a-pc).
+- Done: a WireGuard tunnel inside Leto. Given a WireGuard file, in the
+  settings or with `leto-cli tunnel use`, Leto reaches a PC at home through
+  it by itself, with no WireGuard app and no administrator rights. Never
+  tried against a real WireGuard server. See
+  [architecture.md](architecture.md#through-a-wireguard-tunnel).
 - Later in this step: HDR, surround sound, decoding on the graphics card on
   macOS and Linux, and H.265 and AV1 in the browser.
 

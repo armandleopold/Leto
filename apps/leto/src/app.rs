@@ -235,10 +235,25 @@ impl eframe::App for LetoApp {
                         widgets::page(ui, |ui| match (door, screen) {
                             _ if self.settings_open => {
                                 let native = crate::window::screen(ui.ctx());
-                                let back_to = back_to(&self.state.screen);
+                                let back_to = back_to(&self.state.screen).to_owned();
                                 let decodable = self.backend.decodable();
                                 let settings = &mut self.settings;
-                                if ui::settings::show(ui, settings, native, decodable, back_to) {
+                                // The tunnel is this device's: a browser
+                                // has the one of its bridge, and no say.
+                                let tunnel = self.backend.has_tunnel().then(|| {
+                                    self.state.watch_tunnel(now);
+                                    ui.ctx().request_repaint_after_secs(1.0);
+                                    &mut self.state.tunnel
+                                });
+                                let asked = ui::settings::show(
+                                    ui, settings, native, decodable, tunnel, &back_to,
+                                );
+                                match asked.tunnel {
+                                    Some(ui::tunnel::Asked::Use) => self.state.use_tunnel(),
+                                    Some(ui::tunnel::Asked::Remove) => self.state.remove_tunnel(),
+                                    None => {}
+                                }
+                                if asked.back {
                                     self.settings_open = false;
                                 }
                             }
