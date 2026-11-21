@@ -23,6 +23,10 @@ use crate::stats::Counts;
 /// How long a window that is only glanced at shows each picture.
 const GLANCE: Duration = Duration::from_secs(1);
 
+/// How long pictures may go unshown while newer ones keep waiting behind
+/// them, should the decoder never catch up.
+const CATCH_UP: Duration = Duration::from_millis(100);
+
 /// What a stream leaves for the interface to pick up.
 #[derive(Default)]
 pub struct Outlet {
@@ -99,9 +103,12 @@ impl Outlet {
 /// Copying a picture out of the decoder, putting it on the graphics card
 /// and drawing the window cost about as much as decoding it, so pictures
 /// stay as the decoder gave them, in planes, and the card makes them into
-/// pixels as the window draws them. While the window is only
-/// glanced at, every picture is still decoded, since the next ones build on
-/// it, but only one a second goes further. While the window is out of sight
+/// pixels as the window draws them. A picture that newer ones already wait
+/// behind would be replaced before anyone saw it: it is decoded, since the
+/// next ones build on it, and goes no further, so a decoder slower than the
+/// stream skips pictures instead of falling further and further behind.
+/// While the window is only glanced at, every picture is still decoded, but
+/// only one a second goes further. While the window is out of sight
 /// nothing is decoded at all, and the PC is asked for a keyframe once it is
 /// back. What the PC sends stays the same: nothing in the protocol slows a
 /// PC down during a stream.
@@ -194,7 +201,10 @@ impl VideoSink for Screen {
         }
         // Without a decoder there is nothing to do, and nothing to ask for.
         let Some(decoder) = &mut self.decoder else { return Decoded::Ok };
-        let seen = pace == Pace::Full || self.left.is_none_or(|left| left.elapsed() >= GLANCE);
+        let since_shown = self.left.map(|left| left.elapsed());
+        let behind = frame.waiting > 0 && since_shown.is_some_and(|since| since < CATCH_UP);
+        let seen =
+            !behind && (pace == Pace::Full || since_shown.is_none_or(|since| since >= GLANCE));
         let start = Instant::now();
         let decoded = if seen {
             decoder.decode_planes(frame.data, &mut self.picture)
@@ -204,11 +214,18 @@ impl VideoSink for Screen {
         let took = start.elapsed();
         match decoded {
             Ok(true) if !seen => {
-                self.outlet.count(|counts| counts.decoded(Some(took)));
+                self.outlet.count(|counts| {
+                    counts.decoded(Some(took));
+                    counts.skipped += u64::from(behind);
+                });
                 Decoded::Ok
             }
             Ok(true) => {
-                self.outlet.count(|counts| counts.decoded(Some(took)));
+                let copying = decoder.copying();
+                self.outlet.count(|counts| {
+                    counts.decoded(Some(took));
+                    counts.copied(copying);
+                });
                 self.left = Some(Instant::now());
                 let planes = std::mem::take(&mut self.picture);
                 // A picture nobody got to show is replaced: the newest wins,
@@ -438,5 +455,59 @@ mod tests {
 
         session.stop();
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// A window too slow for its stream: each picture reaches the screen
+    /// later than the PC makes the next.
+    struct Slow(Screen);
+
+    impl VideoSink for Slow {
+        fn setup(&mut self, setup: VideoSetup) {
+            self.0.setup(setup);
+        }
+
+        fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
+            thread::sleep(Duration::from_millis(60));
+            self.0.frame(frame)
+        }
+    }
+
+    #[test]
+    fn a_screen_that_falls_behind_skips_pictures_and_still_shows_some() {
+        let folder = std::env::temp_dir().join(format!("leto-app-behind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let host = FakeHost::start();
+        let client = Client::open(&folder).unwrap();
+        let added = client.add(&host.address()).unwrap();
+        let pin = client.new_pin().unwrap();
+        host.type_pin(pin);
+        let paired = client.pair(&added.id, pin).unwrap();
+
+        let outlet = Arc::new(Outlet::default());
+        let screen = Slow(Screen::new(&outlet, &egui::Context::default(), true));
+        let sound = Counter::default();
+        let settings = StreamSettings {
+            width: 320,
+            height: 180,
+            fps: 30,
+            bitrate_kbps: 2000,
+            virtual_display: false,
+            optimize_games: true,
+            sound_on_pc: false,
+            codecs: Codecs::of(Codec::H264),
+        };
+        let session = client.play(&paired.id, 1, settings, screen, sound.audio(), |_| {}).unwrap();
+        assert!(next_picture(&outlet, Duration::from_secs(10)).is_some(), "no picture arrived");
+        thread::sleep(Duration::from_secs(2));
+        let counts = outlet.counts();
+        // Still shown now and then, while the pictures pile up.
+        let waited = next_picture(&outlet, Duration::from_secs(2)).expect("pictures still come");
+        session.stop();
+        let _ = std::fs::remove_dir_all(&folder);
+
+        assert!(counts.skipped > 5, "pictures newer ones waited behind were shown: {counts:?}");
+        assert!(counts.copied > 5, "too few pictures were shown: {counts:?}");
+        assert_eq!(counts.decoded, counts.copied + counts.skipped, "all decoded: {counts:?}");
+        assert!(waited < Duration::from_millis(500), "a picture came after {waited:?}");
     }
 }

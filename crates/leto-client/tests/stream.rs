@@ -15,7 +15,8 @@ use std::{
 };
 
 use leto_client::{
-    Client, Counter, Ended, Error, HostKind, HostSummary, Permission, StreamSettings, Tally,
+    Client, Counter, Decoded, Ended, Error, HostKind, HostSummary, Permission, StreamSettings,
+    Tally, VideoFrame, VideoSetup, VideoSink,
     engine::{Codec, Codecs},
 };
 use leto_testhost::{CLIENT_MISSED_WITHIN, FakeHost, Options, permission};
@@ -114,6 +115,39 @@ fn a_stream_delivers_pictures_and_sound() {
     assert!(!session.is_over());
     session.stop();
     wait_for("the stream to wind down", || counter.tally().stopped);
+}
+
+/// A screen too slow for the stream: it takes longer over each picture
+/// than the PC takes to make the next.
+struct SlowScreen(mpsc::Sender<usize>);
+
+impl VideoSink for SlowScreen {
+    fn setup(&mut self, _setup: VideoSetup) {}
+
+    fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
+        let _ = self.0.send(frame.waiting);
+        thread::sleep(Duration::from_millis(100));
+        Decoded::Ok
+    }
+}
+
+#[test]
+fn a_screen_that_falls_behind_is_told_how_many_pictures_wait() {
+    let settings = Settings::new();
+    let host = FakeHost::start();
+    let client = settings.open();
+    let paired = pair(&client, &host);
+    let (sender, told) = mpsc::channel();
+
+    let session =
+        client.play(&paired.id, 1, SMALL, SlowScreen(sender), Counter::default().audio(), |_| {});
+    let session = session.unwrap();
+    // Thirty pictures a second, ten taken: they pile up.
+    let waiting: Vec<usize> =
+        (0..10).map(|_| told.recv_timeout(Duration::from_secs(10)).unwrap()).collect();
+    session.stop();
+
+    assert!(waiting[9] >= 5, "pictures pile up behind a slow screen: {waiting:?}");
 }
 
 #[test]

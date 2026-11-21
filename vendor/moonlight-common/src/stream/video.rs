@@ -403,6 +403,12 @@ pub trait VideoDecoder {
     /// it must return DR_NEED_IDR to generate a keyframe.
     fn submit_decode_unit(&mut self, unit: VideoDecodeUnit<&[u8]>) -> DecodeResult;
 
+    /// Leto: how many more pictures wait behind the one submitted next,
+    /// told just before it is, as moonlight-common-c's
+    /// `LiGetPendingVideoFrames` tells. A decoder that falls behind can skip
+    /// showing pictures that newer ones replace before anyone sees them.
+    fn frames_waiting(&mut self, _count: usize) {}
+
     /// This callback notifies the decoder that the stream is stopping. Frames may still be submitted but they may be safely discarded.
     fn stop(&mut self);
 
