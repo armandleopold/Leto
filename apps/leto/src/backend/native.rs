@@ -349,6 +349,11 @@ impl Backend {
         }
     }
 
+    /// The engine here can run a WireGuard tunnel of its own.
+    pub fn has_tunnel(&self) -> bool {
+        true
+    }
+
     /// Open when the engine started, closed for good when it did not.
     pub fn door(&self) -> Door {
         match &self.service {
@@ -371,7 +376,7 @@ impl Backend {
     /// The latest picture of the stream that nobody has shown yet.
     pub fn take_picture(&self) -> Option<Picture> {
         let outlet = self.service.as_ref().ok()?.shell().outlet();
-        outlet.take_picture().map(Picture::Pixels)
+        outlet.take_picture().map(Picture::Planes)
     }
 
     /// The window draws the pictures itself: nothing to place.

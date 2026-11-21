@@ -23,6 +23,8 @@ if-addrs = "0.13"
 leto-core = { workspace = true }
 leto-protocol = { workspace = true }
 leto-return = { workspace = true }
+# The way to a PC through WireGuard, see `tunnel`.
+leto-tunnel = { workspace = true }
 log = { workspace = true }
 mdns-sd = "0.13"
 moonlight-common = { workspace = true }

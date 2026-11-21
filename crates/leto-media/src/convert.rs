@@ -1,6 +1,116 @@
-//! Pictures as decoders give them, turned into pixels a window shows.
+//! Pictures as decoders give them, kept as they are for a graphics card to
+//! turn into pixels, or turned into pixels here.
 
 use crate::Picture;
+
+/// A decoded picture as the decoders give it, before it is turned into
+/// pixels: a plane of brightness, one byte a pixel, then a plane of colour
+/// at half the width and half the height, the two colour bytes of each
+/// square of four pixels side by side. Rows are `stride` bytes apart in
+/// both planes, the width made even. Colours are BT.601 in limited range,
+/// which is what Leto asks hosts to send.
+///
+/// That is less than half the bytes of the pixels, and a graphics card
+/// turns it into pixels as it draws it for next to nothing.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Planes {
+    pub width: usize,
+    pub height: usize,
+    pub stride: usize,
+    pub luma: Vec<u8>,
+    pub chroma: Vec<u8>,
+}
+
+impl Planes {
+    /// Width and height of the plane of colour.
+    pub const fn chroma_size(&self) -> (usize, usize) {
+        (self.width.div_ceil(2), self.height.div_ceil(2))
+    }
+
+    /// Turns the picture into `picture`, reusing its memory.
+    pub fn to_rgba(&self, picture: &mut Picture) -> bool {
+        nv12_to_rgba(&self.as_nv12(), picture)
+    }
+
+    fn as_nv12(&self) -> Nv12<'_> {
+        Nv12 {
+            width: self.width,
+            height: self.height,
+            stride: self.stride,
+            luma: &self.luma,
+            chroma: &self.chroma,
+        }
+    }
+
+    /// Makes room for a picture `width` by `height`, reusing the memory.
+    fn start(&mut self, width: usize, height: usize) {
+        self.width = width;
+        self.height = height;
+        self.stride = width.div_ceil(2) * 2;
+        self.luma.clear();
+        self.chroma.clear();
+        self.luma.reserve(self.stride * height);
+        self.chroma.reserve(self.stride * height.div_ceil(2));
+    }
+
+    /// Copies `source`, leaving out the padding of its rows. Returns `false`,
+    /// and leaves the planes alone, when `source` is too small for the size
+    /// it claims.
+    pub fn copy_nv12(&mut self, source: &Nv12<'_>) -> bool {
+        if !source.fits() {
+            return false;
+        }
+        self.start(source.width, source.height);
+        let (stride, width) = (source.stride, self.stride);
+        for row in 0..source.height {
+            let start = row * stride;
+            self.luma.extend_from_slice(&source.luma[start..start + source.width]);
+            // An odd width gets one more byte, so rows line up with colour.
+            self.luma.resize((row + 1) * width, 16);
+        }
+        for row in 0..source.height.div_ceil(2) {
+            let start = row * stride;
+            self.chroma.extend_from_slice(&source.chroma[start..start + width]);
+        }
+        true
+    }
+
+    /// Copies a picture in I420, as OpenH264 gives it: the two colours in
+    /// planes of their own, rows `strides` bytes apart, brightness first.
+    /// Returns `false`, and leaves the planes alone, when a plane is too
+    /// small for the size.
+    pub fn copy_i420(
+        &mut self,
+        (width, height): (usize, usize),
+        [luma, blue, red]: [&[u8]; 3],
+        [luma_stride, blue_stride, red_stride]: [usize; 3],
+    ) -> bool {
+        let (colour_width, colour_height) = (width.div_ceil(2), height.div_ceil(2));
+        let fits = |plane: &[u8], stride: usize, rows: usize, row: usize| {
+            rows > 0 && stride >= row && plane.len() >= stride * (rows - 1) + row
+        };
+        if width == 0
+            || !fits(luma, luma_stride, height, width)
+            || !fits(blue, blue_stride, colour_height, colour_width)
+            || !fits(red, red_stride, colour_height, colour_width)
+        {
+            return false;
+        }
+        self.start(width, height);
+        let stride = self.stride;
+        for row in 0..height {
+            let start = row * luma_stride;
+            self.luma.extend_from_slice(&luma[start..start + width]);
+            self.luma.resize((row + 1) * stride, 16);
+        }
+        for row in 0..colour_height {
+            let blue = &blue[row * blue_stride..row * blue_stride + colour_width];
+            let red = &red[row * red_stride..row * red_stride + colour_width];
+            self.chroma.extend(blue.iter().zip(red).flat_map(|(&blue, &red)| [blue, red]));
+        }
+        true
+    }
+}
 
 /// A picture in NV12, as decoders on the graphics card give it: a plane of
 /// brightness, one byte a pixel, then a plane of colour at half the width
@@ -142,5 +252,44 @@ mod tests {
         let narrow = Nv12 { width: 9, height: 8, stride: 8, luma: &luma, chroma: &chroma };
         assert!(!nv12_to_rgba(&narrow, &mut picture));
         assert_eq!(picture, Picture::default());
+        let mut planes = Planes::default();
+        assert!(!planes.copy_nv12(&short));
+        assert!(!planes.copy_i420((8, 9), [&luma, &chroma, &chroma], [8, 4, 4]));
+        assert_eq!(planes, Planes::default());
+    }
+
+    #[test]
+    fn planes_keep_a_picture_without_its_padding_and_give_the_same_pixels() {
+        // Three pixels wide, rows of 4 bytes, as in the test above.
+        let luma = [126, 126, 85, 0, 126, 126, 85, 0];
+        let chroma = [128, 128, 103, 203];
+        let source = Nv12 { width: 3, height: 2, stride: 4, luma: &luma, chroma: &chroma };
+        let mut planes = Planes::default();
+        assert!(planes.copy_nv12(&source));
+        // The width made even: one byte more on each row of brightness.
+        assert_eq!((planes.width, planes.height, planes.stride), (3, 2, 4));
+        assert_eq!(planes.luma, [126, 126, 85, 16, 126, 126, 85, 16]);
+        assert_eq!(planes.chroma, chroma);
+        assert_eq!(planes.chroma_size(), (2, 1));
+        let (mut direct, mut through) = (Picture::default(), Picture::default());
+        assert!(nv12_to_rgba(&source, &mut direct));
+        assert!(planes.to_rgba(&mut through));
+        assert_eq!(direct, through);
+    }
+
+    #[test]
+    fn colours_in_planes_of_their_own_end_up_side_by_side() {
+        // Four by two, rows padded to 6 and 3 bytes.
+        let luma = [1, 2, 3, 4, 0, 0, 5, 6, 7, 8, 0, 0];
+        let (blue, red) = ([10, 11, 0], [20, 21, 0]);
+        let mut planes = Planes::default();
+        assert!(planes.copy_i420((4, 2), [&luma, &blue, &red], [6, 3, 3]));
+        assert_eq!((planes.width, planes.height, planes.stride), (4, 2, 4));
+        assert_eq!(planes.luma, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(planes.chroma, [10, 20, 11, 21]);
+        // The memory is reused for the next picture, of another size.
+        assert!(planes.copy_i420((2, 2), [&luma, &blue, &red], [6, 3, 3]));
+        assert_eq!(planes.luma, [1, 2, 5, 6]);
+        assert_eq!(planes.chroma, [10, 20]);
     }
 }

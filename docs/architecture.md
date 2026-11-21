@@ -36,6 +36,7 @@ crates/
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
   leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
+  leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
@@ -116,8 +117,15 @@ crates that know nothing of each other:
    that stream. What arrives is handed over still encoded, to a `VideoSink`
    and an `AudioSink`, on threads that belong to the stream.
 2. The app's backend gives it two sinks built on `leto-media`. The video sink
-   decodes each picture and keeps only the latest one for the window. The
-   audio sink decodes each packet and queues it for the speakers.
+   decodes each picture and keeps only the latest one for the window. A
+   picture that newer ones already wait behind is decoded, since they build
+   on it, but not copied out of the decoder: the engine tells the sink how
+   many wait (a `Leto:` change in the vendored `moonlight-common`, as
+   moonlight-common-c's `LiGetPendingVideoFrames`). A decoder slower than
+   the stream, as at 144 pictures a second in 3840 × 1080, then skips
+   pictures instead of falling further and further behind, which the mouse
+   pointer shows first; one still goes through every 100 ms. The audio sink
+   decodes each packet and queues it for the speakers.
 3. The window picks the latest picture up when it redraws and shows it as
    large as fits, undistorted.
 
@@ -161,7 +169,8 @@ bit rate (from 0.5 to 150 Mbit/s, as in Moonlight), no screen of its own on
 the PC, the PC's speakers playing too, no optimized game settings, the app
 closed on the PC when the stream is left, no full screen when it connects,
 V-Sync off, when the system's shortcuts go to the PC (always, in full screen
-only, never), the mouse buttons swapped, the wheel reversed, A and B and X
+only, never), the PC's pointer drawn in the picture instead of this device's,
+the mouse buttons swapped, the wheel reversed, A and B and X
 and Y swapped on gamepads, Leto silent in the background, the statistics
 from the start, decoding on the processor only, and a codec of their own. What the PC must know travels with the request
 (`Request::Play::choices`, `StreamSettings::chosen`); the rest stays in the
@@ -175,14 +184,16 @@ shortcuts, which it does not let a page have.
 
 The window fills the screen as the stream connects, and gives it back when
 the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
-Moonlight: what the PC sends, what arrives, what is lost, decoded and shown
-per second, how long a picture takes to decode and to make on the PC, and the
-time to the PC and back (`stats.rs`, counted by the backend).
+Moonlight: what the PC sends, what arrives, what is lost, decoded, skipped to
+keep up and shown per second, how long a picture takes to decode, how much of
+that goes to copying it out of the decoder (from the graphics card, waiting
+for the card included), how long the PC takes to make it, and the time to the
+PC and back (`stats.rs`, counted by the backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones
-build on it, but turns only one a second into pixels, which is most of the
-work; the window then draws once a second. While the window is out of sight
+build on it, but hands only one a second on to be drawn, which is most of
+the work; the window then draws once a second. While the window is out of sight
 nothing is decoded, and the PC is asked for a keyframe when it is back. What
 the PC sends stays the same: the protocol has no way to slow a PC down during
 a stream, and Moonlight does not either (it can mute the sound when it loses
@@ -210,8 +221,22 @@ What this first version does, and what it leaves for later:
   Store's video extensions bring H.265 and AV1. What this device decodes is
   found once, in the background as Leto starts: each decoder is started at
   1280 × 720, and the card has to name the codec among its decoder profiles to
-  count as decoding it. The decoded picture comes back from the card in NV12
-  and is turned into RGB on the processor (`convert.rs`).
+  count as decoding it. The decoded picture comes back from the card in NV12,
+  as planes of brightness and colour.
+- Decoded pictures stay in planes (`leto_media::Planes`), from Windows'
+  decoders and OpenH264 alike, and go back to the graphics card as they are
+  when the window draws: `leto_media::Card` puts them in two textures and a
+  small program on the card turns them into pixels, BT.601 in limited range
+  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). That
+  is less than half the bytes of the pixels, and the processor no longer
+  spends 6 ms a picture at 1920 × 1200 making pixels. It needs OpenGL 3.1 or
+  OpenGL ES 3: where the card offers less, or turns the program down, the
+  processor makes the pixels as before. With V-Sync on, each drawing first
+  waits until the card is done with the one before (`glFinish`), so that a
+  picture never waits behind others to reach the screen: the driver would
+  otherwise queue two or three, each a refresh later. The picture still goes
+  from the card to memory and back: drawing it from where the decoder left
+  it would need Direct3D and OpenGL to share it.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.
@@ -229,7 +254,10 @@ What this first version does, and what it leaves for later:
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
-  drifts behind the picture.
+  drifts behind the picture. A PC sends sound all the time, silence included,
+  so a stream that has had none for five seconds, or whose first second of
+  sound did not decode, shows "No sound" in its bar and says why in the log,
+  as speakers that did not open do.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
@@ -260,6 +288,25 @@ passes them on.
   the pointer of this device is on the picture. The "game mouse" sends how
   far the mouse moved instead, with the pointer kept inside the window, for
   games that turn the view with it.
+- **The pointer on the picture is this device's own**, which moves the
+  moment the mouse does, rather than the PC's, which shows a round trip and
+  a picture later. Sunshine, Apollo and Foundation Sunshine leave their
+  pointer out of the pictures when they hear Ctrl+Alt+Shift+N, and put it
+  back the next time: Leto sends that as the stream connects
+  (`Controls::switch_pc_pointer`), and again for the game mouse, which has
+  no pointer here, and before leaving, closing the window included (it
+  waits `CLOSES_AFTER_LEAVING` for that). Only the PC's pictures change, not
+  its own screen. The switch is the host's, global and never reset by
+  itself, so Leto remembers for each PC whether it hides its pointer, until
+  Leto quits: a stream that ends without being left, or a host that
+  restarts, can leave the two out of step, with two pointers or none, and
+  Ctrl+Alt+Shift+N, which Leto keeps no shortcut on, puts them back in step.
+  A PC that refuses the keyboard or the mouse, or GameStream, draws its own
+  pointer, and so does a person who turns "This device's pointer" off. The
+  pointer here is an arrow whatever the PC shows: the protocol does not say
+  the PC's shapes. Leaving lets the last keys go out first (`LAST_WORDS` in
+  `Session::stop`): stopping the stream drops what still waits to be sent,
+  which the stand-in host showed for almost half of the streams left.
 - **While a stream is connected the keyboard is the PC's.** The app takes
   the keys away from egui before it acts on them (`raw_input_hook`), Tab and
   Escape included. Some combinations stay on this device, as in Moonlight,
@@ -629,6 +676,76 @@ answer that does not prove it is only taken when no address does better, and
 then shows the PC as not paired, as before. An address where another PC now
 answers adds that PC to the list. The addresses are kept in `client.json`,
 the one that answered last as `address` and the others as `other_addresses`.
+
+## Through a WireGuard tunnel
+
+Away from home, a PC is safest reached through a VPN rather than through
+ports opened on the router. With WireGuard that used to mean the WireGuard
+app, connected by hand before Leto. Leto can now open the tunnel itself:
+the person gives it a WireGuard file, as their server or the WireGuard app
+writes one, in the settings (pasted, or dropped on the window) or with
+`leto-cli tunnel use <file>`. `leto-cli tunnel` shows it, and `tunnel
+remove` takes it away.
+
+The system's WireGuard makes a network card of its own, which takes
+administrator rights, and carries everything. Leto's tunnel
+(`crates/leto-tunnel`) is a UDP socket like any other and carries only
+Leto's own connections to a PC. WireGuard itself is boringtun, which only
+turns packets into packets; TCP inside the tunnel (pairing, the list of
+apps, starting a stream) is smoltcp; UDP, the pictures, the sound and the
+input of a stream, is written by hand to stay out of a stack's way.
+
+The rest of Leto, and moonlight-common-rust, open ordinary sockets. So each
+address of a PC that the tunnel leads to (its `AllowedIPs`) gets a *door*: a
+local address, `127.77.0.1` for the first, that leads through the tunnel to
+that address, port for port. A door listens on the ports a host uses, all
+derived from its base port as Sunshine and Apollo do: what connects to
+`127.77.0.1:47989` reaches `10.8.0.3:47989`. The door is one more way in
+[the race for the nearest](#the-ways-to-a-pc), and starts 150 ms after the
+direct ways: at home the local network still wins, and with the system's
+WireGuard connected the PC is still reached through it. A PC reached
+through Leto's tunnel says "WireGuard" in the list, and its stream asks for
+video packets of 1024 bytes, as Moonlight does for a PC far away, so that
+each fits in a WireGuard packet.
+
+The tunnel opens the first time a PC it leads to is looked for, and tries
+again ten seconds after a failure. The settings show whether the other end
+answers, this device's address in the tunnel and its public key, which the
+server must know. The peer's name is looked up again when it stops
+answering, since an address at home changes.
+
+The file holds a private key. It is kept as `wireguard.conf` beside
+`client.json`, which holds the pairing key, and as private: readable by its
+owner alone on systems with Unix permissions, in the person's profile on
+Windows. Its text never reaches a log, and a browser
+cannot give or remove one through the bridge: the tunnel belongs to the
+device the engine runs on.
+
+What it does not do, and what was never tried:
+
+- It was never tried against a real WireGuard server. Two of Leto's own
+  tunnel ends talk to each other in the tests, and a whole session goes
+  through them to the stand-in host: finding it, pairing, the apps, pictures,
+  sound and input. boringtun is the WireGuard that Cloudflare runs, but
+  nothing here met `wg` or a router's WireGuard.
+- Leto should have a peer of its own on the server. The same keys in use at
+  the same time by the WireGuard app, on this device or another, take the
+  tunnel from each other every few seconds.
+- One file, with one peer, and IPv4 inside the tunnel. `MTU`,
+  `PersistentKeepalive` and a pre-shared key are followed; `DNS`, scripts
+  and routing lines mean nothing to a tunnel that carries Leto alone, and
+  are ignored.
+- Doors need local addresses other than `127.0.0.1`. Windows, Linux and
+  Android have all of `127.0.0.0/8`; macOS and iOS only have `127.0.0.1`
+  unless more are added by hand, so there the tunnel cannot open a door
+  yet.
+- The packet that wakes a PC goes through the tunnel too, to the PC's own
+  address, since a broadcast does not cross WireGuard. That wakes it only
+  while the device the tunnel ends on still knows which card has that
+  address, which routers forget after a while, and never when the tunnel
+  ends on the sleeping PC itself. See below.
+- Not in the browser: the web client reaches PCs through the bridge, which
+  uses the tunnel of the device it runs on.
 
 ## Waking a PC
 

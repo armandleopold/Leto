@@ -55,7 +55,10 @@ Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
 
   --name NAME   The name the host gives itself (default: Salon)
   --id ID       The unique id it reports (default: a fixed one)
-  --port PORT   The port to listen on (default: any free port)
+  --port PORT   The port to listen on (default: any free port). The other
+                ports are then counted from it, as Sunshine and Apollo do:
+                HTTPS 5 below, RTSP 21 above, pictures, control and sound
+                9, 10 and 11 above, the camera 13 above
   --announce    Listen on every interface and announce the host on the
                 network, so that clients find it on their own
   --apollo      Behave as an Apollo host that lets a newly paired device
@@ -100,9 +103,12 @@ fn main() -> ExitCode {
         let parsed = match arg.as_str() {
             "--name" => value().map(|name| options.name = name),
             "--id" => value().map(|id| options.id = id),
-            "--port" => value()
-                .and_then(|port| port.parse().map_err(|_| ()))
-                .map(|port| options.port = port),
+            "--port" => value().and_then(|port| port.parse().map_err(|_| ())).map(|port| {
+                options.port = port;
+                // A port asked for by number brings the others with it, as
+                // on a real host: a firewall or a tunnel can name them.
+                options.real_ports = true;
+            }),
             "--announce" => {
                 announce = true;
                 Ok(())

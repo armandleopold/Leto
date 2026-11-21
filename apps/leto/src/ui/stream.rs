@@ -3,18 +3,18 @@
 
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order, Pos2, Rect,
-    RichText, Sense, Stroke, TextFormat, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2,
+    RichText, Sense, Stroke, TextFormat, TextureHandle, Ui, UiBuilder, Vec2,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
 use std::time::Duration;
 
-use leto_core::{engine::Codec, input::Input};
+use leto_core::{engine::Codec, input::Input, model::HostId};
 
-use super::{frame, icons, widgets};
+use super::{card::OnCard, frame, icons, widgets};
 use crate::{
     backend::{Filming, Picture},
-    input::{Controls, Shortcut},
+    input::{Controls, Shortcut, hides_its_pointer},
     settings::Settings,
     state::{Cam, Mic, State, StreamView},
     stats::{Counts, Rates},
@@ -67,8 +67,13 @@ enum KeyStroke {
 }
 
 /// What the pictures of the stream are shown on.
+// A browser shows them behind the window, and never draws them.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Surface {
-    /// The window draws them.
+    /// The graphics card turns them into pixels as the window draws them,
+    /// this large.
+    Card(OnCard, [usize; 2]),
+    /// The window draws them from pixels.
     Texture(TextureHandle),
     /// The backend shows them behind the window, this large: the window
     /// leaves a hole.
@@ -80,7 +85,7 @@ impl Surface {
     fn size(&self) -> [usize; 2] {
         match self {
             Self::Texture(texture) => texture.size(),
-            Self::Behind(size) => *size,
+            Self::Card(_, size) | Self::Behind(size) => *size,
         }
     }
 }
@@ -130,6 +135,14 @@ pub struct Player {
     arrived: Option<(u64, f64)>,
     /// The statistics over the picture, while they show.
     statistics: Option<Statistics>,
+    /// The PCs that leave their own pointer out of the pictures, because
+    /// Leto asked them to while this device's pointer shows instead. A PC
+    /// keeps doing so until asked again, even after a stream that ended
+    /// without Leto leaving it, so this outlives the stream.
+    hiding_pointer: Vec<HostId>,
+    /// The window is closing: the stream is left without closing the app
+    /// on the PC, whatever the settings say.
+    closing: bool,
 }
 
 /// What the statistics show, and what they were worked out from.
@@ -161,19 +174,36 @@ enum Told {
 }
 
 impl Player {
-    /// Shows `picture` from now on.
-    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture) {
-        match (picture, &mut self.surface) {
-            (Picture::Pixels(pixels), Some(Surface::Texture(texture))) => {
-                texture.set(pixels, TextureOptions::LINEAR);
+    /// Shows `picture` from now on, on `card` when the window has one that
+    /// works.
+    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture, card: Option<&OnCard>) {
+        match picture {
+            #[cfg(not(target_arch = "wasm32"))]
+            Picture::Planes(planes) => {
+                let size = [planes.width, planes.height];
+                if let Some(card) = card.filter(|card| card.works()) {
+                    card.show(planes);
+                    self.surface = Some(Surface::Card(card.clone(), size));
+                } else {
+                    self.pixels(ctx, pixels(&planes));
+                }
                 self.shown += 1;
             }
-            (Picture::Pixels(pixels), _) => {
-                let texture = ctx.load_texture("stream", pixels, TextureOptions::LINEAR);
-                self.surface = Some(Surface::Texture(texture));
-                self.shown += 1;
-            }
-            (Picture::Behind(size), _) => self.surface = Some(Surface::Behind(size)),
+            Picture::Behind(size) => self.surface = Some(Surface::Behind(size)),
+        }
+        // A browser has no card, and draws nothing: the page shows the
+        // pictures.
+        let _ = (ctx, card);
+    }
+
+    /// Shows `pixels` from now on, drawn by the window.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pixels(&mut self, ctx: &egui::Context, pixels: egui::ColorImage) {
+        if let Some(Surface::Texture(texture)) = &mut self.surface {
+            texture.set(pixels, egui::TextureOptions::LINEAR);
+        } else {
+            let texture = ctx.load_texture("stream", pixels, egui::TextureOptions::LINEAR);
+            self.surface = Some(Surface::Texture(texture));
         }
     }
 
@@ -226,7 +256,19 @@ impl Player {
             window::keep_pointer(ctx, false);
         }
         window::keep_keyboard(false);
-        *self = Self::default();
+        let hiding_pointer = std::mem::take(&mut self.hiding_pointer);
+        *self = Self { hiding_pointer, ..Self::default() };
+    }
+
+    /// Leaves the stream at the next frame, because the window is closing.
+    pub fn leave_to_close(&mut self) {
+        self.closing = true;
+    }
+
+    /// Whether the PC of `view` leaves its pointer out of the pictures, as
+    /// far as Leto knows.
+    fn pc_hides_pointer(&self, view: &StreamView) -> bool {
+        self.hiding_pointer.contains(&view.host.id)
     }
 }
 
@@ -264,7 +306,8 @@ pub fn show(
     let window = ui.max_rect();
     let (now, focused) = ui.input(|input| (input.time, input.focused));
     let fills_screen = window::fills_screen(ui.ctx());
-    let mut asked = Asked::default();
+    let closing = std::mem::take(&mut player.closing);
+    let mut asked = Asked { leave: closing, ..Asked::default() };
     player.controls.choose(settings.swap_mouse_buttons, settings.reverse_scroll);
     // Once connected, every key is the PC's, the system's shortcuts too
     // where the system lets go of them and the person did not choose
@@ -286,6 +329,10 @@ pub fn show(
         let size = surface.size();
         let place = fit(vec2(size[0] as f32, size[1] as f32), window);
         match surface {
+            Surface::Card(card, _) => {
+                ui.painter().rect_filled(window, 0, Color32::BLACK);
+                ui.painter().add(card.paint(place));
+            }
             Surface::Texture(texture) => {
                 ui.painter().rect_filled(window, 0, Color32::BLACK);
                 egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
@@ -463,9 +510,27 @@ pub fn show(
         player.filled_screen = !fills_screen;
         window::fill_screen(ui.ctx(), !fills_screen);
     }
+    // This device's pointer shows on the picture instead of the PC's, where
+    // the PC can leave its own out and hears both keyboard and mouse. The
+    // PC draws its own again for the game mouse, which has no pointer here,
+    // and before the stream is left.
+    let hide = settings.local_pointer
+        && hides_its_pointer(view.host.kind)
+        && view.input.keyboard
+        && view.input.mouse
+        && !player.game_mouse
+        && !asked.leave;
+    if view.connected && hide != player.pc_hides_pointer(view) {
+        player.controls.switch_pc_pointer();
+        if hide {
+            player.hiding_pointer.push(view.host.id.clone());
+        } else {
+            player.hiding_pointer.retain(|host| *host != view.host.id);
+        }
+    }
     if asked.leave {
         player.controls.release_all();
-        state.leave_stream(settings.quit_on_leave);
+        state.leave_stream(settings.quit_on_leave && !closing);
     }
     player.controls.take()
 }
@@ -623,8 +688,10 @@ fn overlay(
     if !view.connected || !has_picture {
         return;
     }
-    if game_mouse || (pointer.is_some() && !on_bar && !player.released) {
-        // The PC draws its own pointer in the picture.
+    let pc_draws_pointer = !player.pc_hides_pointer(view);
+    if game_mouse || (pointer.is_some() && !on_bar && !player.released && pc_draws_pointer) {
+        // The PC draws its own pointer in the picture, or the game mouse
+        // has none.
         ui.ctx().set_cursor_icon(CursorIcon::None);
     }
     if pointing.is_some() && opacity == 0.0 && idle < GRIP_STAYS {
@@ -724,6 +791,12 @@ fn statistics_lines(
             None => per_second(rates.decoded),
         },
     ));
+    if let Some(took) = rates.copying_ms {
+        lines.push(("Copied out", format!("{took:.1} ms of that for each picture shown")));
+    }
+    if rates.skipped > 0.0 {
+        lines.push(("Skipped", format!("{}, to keep up", per_second(rates.skipped))));
+    }
     lines.push(("Shown", per_second(rates.shown)));
     if let Some(took) = rates.host_ms {
         lines.push(("On the PC", format!("{took:.1} ms to capture and encode")));
@@ -1158,6 +1231,19 @@ fn note(view: &StreamView, hands: Hands) -> Note {
     Note { text, problem: !(allowed.keyboard && allowed.mouse) }
 }
 
+/// `planes` made into pixels on the processor, for a window without a card
+/// that draws them.
+#[cfg(not(target_arch = "wasm32"))]
+fn pixels(planes: &leto_media::Planes) -> egui::ColorImage {
+    let mut picture = leto_media::Picture::default();
+    if !planes.to_rgba(&mut picture) {
+        // Planes the decoder made are never too small for their size.
+        log::debug!("a picture too small for its size was left out");
+    }
+    // Pictures are opaque, so plain and premultiplied are the same.
+    egui::ColorImage::from_rgba_premultiplied([picture.width, picture.height], &picture.rgba)
+}
+
 /// Where a picture of size `picture` goes in `window`: as large as fits,
 /// undistorted and centred, with black around it.
 fn fit(picture: Vec2, window: Rect) -> Rect {
@@ -1182,11 +1268,12 @@ fn around(place: Rect, window: Rect) -> [Rect; 4] {
 mod tests {
     use egui::pos2;
     use leto_core::{
-        input::InputAllowed,
+        input::{InputAllowed, Key as PcKey},
         model::{AppSummary, HostId, HostKind, HostSummary, Reachability},
     };
 
     use super::*;
+    use crate::settings::Capture;
 
     #[test]
     fn a_key_pressed_that_reaches_the_window_while_the_stream_keeps_them_slipped_past() {
@@ -1258,6 +1345,7 @@ mod tests {
                 busy: true,
                 running_app: Some(1),
                 wakeable: false,
+                tunnel: false,
             },
             app: AppSummary { id: 1, title: "Desktop".into(), hdr: false },
             attempt: 1,
@@ -1266,6 +1354,122 @@ mod tests {
             input,
             microphone: Mic::Off,
             camera: Cam::Off,
+        }
+    }
+
+    /// Settings that leave the window and the system's keys alone.
+    fn quiet(local_pointer: bool) -> Settings {
+        Settings {
+            local_pointer,
+            full_screen: false,
+            capture_shortcuts: Capture::Never,
+            ..Settings::default()
+        }
+    }
+
+    /// Draws one frame of the stream screen with the pointer at `pointer`,
+    /// and returns what the PC hears and the pointer this device shows.
+    fn frame(
+        ctx: &egui::Context,
+        view: &StreamView,
+        player: &mut Player,
+        settings: &Settings,
+        pointer: Option<Pos2>,
+    ) -> (Vec<Input>, CursorIcon) {
+        let mut state = State::new();
+        let status = Status {
+            sound_problem: None,
+            picture_problem: None,
+            voice: None,
+            film: None,
+            counts: None,
+            round_trip: None,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(960.0, 540.0))),
+            events: pointer.map(Event::PointerMoved).into_iter().collect(),
+            ..Default::default()
+        };
+        let mut heard = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| {
+            heard = show(ui, &mut state, view, player, settings, status);
+        });
+        output.textures_delta.clear();
+        (heard, output.platform_output.cursor_icon)
+    }
+
+    /// How many times the PC was asked to switch its pointer.
+    fn switches(heard: &[Input]) -> usize {
+        let n = PcKey::letter('N');
+        heard
+            .iter()
+            .filter(|input| matches!(input, Input::Key { key, down: true, .. } if Some(*key) == n))
+            .count()
+    }
+
+    #[test]
+    fn the_pc_hides_its_pointer_while_this_devices_pointer_shows() {
+        let ctx = egui::Context::default();
+        let settings = quiet(true);
+        let view = view(InputAllowed::ALL);
+        let mut player = Player::default();
+        player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+        let middle = Some(pos2(480.0, 270.0));
+
+        // Connected: the PC is asked once, and this device's pointer shows
+        // from the next frame.
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, middle).0), 1);
+        assert!(player.pc_hides_pointer(&view));
+        let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+        assert_eq!(switches(&heard), 0);
+        assert_eq!(shown, CursorIcon::Default);
+        assert!(
+            heard.iter().any(|input| matches!(input, Input::MousePosition { .. })),
+            "the PC still hears where the pointer goes: {heard:?}"
+        );
+
+        // The game mouse has no pointer here: the PC draws its own again,
+        // and hides it once more when the pointer is back.
+        player.game_mouse = true;
+        let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+        assert_eq!(switches(&heard), 1);
+        assert_eq!(shown, CursorIcon::None);
+        player.game_mouse = false;
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, middle).0), 1);
+
+        // A stream that ended without leaving it left the PC hiding its
+        // pointer: the next stream to that PC does not switch it back on.
+        player.clear(&ctx);
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, None).0), 0);
+
+        // Leaving, here because the window closes, has the PC draw it again.
+        player.leave_to_close();
+        assert_eq!(switches(&frame(&ctx, &view, &mut player, &settings, None).0), 1);
+        assert!(!player.pc_hides_pointer(&view));
+    }
+
+    #[test]
+    fn the_pc_draws_its_pointer_where_it_cannot_leave_it_out_or_nobody_wants_it_to() {
+        let ctx = egui::Context::default();
+        let no_keyboard = InputAllowed { keyboard: false, ..InputAllowed::ALL };
+        let no_mouse = InputAllowed { mouse: false, ..InputAllowed::ALL };
+        for (kind, input, local_pointer) in [
+            (HostKind::GameStream, InputAllowed::ALL, true),
+            (HostKind::Apollo, no_keyboard, true),
+            (HostKind::Apollo, no_mouse, true),
+            (HostKind::Sunshine, InputAllowed::ALL, false),
+        ] {
+            let mut view = view(input);
+            view.host.kind = kind;
+            let mut player = Player::default();
+            player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+            let settings = quiet(local_pointer);
+            let middle = Some(pos2(480.0, 270.0));
+            for _ in 0..2 {
+                let (heard, shown) = frame(&ctx, &view, &mut player, &settings, middle);
+                assert_eq!(switches(&heard), 0, "{kind:?}, {input:?}");
+                assert_eq!(shown, CursorIcon::None, "{kind:?}, {input:?}");
+            }
         }
     }
 
@@ -1337,14 +1541,20 @@ mod tests {
         let lines = statistics_lines(&statistics, Some(counts), None);
         assert_eq!(lines.last(), Some(&("Arrived", "Counting…".to_owned())));
 
-        for _ in 0..144 {
+        for picture in 0..144 {
             counts.received(20_000, Some(0), Some(Duration::from_millis(5)));
             counts.decoded(Some(Duration::from_millis(9)));
+            // Every other one waits behind the next and is skipped.
+            if picture % 2 == 0 {
+                counts.copied(Duration::from_millis(7));
+            } else {
+                counts.skipped += 1;
+            }
         }
         // Not a second yet: nothing changes.
-        statistics.update(Some(counts), 140, 10.5);
+        statistics.update(Some(counts), 70, 10.5);
         assert_eq!(statistics.rates, None);
-        statistics.update(Some(counts), 144, 11.0);
+        statistics.update(Some(counts), 72, 11.0);
         let lines = statistics_lines(&statistics, Some(counts), Some(Duration::from_millis(3)));
         let said: Vec<_> = lines.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         assert_eq!(
@@ -1355,7 +1565,9 @@ mod tests {
                 "Arrived: 144.0 per second, 23.0 Mbit/s".to_owned(),
                 "Lost on the way: 0 in all, 0.0 % lately".to_owned(),
                 "Decoded: 144.0 per second, 9.0 ms each".to_owned(),
-                "Shown: 144.0 per second".to_owned(),
+                "Copied out: 7.0 ms of that for each picture shown".to_owned(),
+                "Skipped: 72.0 per second, to keep up".to_owned(),
+                "Shown: 72.0 per second".to_owned(),
                 "On the PC: 5.0 ms to capture and encode".to_owned(),
                 "Network: 3 ms there and back".to_owned(),
             ]
