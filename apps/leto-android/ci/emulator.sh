@@ -84,7 +84,10 @@ grep -q "buttons: GamepadButtons(1)" host.log || fail "the PC heard no A"
 done_
 
 step "The app's log"
-adb logcat -d -s RustStdoutStderr:* main:* AndroidRuntime:E DEBUG:* | tail -400
+adb logcat -d -s RustStdoutStderr:* main:* AndroidRuntime:E DEBUG:* > app.log
+tail -400 app.log
+# The emulator's decoders stand in for a phone's video hardware.
+grep -E "is decoded (by|on the)" app.log || fail "the app never said who decodes"
 done_
 
 # The screenshots are kept by the workflow, and printed small too, for
