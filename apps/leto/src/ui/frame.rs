@@ -19,6 +19,8 @@ pub const OWN: bool = matches!(Platform::current(), Some(Platform::Windows));
 /// How wide a button of the frame is at the top of the window, as Windows
 /// makes its own.
 pub const BUTTON_WIDTH: f32 = 46.0;
+/// How tall they are, in the corner of the window.
+pub const BUTTON_HEIGHT: f32 = 40.0;
 
 /// How near an edge of the window the pointer resizes it, in points.
 const EDGE: f32 = 5.0;

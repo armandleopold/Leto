@@ -420,6 +420,15 @@ impl FakeHost {
         }
     }
 
+    /// The host stops answering devices that ask to send their camera, as
+    /// a PC that is slow would, until it is told to answer again: what
+    /// waits is answered then. For what a client does in the meantime.
+    pub fn hold_camera(&self, held: bool) {
+        if let Some(cameras) = &self.shared.cameras {
+            cameras.hold(held);
+        }
+    }
+
     /// Something else now answers on this address with the same name and id
     /// but another certificate and key: an impostor, or a reinstalled host.
     pub fn become_impostor(&self) {

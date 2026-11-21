@@ -250,6 +250,14 @@ impl Browser {
         added.id
     }
 
+    /// Returns once the bridge has read everything this browser said so
+    /// far. The bridge reads what a browser says in order, so the answer to
+    /// one more question, about the PC it already knows, comes after.
+    async fn is_heard_out(&mut self, host: &FakeHost) {
+        self.say(&Up::Ask(Request::Add(host.address()))).await;
+        self.news(|event| matches!(event, Event::Added(_)).then_some(())).await;
+    }
+
     /// Starts a stream and waits for the news of what camera its PC takes,
     /// which comes once the stream plays.
     async fn play(&mut self, host: HostId, attempt: u64) -> Option<CameraOffer> {
@@ -677,18 +685,26 @@ async fn a_browser_hears_why_its_camera_is_not_taken_and_its_last_word_counts() 
     host.refuse_camera(false);
 
     // On, off and on again before the PC has answered once: only the last
-    // asking is answered.
+    // asking is answered. The PC holds its answer until the bridge has
+    // read all three: left alone it sometimes answers the first asking
+    // before, and the browser rightly hears of that one too.
+    host.hold_camera(true);
     browser.say(&Up::CameraOn { number: 2, sending: SMALL }).await;
     browser.say(&Up::CameraOff).await;
     browser.say(&Up::CameraOn { number: 3, sending: SMALL }).await;
+    browser.is_heard_out(&host).await;
+    host.hold_camera(false);
     assert_eq!(browser.camera().await, (3, Ok(())));
     assert!(host.camera_report().open);
 
     // Asked for again, then turned off before the PC has answered: nothing
     // is said of that asking, and the camera that follows is the only one.
+    host.hold_camera(true);
     browser.say(&Up::CameraOn { number: 4, sending: SMALL }).await;
     browser.say(&Up::CameraOff).await;
     browser.say(&Up::CameraOn { number: 5, sending: SMALL }).await;
+    browser.is_heard_out(&host).await;
+    host.hold_camera(false);
     assert_eq!(browser.camera().await, (5, Ok(())));
     browser.say(&Up::CameraOff).await;
     wait_for("the PC to learn that the camera stopped", || !host.camera_report().open).await;
