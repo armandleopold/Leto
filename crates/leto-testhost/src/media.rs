@@ -10,6 +10,8 @@
 //! square for every key held, a dial for the first gamepad, a meter for its
 //! microphone and, in a corner, what its camera sees.
 
+use std::time::{Duration, Instant};
+
 use leto_core::input::{GamepadButtons, Input};
 use openh264::{
     OpenH264API,
@@ -134,12 +136,25 @@ pub(crate) struct Hands {
     /// The left stick of the first gamepad, when one is plugged in.
     pub stick: Option<[f32; 2]>,
     pub gamepad_button_held: bool,
-    /// How loud the client's microphone is, from 0 to 1, when the host
-    /// listens to it.
+    /// How loud the client's microphone was when it was last heard, from 0
+    /// to 1, when the host listens to it.
     pub voice: Option<f32>,
+    /// When the microphone was last heard.
+    pub voice_heard: Option<Instant>,
 }
 
+/// How long without the microphone before its meter falls by half.
+const VOICE_FALLS: Duration = Duration::from_millis(50);
+
 impl Hands {
+    /// How loud the microphone is at `now`: what was last heard, falling by
+    /// half for every moment without it.
+    pub fn voice_at(&self, now: Instant) -> Option<f32> {
+        let silent = self.voice_heard.map_or(Duration::ZERO, |heard| now.duration_since(heard));
+        let halvings = (silent.as_millis() / VOICE_FALLS.as_millis()).min(32) as i32;
+        Some(self.voice? * 0.5f32.powi(halvings))
+    }
+
     /// Takes `input` into account, on a picture `width` by `height`.
     pub fn follow(&mut self, input: Input, width: u32, height: u32) {
         match input {
@@ -378,7 +393,7 @@ impl TestCard {
 
         // The microphone's meter, above the colour bars on the right: it
         // rises with the voice.
-        if let Some(voice) = hands.voice {
+        if let Some(voice) = hands.voice_at(Instant::now()) {
             let tall = self.canvas.height / 6;
             let (left, top) =
                 (self.canvas.width - unit * 3, self.canvas.height * 9 / 10 - tall - unit);
@@ -452,6 +467,22 @@ impl Melody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_meter_of_the_microphone_falls_while_nothing_is_heard() {
+        let heard = Instant::now();
+        let hands = Hands { voice: Some(0.8), voice_heard: Some(heard), ..Hands::default() };
+        assert_eq!(hands.voice_at(heard), Some(0.8));
+        assert_eq!(hands.voice_at(heard + VOICE_FALLS - Duration::from_millis(1)), Some(0.8));
+        assert_eq!(hands.voice_at(heard + VOICE_FALLS), Some(0.4));
+        assert_eq!(hands.voice_at(heard + VOICE_FALLS * 2), Some(0.2));
+        // However long the silence: nothing is left, and nothing overflows.
+        let later = hands.voice_at(heard + Duration::from_secs(3600)).unwrap_or(1.0);
+        assert!((0.0..1e-6).contains(&later), "{later}");
+        // A clock that went back is no reason to fail.
+        assert_eq!(hands.voice_at(heard - Duration::from_millis(1)), Some(0.8));
+        assert_eq!(Hands::default().voice_at(heard), None);
+    }
 
     #[test]
     fn the_card_starts_with_a_keyframe_and_makes_one_on_request() {
