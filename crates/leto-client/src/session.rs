@@ -736,8 +736,12 @@ pub struct Tally {
     pub frames: u64,
     pub keyframes: u64,
     pub video_bytes: u64,
-    /// Pictures the host made that never arrived.
+    /// Pictures the host made that never arrived, or arrived too late to
+    /// be waited for.
     pub frames_missing: u64,
+    /// Pictures that came after missing ones and were no keyframes: they
+    /// build on pictures nobody has, and should never have been handed over.
+    pub frames_orphaned: u64,
     /// The most pictures that were ever waiting behind one.
     pub most_waiting: usize,
     last_number: Option<u32>,
@@ -784,7 +788,9 @@ impl VideoSink for CountingSink {
             tally.video_bytes += frame.data.len() as u64;
             tally.most_waiting = tally.most_waiting.max(frame.waiting);
             if let Some(last) = tally.last_number {
-                tally.frames_missing += u64::from(frame.number.saturating_sub(last + 1));
+                let missing = u64::from(frame.number.saturating_sub(last + 1));
+                tally.frames_missing += missing;
+                tally.frames_orphaned += u64::from(missing > 0 && !frame.keyframe);
             }
             tally.last_number = Some(frame.number);
         });
