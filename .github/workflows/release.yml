@@ -1,23 +1,30 @@
-name: Release
+name: Release builds
 
-# Builds Leto for every platform there is a build for, publishes the builds
-# and the matching source code as a GitHub release, then publishes the site,
-# which serves the files of the latest release for download.
+# Builds Leto for every platform there is a build for and attaches the
+# builds, the matching source code and their checksums to the GitHub release
+# of a tag, then publishes the site, which serves the files of the latest
+# release for download.
 #
-# Start it by pushing a tag named after the workspace version, for example
-# `git tag v0.0.2 && git push origin v0.0.2`, or by hand from the Actions tab
-# with that tag.
+# The Release Please workflow calls this one after it has published a
+# release. It can also be started by hand from the Actions tab with a tag:
+# the tag is made from main when it does not exist yet, and the release is
+# created when there is none.
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag of the release, for example v0.1.0"
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release, for example v0.0.2 (made from main if it does not exist)"
+        description: "Tag of the release, for example v0.1.0"
+        type: string
         required: true
 
 concurrency:
-  group: release
+  group: release-builds
   cancel-in-progress: false
 
 permissions:
@@ -25,7 +32,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  TAG: ${{ inputs.tag || github.ref_name }}
+  TAG: ${{ inputs.tag }}
 
 jobs:
   # The tag has to say the version the crates carry, or the files would be
@@ -33,17 +40,30 @@ jobs:
   version:
     name: Version
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - id: version
-        name: Compare the tag with the workspace version
+        name: Compare the tag with the workspace version, and make the tag if needed
         run: |
+          exists=false
+          if git rev-parse --verify --quiet "refs/tags/$TAG" > /dev/null; then
+            exists=true
+            git checkout --quiet "refs/tags/$TAG"
+          fi
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
           if [ "$TAG" != "v$version" ]; then
-            echo "::error::The tag is $TAG but Cargo.toml says version $version. Tag v$version, or change the version first."
+            echo "::error::The tag is $TAG but Cargo.toml says version $version."
             exit 1
+          fi
+          if [ "$exists" = false ]; then
+            git tag "$TAG" HEAD
+            git push origin "refs/tags/$TAG"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -53,6 +73,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -97,6 +119,8 @@ jobs:
       ARCHIVE: leto-${{ needs.version.outputs.version }}-${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
       - name: Install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -139,9 +163,45 @@ jobs:
           path: ${{ env.ARCHIVE }}.*
           if-no-files-found: error
 
+  # A phone only installs an update signed with the same key as the version
+  # it has. With the ANDROID_KEYSTORE_BASE64 and ANDROID_KEY_PASSWORD secrets
+  # every release is signed with that one key; without them each release
+  # gets a key of its own, and a phone has to uninstall Leto to update it.
+  android:
+    name: Build (Android)
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the headers
+        run: sudo apt-get update && sudo apt-get install --yes libasound2-dev libudev-dev libclang-dev
+      - name: Use the release key, when there is one
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/leto.keystore"
+          echo "LETO_ANDROID_KEYSTORE=$RUNNER_TEMP/leto.keystore" >> "$GITHUB_ENV"
+          echo "LETO_ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+      - name: Build the APK
+        run: cargo xtask android
+      - name: Name it after the version
+        run: cp dist/android/leto.apk "leto-${{ needs.version.outputs.version }}-android.apk"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          path: leto-*-android.apk
+          if-no-files-found: error
+
   release:
-    name: Publish the release
-    needs: [version, web, desktop]
+    name: Attach the files to the release
+    needs: [version, web, desktop, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -151,27 +211,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          ref: refs/tags/${{ env.TAG }}
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Gather the files
         run: |
           mkdir out
-          cp artifacts/windows-x86_64/* artifacts/linux-x86_64/* artifacts/macos-arm64/* out/
+          cp artifacts/windows-x86_64/* artifacts/linux-x86_64/* artifacts/macos-arm64/* artifacts/android/* out/
           (cd artifacts/web && zip -qr "../../out/leto-$VERSION-web.zip" .)
           # Leto is GPL-3.0 and includes GPL code of other projects, so
           # whoever gets a build is offered the source it was built from.
           git archive --format=tar.gz --prefix="leto-$VERSION/" -o "out/leto-$VERSION-source.tar.gz" HEAD
           (cd out && sha256sum * > SHA256SUMS.txt)
           ls -l out
-      - name: Create the release
+      # Release Please has already written the release and its notes. Made
+      # by hand, the release gets notes from the merged pull requests.
+      - name: Attach them
         run: |
-          if ! git rev-parse --verify --quiet "refs/tags/$TAG" > /dev/null; then
-            git tag "$TAG" "$GITHUB_SHA"
-            git push origin "$TAG"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber
+          else
+            gh release create "$TAG" out/* --title "Leto $VERSION" --generate-notes --verify-tag
           fi
-          gh release create "$TAG" out/* --title "Leto $VERSION" --generate-notes --verify-tag
 
   # A release made with the workflow's own token starts no other workflow,
   # and the github-pages environment only takes deployments from main, not

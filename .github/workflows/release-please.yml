@@ -1,0 +1,75 @@
+name: Release Please
+
+# Keeps a release pull request open on main: it bumps the version in
+# Cargo.toml, Cargo.lock and version.txt and writes CHANGELOG.md from the
+# Conventional Commits merged since the last release. Merging it tags the
+# version, publishes the GitHub release with its notes, then builds every
+# platform and attaches the files (release.yml).
+#
+# Pull requests and commits made with the workflow's own token start no
+# workflow, so CI does not run on the release pull request by itself. A
+# token in the RELEASE_PLEASE_TOKEN secret (fine-grained, contents and
+# pull requests: read and write) makes it run; without one, the workflow's
+# own token is used.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Release Please changes the version of every workspace crate in
+  # Cargo.lock by name, from release-please-config.json. A crate missing
+  # there would make the release build fail on a stale Cargo.lock.
+  crates:
+    name: Every crate is in the release config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare the workspace with release-please-config.json
+        run: |
+          missing=""
+          for name in $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name'); do
+            grep -q "@.name.value=='$name'" release-please-config.json || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Add these crates to the Cargo.lock path in release-please-config.json:$missing"
+            exit 1
+          fi
+
+  release-please:
+    name: Release pull request
+    needs: crates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  builds:
+    name: Builds
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    permissions:
+      contents: write
+      actions: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag }}
+    secrets: inherit
