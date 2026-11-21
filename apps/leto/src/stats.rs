@@ -170,7 +170,8 @@ impl Rates {
             line += &format!("; the PC took {host:.1} ms to make one");
         }
         if let Some(round_trip) = round_trip {
-            line += &format!("; {} ms to the PC and back", round_trip.as_millis());
+            let milliseconds = round_trip.as_secs_f64() * 1000.0;
+            line += &format!("; {milliseconds:.1} ms to the PC and back");
         }
         line
     }
@@ -221,10 +222,10 @@ mod tests {
         }
         let rates = Rates::between(&before, &counts, 0, 10.0).expect("ten seconds went by");
         assert_eq!(
-            rates.told(Some(Duration::from_millis(11))),
+            rates.told(Some(Duration::from_micros(1400))),
             "a second of the stream: 144 pictures arrived, 144 decoded, 0 skipped, 62.2 Mbit/s, \
              0.0 % lost; a picture took 17.0 ms to decode, 15.0 ms of them to leave the decoder \
-             when shown; the PC took 3.8 ms to make one; 11 ms to the PC and back"
+             when shown; the PC took 3.8 ms to make one; 1.4 ms to the PC and back"
         );
 
         // A backend that measures little says little.
