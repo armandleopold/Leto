@@ -2292,7 +2292,7 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "leto"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "arboard",
  "eframe",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "leto-android"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "jni 0.21.1",
  "leto",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "leto-bridge"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "futures-util",
  "gethostname",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "leto-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "clap",
  "leto-bridge",
@@ -2367,7 +2367,7 @@ dependencies = [
 
 [[package]]
 name = "leto-client"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "directories",
  "env_logger",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "leto-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "leto-media"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cpal",
  "glow",
@@ -2421,14 +2421,14 @@ dependencies = [
 
 [[package]]
 name = "leto-protocol"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "leto-return"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aes-gcm",
  "serde",
@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "leto-system"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "android-activity",
  "jni 0.21.1",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "leto-testhost"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "image",
  "leto-core",
@@ -2469,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "leto-tunnel"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.22.1",
  "boringtun",
@@ -5833,7 +5833,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "yasna"
