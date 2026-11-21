@@ -3,7 +3,7 @@
 
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order, Pos2, Rect,
-    RichText, Sense, Stroke, TextFormat, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2,
+    RichText, Sense, Stroke, TextFormat, TextureHandle, Ui, UiBuilder, Vec2,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use leto_core::{engine::Codec, input::Input};
 
-use super::{frame, icons, widgets};
+use super::{card::OnCard, frame, icons, widgets};
 use crate::{
     backend::{Filming, Picture},
     input::{Controls, Shortcut},
@@ -67,8 +67,13 @@ enum KeyStroke {
 }
 
 /// What the pictures of the stream are shown on.
+// A browser shows them behind the window, and never draws them.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Surface {
-    /// The window draws them.
+    /// The graphics card turns them into pixels as the window draws them,
+    /// this large.
+    Card(OnCard, [usize; 2]),
+    /// The window draws them from pixels.
     Texture(TextureHandle),
     /// The backend shows them behind the window, this large: the window
     /// leaves a hole.
@@ -80,7 +85,7 @@ impl Surface {
     fn size(&self) -> [usize; 2] {
         match self {
             Self::Texture(texture) => texture.size(),
-            Self::Behind(size) => *size,
+            Self::Card(_, size) | Self::Behind(size) => *size,
         }
     }
 }
@@ -161,19 +166,36 @@ enum Told {
 }
 
 impl Player {
-    /// Shows `picture` from now on.
-    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture) {
-        match (picture, &mut self.surface) {
-            (Picture::Pixels(pixels), Some(Surface::Texture(texture))) => {
-                texture.set(pixels, TextureOptions::LINEAR);
+    /// Shows `picture` from now on, on `card` when the window has one that
+    /// works.
+    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture, card: Option<&OnCard>) {
+        match picture {
+            #[cfg(not(target_arch = "wasm32"))]
+            Picture::Planes(planes) => {
+                let size = [planes.width, planes.height];
+                if let Some(card) = card.filter(|card| card.works()) {
+                    card.show(planes);
+                    self.surface = Some(Surface::Card(card.clone(), size));
+                } else {
+                    self.pixels(ctx, pixels(&planes));
+                }
                 self.shown += 1;
             }
-            (Picture::Pixels(pixels), _) => {
-                let texture = ctx.load_texture("stream", pixels, TextureOptions::LINEAR);
-                self.surface = Some(Surface::Texture(texture));
-                self.shown += 1;
-            }
-            (Picture::Behind(size), _) => self.surface = Some(Surface::Behind(size)),
+            Picture::Behind(size) => self.surface = Some(Surface::Behind(size)),
+        }
+        // A browser has no card, and draws nothing: the page shows the
+        // pictures.
+        let _ = (ctx, card);
+    }
+
+    /// Shows `pixels` from now on, drawn by the window.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pixels(&mut self, ctx: &egui::Context, pixels: egui::ColorImage) {
+        if let Some(Surface::Texture(texture)) = &mut self.surface {
+            texture.set(pixels, egui::TextureOptions::LINEAR);
+        } else {
+            let texture = ctx.load_texture("stream", pixels, egui::TextureOptions::LINEAR);
+            self.surface = Some(Surface::Texture(texture));
         }
     }
 
@@ -286,6 +308,10 @@ pub fn show(
         let size = surface.size();
         let place = fit(vec2(size[0] as f32, size[1] as f32), window);
         match surface {
+            Surface::Card(card, _) => {
+                ui.painter().rect_filled(window, 0, Color32::BLACK);
+                ui.painter().add(card.paint(place));
+            }
             Surface::Texture(texture) => {
                 ui.painter().rect_filled(window, 0, Color32::BLACK);
                 egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
@@ -1156,6 +1182,19 @@ fn note(view: &StreamView, hands: Hands) -> Note {
         }
     };
     Note { text, problem: !(allowed.keyboard && allowed.mouse) }
+}
+
+/// `planes` made into pixels on the processor, for a window without a card
+/// that draws them.
+#[cfg(not(target_arch = "wasm32"))]
+fn pixels(planes: &leto_media::Planes) -> egui::ColorImage {
+    let mut picture = leto_media::Picture::default();
+    if !planes.to_rgba(&mut picture) {
+        // Planes the decoder made are never too small for their size.
+        log::debug!("a picture too small for its size was left out");
+    }
+    // Pictures are opaque, so plain and premultiplied are the same.
+    egui::ColorImage::from_rgba_premultiplied([picture.width, picture.height], &picture.rgba)
 }
 
 /// Where a picture of size `picture` goes in `window`: as large as fits,

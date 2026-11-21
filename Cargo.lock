@@ -2192,6 +2192,7 @@ name = "leto-media"
 version = "0.0.1"
 dependencies = [
  "cpal",
+ "glow",
  "image",
  "leto-core",
  "log",

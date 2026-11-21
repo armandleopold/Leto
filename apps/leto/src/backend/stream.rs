@@ -15,7 +15,7 @@ use std::{
 use leto_client::{
     AudioSetup, AudioSink, Decoded, VideoFrame, VideoSetup, VideoSink, service::sentence,
 };
-use leto_media::{Picture, SoundDecoder, Speaker, VideoDecoder};
+use leto_media::{Planes, SoundDecoder, Speaker, VideoDecoder};
 
 use super::Pace;
 use crate::stats::Counts;
@@ -27,7 +27,7 @@ const GLANCE: Duration = Duration::from_secs(1);
 #[derive(Default)]
 pub struct Outlet {
     /// The latest picture nobody has shown yet.
-    picture: Mutex<Option<egui::ColorImage>>,
+    picture: Mutex<Option<Planes>>,
     /// Why there is no sound, when there is none.
     sound_problem: Mutex<Option<String>>,
     /// What happened to the pictures so far.
@@ -42,7 +42,7 @@ pub struct Outlet {
 
 impl Outlet {
     /// The latest picture, once.
-    pub fn take_picture(&self) -> Option<egui::ColorImage> {
+    pub fn take_picture(&self) -> Option<Planes> {
         self.picture.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
@@ -96,8 +96,10 @@ impl Outlet {
 
 /// Decodes the pictures of a stream and leaves the latest in the outlet.
 ///
-/// Turning a picture into pixels, putting it on the graphics card and
-/// drawing the window cost more than decoding it. While the window is only
+/// Copying a picture out of the decoder, putting it on the graphics card
+/// and drawing the window cost about as much as decoding it, so pictures
+/// stay as the decoder gave them, in planes, and the card makes them into
+/// pixels as the window draws them. While the window is only
 /// glanced at, every picture is still decoded, since the next ones build on
 /// it, but only one a second goes further. While the window is out of sight
 /// nothing is decoded at all, and the PC is asked for a keyframe once it is
@@ -110,7 +112,8 @@ pub struct Screen {
     decoder: Option<VideoDecoder>,
     /// The pictures may be decoded on the graphics card.
     hardware: bool,
-    picture: Picture,
+    /// The picture being decoded, in memory a picture nobody showed left.
+    picture: Planes,
     outlet: Arc<Outlet>,
     ctx: egui::Context,
     /// The number of the last picture that arrived.
@@ -126,7 +129,7 @@ impl Screen {
         Self {
             decoder: None,
             hardware,
-            picture: Picture::default(),
+            picture: Planes::default(),
             outlet: Arc::clone(outlet),
             ctx: ctx.clone(),
             last: None,
@@ -194,7 +197,7 @@ impl VideoSink for Screen {
         let seen = pace == Pace::Full || self.left.is_none_or(|left| left.elapsed() >= GLANCE);
         let start = Instant::now();
         let decoded = if seen {
-            decoder.decode(frame.data, &mut self.picture)
+            decoder.decode_planes(frame.data, &mut self.picture)
         } else {
             decoder.decode_unseen(frame.data)
         };
@@ -207,11 +210,16 @@ impl VideoSink for Screen {
             Ok(true) => {
                 self.outlet.count(|counts| counts.decoded(Some(took)));
                 self.left = Some(Instant::now());
-                let size = [self.picture.width, self.picture.height];
-                // Pictures are opaque, so plain and premultiplied are the same.
-                let image = egui::ColorImage::from_rgba_premultiplied(size, &self.picture.rgba);
-                // A picture nobody got to show is replaced: the newest wins.
-                *self.outlet.picture.lock().unwrap_or_else(PoisonError::into_inner) = Some(image);
+                let planes = std::mem::take(&mut self.picture);
+                // A picture nobody got to show is replaced: the newest wins,
+                // and the next one is decoded into its memory.
+                let unseen = self
+                    .outlet
+                    .picture
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .replace(planes);
+                self.picture = unseen.unwrap_or_default();
                 self.ctx.request_repaint();
                 Decoded::Ok
             }
@@ -295,7 +303,8 @@ mod tests {
 
     /// The whole way of a picture: drawn and encoded by the stand-in PC,
     /// encrypted, sent with recovery data, put together again, decoded and
-    /// converted. Colours that arrive right were right at every step.
+    /// converted as the graphics card does. Colours that arrive right were
+    /// right at every step.
     #[test]
     fn the_test_card_of_a_stand_in_pc_arrives_with_its_colours() {
         let folder = std::env::temp_dir().join(format!("leto-app-test-{}", std::process::id()));
@@ -334,7 +343,13 @@ mod tests {
         session.stop();
         let _ = std::fs::remove_dir_all(&folder);
 
-        assert_eq!(picture.size, [640, 360]);
+        assert_eq!((picture.width, picture.height), (640, 360));
+        let mut pixels = leto_media::Picture::default();
+        assert!(picture.to_rgba(&mut pixels));
+        let pixel = |column: usize, row: usize| {
+            let at = (row * pixels.width + column) * 4;
+            [pixels.rgba[at], pixels.rgba[at + 1], pixels.rgba[at + 2], pixels.rgba[at + 3]]
+        };
         // The colour bars along the bottom: white, yellow, cyan, green,
         // magenta, red, blue and black, at three quarters of full brightness.
         let bars = [
@@ -348,12 +363,12 @@ mod tests {
             [0, 0, 0],
         ];
         for (index, wanted) in bars.into_iter().enumerate() {
-            let found = picture[(index * 80 + 40, 342)].to_array();
+            let found = pixel(index * 80 + 40, 342);
             let near = found.iter().zip(wanted).all(|(found, wanted)| found.abs_diff(wanted) <= 6);
             assert!(near && found[3] == 255, "bar {index} is {found:?}, not {wanted:?}");
         }
         // The ground between the discs and the bars.
-        let ground = picture[(60, 290)].to_array();
+        let ground = pixel(60, 290);
         assert!(ground[..3].iter().zip([0x15, 0x13, 0x12]).all(|(f, w)| f.abs_diff(w) <= 6));
     }
 

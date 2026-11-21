@@ -82,8 +82,10 @@ pub struct Unavailable {
 // Each build has one way to show pictures, and never makes the other.
 #[allow(dead_code)]
 pub enum Picture {
-    /// Pixels for the window to draw.
-    Pixels(egui::ColorImage),
+    /// A picture as the decoder gave it, for the window to draw: the
+    /// graphics card makes it into pixels as it does.
+    #[cfg(not(target_arch = "wasm32"))]
+    Planes(leto_media::Planes),
     /// The backend shows the pictures itself, behind the window, and only
     /// says how large they are. The interface leaves a hole for them and
     /// says where it is with `Backend::place_picture`.

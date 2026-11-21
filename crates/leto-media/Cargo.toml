@@ -17,6 +17,9 @@ workspace = true
 cpal = "0.18"
 # Cameras that compress their pictures send them as JPEG.
 image = { workspace = true, features = ["jpeg"] }
+# Draws pictures on the graphics card, with the context the app's window
+# draws with: the version eframe uses.
+glow = "0.17"
 # How a camera is sent to a PC is a rule every client follows.
 leto-core = { workspace = true }
 log = { workspace = true }

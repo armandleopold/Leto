@@ -11,6 +11,7 @@ use crate::{
     ui::{
         self,
         apps::Covers,
+        card::OnCard,
         devices::Preview,
         frame, gate, icons,
         stream::{Player, Status},
@@ -28,6 +29,8 @@ pub struct LetoApp {
     state: State,
     covers: Covers,
     player: Player,
+    /// The graphics card, where it draws the stream's pictures.
+    card: Option<OnCard>,
     /// What the camera shows while the person tries it out.
     preview: Preview,
     /// The code a browser types to be let in by its bridge.
@@ -55,6 +58,7 @@ impl LetoApp {
             state: State::new(),
             covers: Covers::default(),
             player: Player::default(),
+            card: card(cc, settings.vsync),
             preview: Preview::default(),
             gate: gate::Form::default(),
             was_open: false,
@@ -64,6 +68,20 @@ impl LetoApp {
             settings_open: false,
         }
     }
+}
+
+/// The graphics card the window draws with, where it draws the stream's
+/// pictures. With `vsync`, a picture never waits behind others for the
+/// screen.
+#[cfg(not(target_arch = "wasm32"))]
+fn card(cc: &eframe::CreationContext<'_>, vsync: bool) -> Option<OnCard> {
+    OnCard::new(cc.gl.as_deref(), vsync)
+}
+
+/// A browser's page shows the pictures itself.
+#[cfg(target_arch = "wasm32")]
+const fn card(_cc: &eframe::CreationContext<'_>, _vsync: bool) -> Option<OnCard> {
+    None
 }
 
 impl LetoApp {
@@ -117,6 +135,14 @@ impl eframe::App for LetoApp {
     #[cfg(target_arch = "wasm32")]
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
+    }
+
+    /// What is on the graphics card goes with the window.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        if let (Some(card), Some(gl)) = (&self.card, gl) {
+            card.destroy(gl);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -181,7 +207,7 @@ impl eframe::App for LetoApp {
                 self.backend.mute(self.settings.mute_in_background && pace != Pace::Full);
                 self.backend.allow_graphics_card(self.settings.decoder.hardware());
                 if let Some(picture) = self.backend.take_picture() {
-                    self.player.picture(ui.ctx(), picture);
+                    self.player.picture(ui.ctx(), picture, self.card.as_ref());
                 }
                 let sound_problem = self.backend.sound_problem();
                 let picture_problem = self.backend.picture_problem();
