@@ -48,6 +48,15 @@ pub fn decodable() -> Decodable {
 #[cfg(windows)]
 const FAILURES_BEFORE_SOFTWARE: u32 = 3;
 
+/// A pane to show pictures on: a window of the system's inside the app's,
+/// by the handle the system gave it. With `torn`, a picture may be shown in
+/// the middle of a refresh of the screen, where the system lets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pane {
+    pub window: isize,
+    pub torn: bool,
+}
+
 /// Decodes the pictures of one stream, in order.
 pub struct VideoDecoder {
     codec: Codec,
@@ -155,6 +164,56 @@ impl VideoDecoder {
             By::OpenH264(decoder) => decoder.copying,
             #[cfg(windows)]
             By::Windows(decoder) => decoder.copying(),
+        }
+    }
+
+    /// Leaves pictures on the graphics card they are decoded on from now
+    /// on, for a [`crate::Card`] to draw from, or has them read back as
+    /// before. Only Windows' decoders on the card do: every other picture
+    /// comes in planes whatever is asked. Asked for by who shows the planes
+    /// with a card that [`crate::Card::keeps`]: nothing else shows them.
+    pub fn keep_on_card(&mut self, keep: bool) {
+        match &mut self.by {
+            By::OpenH264(_) => {
+                let _ = keep;
+            }
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.keep_on_card(keep),
+        }
+    }
+
+    /// Has the graphics card that decodes the pictures show them itself,
+    /// straight on `pane`, from now on, or no longer for `None`. Only
+    /// Windows' decoders on the card do: every other picture comes as it
+    /// did whatever is asked. A picture shown that way says so
+    /// ([`Planes::shown`]) and has nothing left to show.
+    pub fn show_on(&mut self, pane: Option<Pane>) {
+        match &mut self.by {
+            By::OpenH264(_) => {
+                let _ = pane;
+            }
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.show_on(pane),
+        }
+    }
+
+    /// Whether the next picture decoded into planes is shown by the
+    /// graphics card itself instead.
+    pub fn shows_itself(&self) -> bool {
+        match &self.by {
+            By::OpenH264(_) => false,
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.shows(),
+        }
+    }
+
+    /// Whether the next picture decoded into planes stays on the graphics
+    /// card instead.
+    pub fn keeps_on_card(&self) -> bool {
+        match &self.by {
+            By::OpenH264(_) => false,
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.keeps(),
         }
     }
 

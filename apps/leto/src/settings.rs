@@ -70,6 +70,14 @@ pub struct Settings {
     pub codec: Option<Codec>,
     /// The statistics show from the start of every stream.
     pub statistics: bool,
+    /// Pictures decoded on the graphics card stay there until the window
+    /// draws them, instead of coming through memory. Windows only, and
+    /// being tried: off unless the person turns it on.
+    pub keep_on_card: bool,
+    /// The graphics card that decodes the pictures shows them itself,
+    /// straight on the screen, as Moonlight does: the window draws none.
+    /// Windows only, and being tried: off unless the person turns it on.
+    pub straight_to_screen: bool,
 
     /// The camera, microphone and speakers of this device that Leto uses,
     /// chosen on their own page.
@@ -161,6 +169,8 @@ impl Default for Settings {
             decoder: Decoder::Automatic,
             codec: None,
             statistics: false,
+            keep_on_card: false,
+            straight_to_screen: false,
             devices: DeviceChoices::default(),
         }
     }
@@ -446,6 +456,8 @@ mod tests {
             swap_gamepad_buttons: true,
             decoder: Decoder::Software,
             codec: Some(Codec::Av1),
+            keep_on_card: true,
+            straight_to_screen: true,
             devices: DeviceChoices {
                 camera: Some("USB Camera".to_owned()),
                 microphone: None,
@@ -460,6 +472,9 @@ mod tests {
             older,
             Settings { frame_rate: Some(60), statistics: true, ..Settings::default() }
         );
+        // What is being tried is off until the person turns it on.
+        assert!(!older.keep_on_card);
+        assert!(!older.straight_to_screen);
         // Not settings at all.
         assert_eq!(Settings::from_saved("{ not json"), Settings::default());
     }

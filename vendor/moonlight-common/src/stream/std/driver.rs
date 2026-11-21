@@ -48,6 +48,49 @@ where
         self.stream_condvar.notify_all();
         res
     }
+    /// Leto: as [Self::stream_mut], after telling the stream what time it is.
+    ///
+    /// A stream only learns the time when a packet arrives or a timeout
+    /// fires, and what the application sends in between was stamped with
+    /// the time of the last of those, up to 50 ms old. The control
+    /// connection measures the way to the host and back from that stamp, so
+    /// it took a host 1 ms away for one 10 ms away whenever the mouse moved.
+    /// An error of the stream stops the driver, as it does in the thread
+    /// that handles timeouts.
+    #[instrument(level = Level::TRACE, skip(self, f))]
+    pub fn stream_mut_now<F, R>(&self, f: F) -> Result<R, Error>
+    where
+        F: FnOnce(&mut Stream) -> R,
+    {
+        let mut guard = self.stream.lock().expect("lock stream failed");
+        if let Err(err) = guard.handle_timeout(Instant::from_std(self.base_time)) {
+            drop(guard);
+            self.stop();
+            return Err(err);
+        }
+        let res = f(&mut guard);
+        self.stream_condvar.notify_all();
+        Ok(res)
+    }
+    /// Leto: runs `f` on the stream and sends what the stream then has to
+    /// send, here and now, on the caller's thread: the threads that send
+    /// are about to be stopped, and would leave it unsent.
+    #[instrument(level = Level::TRACE, skip(self, f))]
+    pub fn last_words<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut Stream) -> R,
+    {
+        let mut guard = self.stream.lock().expect("lock stream failed");
+        let res = f(&mut guard);
+        while let Some(transmit) = guard.poll_transmit() {
+            if let Err(err) = self.socket.send_to(&transmit.data, transmit.destination) {
+                debug!(error = ?err, "the last words did not leave");
+                break;
+            }
+        }
+        res
+    }
+
     #[instrument(level = Level::TRACE, skip(self, f))]
     pub fn stream<F, R>(&self, f: F) -> R
     where

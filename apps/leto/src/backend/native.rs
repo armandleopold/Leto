@@ -376,11 +376,26 @@ impl Backend {
     /// The latest picture of the stream that nobody has shown yet.
     pub fn take_picture(&self) -> Option<Picture> {
         let outlet = self.service.as_ref().ok()?.shell().outlet();
-        outlet.take_picture().map(Picture::Planes)
+        // Pictures the graphics card shows itself only say how large they
+        // are, when that changes.
+        outlet
+            .take_picture()
+            .map(Picture::Planes)
+            .or_else(|| outlet.take_straight().map(Picture::Behind))
     }
 
-    /// The window draws the pictures itself: nothing to place.
+    /// The window draws the pictures itself, or places the pane they are
+    /// shown on itself: nothing to place here.
     pub fn place_picture(&self, _place: Option<egui::Rect>) {}
+
+    /// Has the graphics card that decodes the pictures show them itself on
+    /// the pane with this handle, torn or not, or no longer for `None`.
+    pub fn show_on(&self, pane: Option<(isize, bool)>) {
+        if let Ok(service) = &self.service {
+            let pane = pane.map(|(window, torn)| leto_media::Pane { window, torn });
+            service.shell().outlet().set_pane(pane);
+        }
+    }
 
     /// Why the stream has no sound, when it has none.
     pub fn sound_problem(&self) -> Option<String> {
@@ -397,6 +412,14 @@ impl Backend {
     pub fn pace(&self, pace: Pace) {
         if let Ok(service) = &self.service {
             service.shell().outlet().set_pace(pace);
+        }
+    }
+
+    /// Lets pictures decoded on the graphics card stay there, for a window
+    /// that draws them from it, or has them read back into memory.
+    pub fn keep_on_card(&self, keep: bool) {
+        if let Ok(service) = &self.service {
+            service.shell().outlet().set_kept(keep);
         }
     }
 

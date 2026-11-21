@@ -40,10 +40,18 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    # The program that draws pictures straight on the screen is made for the
+    # card by Windows' own compiler.
+    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    # Pictures that stay on the card are shared with the window's OpenGL.
+    "Win32_Graphics_OpenGL",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
+    # How large the pane is that pictures are drawn straight on.
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # On Linux it needs libclang to build (`libclang-dev`).

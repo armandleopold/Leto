@@ -22,13 +22,20 @@ impl OnCard {
     pub fn paint(&self, _place: egui::Rect) -> egui::Shape {
         match *self {}
     }
+
+    pub fn keeps(&self) -> bool {
+        match *self {}
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        sync::{
+            Arc, Mutex, MutexGuard, PoisonError,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
     };
 
     use eframe::{egui_glow, glow};
@@ -42,6 +49,10 @@ mod native {
         /// The card turned down what it draws with: the stream screen
         /// makes pixels instead.
         failed: Arc<AtomicBool>,
+        /// The card draws pictures that stayed on it since they were
+        /// decoded. Known at the first drawing, and no longer so once
+        /// one could not be drawn.
+        keeps: Arc<AtomicBool>,
         /// The drawing waits for the screen first, with V-Sync.
         wait: bool,
     }
@@ -52,7 +63,15 @@ mod native {
         card: Option<Card>,
         /// The picture to put on the card at the next drawing.
         pending: Option<Planes>,
+        /// The drawings since the log was last told of them: how many, how
+        /// long they took in all, and when it was told.
+        drawn: u32,
+        drawing: Duration,
+        told: Option<Instant>,
     }
+
+    /// How often the log is told how long drawing a picture takes.
+    const TOLD_EVERY: Duration = Duration::from_secs(10);
 
     impl OnCard {
         /// A card for a window that draws with `gl`, if it can draw
@@ -65,12 +84,34 @@ mod native {
                 log::info!("the graphics card draws no pictures from planes: the processor does");
                 return None;
             }
-            Some(Self { inner: Arc::default(), failed: Arc::default(), wait: vsync })
+            Some(Self {
+                inner: Arc::default(),
+                failed: Arc::default(),
+                keeps: Arc::default(),
+                wait: vsync,
+            })
         }
 
         /// Whether the card draws the pictures.
         pub fn works(&self) -> bool {
             !self.failed.load(Ordering::Relaxed)
+        }
+
+        /// Whether the card draws pictures that stayed on it since they
+        /// were decoded: the decoder may leave them there.
+        pub fn keeps(&self) -> bool {
+            self.works() && self.keeps.load(Ordering::Relaxed)
+        }
+
+        /// A picture that stayed on the card could not be drawn: the next
+        /// ones come through memory, as before, until Leto starts again.
+        fn keeps_none(&self, error: &leto_media::Error) {
+            if self.keeps.swap(false, Ordering::Relaxed) {
+                log::warn!(
+                    "pictures do not stay on the graphics card, and come through memory as \
+                     before: {error}"
+                );
+            }
         }
 
         /// Shows `planes` from the next drawing on. A picture not drawn yet
@@ -102,11 +143,17 @@ mod native {
                 Card::wait(gl);
             }
             let mut inner = self.lock();
-            let Inner { card, pending } = &mut *inner;
+            let Inner { card, pending, drawn, drawing, told } = &mut *inner;
             if card.is_none() {
                 match Card::new(gl) {
                     Ok(made) => {
                         log::info!("the graphics card makes the pictures into pixels");
+                        let keeps = Card::keeps(gl);
+                        log::debug!(
+                            "pictures decoded on the graphics card {} stay there to be drawn",
+                            if keeps { "can" } else { "cannot" }
+                        );
+                        self.keeps.store(keeps, Ordering::Relaxed);
                         *card = Some(made);
                     }
                     Err(error) => {
@@ -117,10 +164,29 @@ mod native {
                 }
             }
             let Some(card) = card else { return };
-            if let Some(planes) = pending.take() {
-                card.show(gl, &planes);
+            let start = Instant::now();
+            if let Some(planes) = pending.take()
+                && let Err(error) = card.show(gl, &planes)
+            {
+                self.keeps_none(&error);
             }
-            card.draw(gl);
+            if let Err(error) = card.draw(gl) {
+                self.keeps_none(&error);
+            }
+            // What the window's side of a picture costs, which the
+            // statistics of decoding do not see.
+            *drawn += 1;
+            *drawing += start.elapsed();
+            let since = *told.get_or_insert(start);
+            if since.elapsed() >= TOLD_EVERY {
+                log::debug!(
+                    "the window drew {drawn} times in {:.0} s, giving the card each drawing in \
+                     {:.2} ms",
+                    since.elapsed().as_secs_f64(),
+                    drawing.as_secs_f64() * 1000.0 / f64::from(*drawn)
+                );
+                (*drawn, *drawing, *told) = (0, Duration::ZERO, Some(Instant::now()));
+            }
         }
 
         fn lock(&self) -> MutexGuard<'_, Inner> {

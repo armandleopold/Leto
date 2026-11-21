@@ -31,7 +31,7 @@ mod tunnel;
 pub mod wake;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt, io,
     net::Ipv4Addr,
     path::{Path, PathBuf},
@@ -67,9 +67,21 @@ pub use session::{
 use store::{Identity, Saved, SavedAddress, SavedHost, Store};
 use transport::Transport;
 
+/// The folder [`default_directory`] gives, when the system has none to
+/// offer: an Android app is handed its own as it starts. Only the first
+/// call counts, and it must come before anything reads the settings.
+pub fn use_directory(folder: PathBuf) {
+    let _ = CHOSEN_DIRECTORY.set(folder);
+}
+
+static CHOSEN_DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 /// Where Leto keeps its settings on this system: the user's configuration
-/// folder.
+/// folder, or the one given to [`use_directory`].
 pub fn default_directory() -> Result<PathBuf, Error> {
+    if let Some(folder) = CHOSEN_DIRECTORY.get() {
+        return Ok(folder.clone());
+    }
     let folders = directories::ProjectDirs::from("re", "leto", "Leto")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this system has no home folder"))?;
     Ok(folders.config_dir().to_owned())
@@ -85,6 +97,13 @@ const WAKE_AGAIN: Duration = Duration::from_secs(10);
 /// How many addresses Leto keeps for one PC. The ones that answered least
 /// recently go first.
 const ADDRESSES_KEPT: usize = 4;
+/// How often, at most, this device's system is asked where the names of
+/// the PCs lead: a name that leads nowhere is slow to say so.
+const NAMES_ASKED_EVERY: Duration = Duration::from_secs(60);
+/// How long an address a PC's name led to has to answer. It is nearby.
+const NEARBY_PATIENCE: Duration = Duration::from_secs(1);
+/// How long an address around this device has to take a connection.
+const AROUND_PATIENCE: Duration = Duration::from_millis(300);
 /// How long the direct ways to a PC have to answer before the one through
 /// Leto's tunnel asks: at home, the local network answers within it.
 const TUNNEL_HEAD_START: Duration = Duration::from_millis(150);
@@ -239,6 +258,10 @@ pub struct Client {
     saving: Mutex<()>,
     /// The way through Leto's WireGuard tunnel, if it has one.
     ways: Arc<tunnel::Ways>,
+    /// When the system was last asked where the names of the PCs lead.
+    names_asked: Mutex<Option<Instant>>,
+    /// The local networks Leto looked around on since it started.
+    looked_around: Mutex<BTreeSet<discovery::Around>>,
 }
 
 impl Client {
@@ -313,6 +336,8 @@ impl Client {
             hosts: Arc::new(Mutex::new(hosts)),
             saving: Mutex::new(()),
             ways: Arc::new(tunnel::Ways::open(directory)),
+            names_asked: Mutex::new(None),
+            looked_around: Mutex::new(BTreeSet::new()),
         })
     }
 
@@ -346,9 +371,21 @@ impl Client {
 
     /// Listens on the local network for `duration` and returns the hosts that
     /// announced themselves and answered. They join [`Client::hosts`].
+    ///
+    /// Meanwhile the PCs Leto keeps are looked for by their names, and a
+    /// paired PC that answers only from further away is looked for at the
+    /// addresses around this device: both find the address nearby of a PC
+    /// known only through a VPN.
     pub fn discover(&self, duration: Duration) -> Result<Vec<HostSummary>, Error> {
-        let announcements =
-            discovery::listen(duration).map_err(|error| Error::Discovery(error.to_string()))?;
+        let (announcements, named) = thread::scope(|scope| {
+            let naming = scope.spawn(|| self.where_names_lead(duration));
+            let looking = scope.spawn(|| self.look_around_on(&discovery::networks()));
+            let announcements = discovery::listen(duration);
+            let _ = looking.join();
+            (announcements, naming.join().unwrap_or_default())
+        });
+        self.ask_nearby(&named);
+        let announcements = announcements.map_err(|error| Error::Discovery(error.to_string()))?;
         let mut found: Vec<HostSummary> = Vec::new();
         for announcement in announcements {
             match self.probe(&announcement.address.to_string(), announcement.port) {
@@ -360,6 +397,179 @@ impl Client {
             }
         }
         Ok(found)
+    }
+
+    /// The addresses nearby that the names of the PCs Leto keeps lead to,
+    /// by this device's system, and that Leto does not know them at yet:
+    /// each with the PC it would be and the port to ask on. Asked once in a
+    /// while only.
+    fn where_names_lead(&self, patience: Duration) -> Vec<(HostId, String, u16)> {
+        {
+            let mut asked = self.names_asked.lock().unwrap_or_else(PoisonError::into_inner);
+            if asked.is_some_and(|asked| asked.elapsed() < NAMES_ASKED_EVERY) {
+                return Vec::new();
+            }
+            *asked = Some(Instant::now());
+        }
+        let kept: Vec<_> = self
+            .lock()
+            .iter()
+            .filter(|(_, entry)| entry.saved)
+            .map(|(id, entry)| (id.clone(), entry.summary.name.clone(), entry.addresses.clone()))
+            .collect();
+        // All at once: a name nobody knows takes all the patience there is.
+        thread::scope(|scope| {
+            let asking: Vec<_> = kept
+                .iter()
+                .map(|(id, name, known)| {
+                    scope.spawn(move || {
+                        let mut ports: Vec<u16> = known.iter().map(|(_, port)| *port).collect();
+                        ports.sort_unstable();
+                        ports.dedup();
+                        let mut led = Vec::new();
+                        for address in discovery::by_name(name, patience) {
+                            let address = address.to_string();
+                            for &port in &ports {
+                                if !known.contains(&(address.clone(), port)) {
+                                    led.push((id.clone(), address.clone(), port));
+                                }
+                            }
+                        }
+                        led
+                    })
+                })
+                .collect();
+            let led: Vec<_> =
+                asking.into_iter().flat_map(|asking| asking.join().unwrap_or_default()).collect();
+            log::debug!(
+                "the names of the {} PCs kept lead to {} addresses nearby that are new",
+                kept.len(),
+                led.len()
+            );
+            led
+        })
+    }
+
+    /// Asks at the addresses the names of PCs led to, and keeps those where
+    /// the PC answers: for one that is paired, with the proof that it is.
+    fn ask_nearby(&self, named: &[(HostId, String, u16)]) {
+        if named.is_empty() {
+            return;
+        }
+        let answers = self.ask_every_way(
+            named.iter().map(|(_, address, port)| (address.clone(), *port)).collect(),
+        );
+        let deadline = Instant::now() + NEARBY_PATIENCE;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let answer = match answers.recv_timeout(left) {
+                Ok(Ok(answer)) => answer,
+                Ok(Err(_)) => continue,
+                Err(_) => break,
+            };
+            let id = answer.summary.id.clone();
+            let expected = named.iter().any(|(expected, address, port)| {
+                *expected == id
+                    && *address == answer.summary.address
+                    && *port == answer.summary.port
+            });
+            let paired = self.lock().get(&id).is_some_and(|entry| entry.certificate.is_some());
+            if !expected {
+                // Another PC has that name here: found, as one that
+                // announced itself.
+                self.record(answer);
+            } else if answer.summary.paired || !paired {
+                log::info!(
+                    "{} is also at {}, where its name leads on this network",
+                    answer.summary.name,
+                    join_address(&answer.summary.address, answer.summary.port)
+                );
+                self.record(answer);
+            } else {
+                log::debug!(
+                    "{} did not prove to be {}",
+                    join_address(&answer.summary.address, answer.summary.port),
+                    answer.summary.name
+                );
+            }
+        }
+    }
+
+    /// Looks on `networks`, the local ones this device is on, for the PCs
+    /// that are paired and answer now, but not on that network: as one
+    /// reached through a VPN while this device is at home beside it. Every
+    /// address around this device is asked for a connection on the PC's
+    /// port, and what takes one is asked who it is. Only a PC that proves
+    /// to be one Leto paired with is kept, at that address too, and the
+    /// nearest address is then the one used.
+    ///
+    /// Each network is looked around on once while Leto runs, and only
+    /// while such a PC answers: it is some 250 connections tried, which a
+    /// network that is not the person's own may notice.
+    #[doc(hidden)]
+    pub fn look_around_on(&self, networks: &[discovery::Around]) {
+        for network in networks {
+            let (sought, ports) = {
+                let hosts = self.lock();
+                let sought: BTreeMap<HostId, Vec<u16>> = hosts
+                    .iter()
+                    .filter(|(_, entry)| {
+                        let reached = entry.summary.address.parse::<std::net::Ipv4Addr>();
+                        entry.saved
+                            && entry.certificate.is_some()
+                            && entry.summary.reachability == Reachability::Online
+                            && !reached.is_ok_and(|reached| network.holds(reached))
+                    })
+                    .map(|(id, entry)| {
+                        (id.clone(), entry.addresses.iter().map(|(_, port)| *port).collect())
+                    })
+                    .collect();
+                let ports: BTreeSet<u16> = sought.values().flatten().copied().collect();
+                (sought, ports)
+            };
+            if sought.is_empty() {
+                continue;
+            }
+            let new =
+                self.looked_around.lock().unwrap_or_else(PoisonError::into_inner).insert(*network);
+            if !new {
+                continue;
+            }
+            let addresses: Vec<_> = network.addresses().collect();
+            let mut taking = Vec::new();
+            for port in ports {
+                let open = discovery::listening(&addresses, port, AROUND_PATIENCE);
+                log::debug!(
+                    "looking around for {} PCs that answer from further away: {} of the {} \
+                     addresses around this device take a connection on port {port}",
+                    sought.len(),
+                    open.len(),
+                    addresses.len()
+                );
+                taking.extend(open.into_iter().map(|address| (address.to_string(), port)));
+            }
+            if taking.is_empty() {
+                continue;
+            }
+            let answers = self.ask_every_way(taking);
+            let deadline = Instant::now() + NEARBY_PATIENCE;
+            while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                let answer = match answers.recv_timeout(left) {
+                    Ok(Ok(answer)) => answer,
+                    Ok(Err(_)) => continue,
+                    Err(_) => break,
+                };
+                // Nothing else found this way is kept: not a PC Leto does
+                // not know, and not one that does not prove who it is.
+                if sought.contains_key(&answer.summary.id) && answer.summary.paired {
+                    log::info!(
+                        "{} is also at {}, among the addresses around this device",
+                        answer.summary.name,
+                        join_address(&answer.summary.address, answer.summary.port)
+                    );
+                    self.record(answer);
+                }
+            }
+        }
     }
 
     /// Asks every known host whether it is there, at every address it was
@@ -417,6 +627,11 @@ impl Client {
             let mut hosts = self.lock();
             let entry = hosts.get_mut(id).ok_or(Error::UnknownHost)?;
             entry.certificate = Some(server.to_pem().to_string());
+            // The handle that paired is the one that can prove it. A look at
+            // the PCs while the PIN was awaited put another in its place,
+            // made when this device was not paired, and the app then said
+            // that the PC no longer knew this device.
+            entry.handle = Some(Arc::clone(&handle));
             entry.card = card.or(entry.card);
             entry.saved = true;
             entry.summary.paired = true;
@@ -819,7 +1034,7 @@ impl Client {
     /// Keeps what a host answered, and the address it answered at as the one
     /// to use. A saved host that learns an address is saved again.
     fn record(&self, answer: Answer) -> HostSummary {
-        let Answer { mut summary, handle, local, card, door } = answer;
+        let Answer { mut summary, handle, local, card, door, knew_pairing } = answer;
         let learned = {
             let mut hosts = self.lock();
             let entry = hosts.entry(summary.id.clone()).or_insert_with(|| Entry {
@@ -831,6 +1046,13 @@ impl Client {
                 saved: false,
                 handle: None,
             });
+            // An answer asked for before this device paired and arriving
+            // after says nothing of the pairing, and its handle cannot
+            // prove it: the pairing and the handle that made it stay.
+            let outdated = entry.certificate.is_some() && !knew_pairing;
+            if outdated {
+                summary.paired = entry.summary.paired;
+            }
             let before = entry.addresses.clone();
             let card_before = entry.card;
             // A card is kept even while the host does not tell it, as when
@@ -859,8 +1081,10 @@ impl Client {
                 );
             }
             entry.summary = summary.clone();
-            entry.door = door;
-            entry.handle = Some(Arc::new(handle));
+            if !outdated || entry.handle.is_none() {
+                entry.door = door;
+                entry.handle = Some(Arc::new(handle));
+            }
             entry.saved && (entry.addresses != before || entry.card != card_before)
         };
         if learned && let Err(error) = self.persist() {
@@ -952,6 +1176,8 @@ struct Answer {
     card: Option<wake::Card>,
     /// The door through Leto's tunnel it answered at, if that was the way.
     door: Option<Ipv4Addr>,
+    /// Whether this device was paired with the host when it was asked.
+    knew_pairing: bool,
 }
 
 impl Asker {
@@ -1015,7 +1241,7 @@ impl Asker {
         // further away, for example through a forwarded port.
         let local =
             handle.local_ip().ok().filter(|ip| !ip.is_unspecified()).map(|ip| ip.to_string());
-        Ok(Answer { summary, handle, local, card, door })
+        Ok(Answer { summary, handle, local, card, door, knew_pairing: certificate.is_some() })
     }
 }
 

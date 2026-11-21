@@ -13,7 +13,9 @@
 //! is the only way to H.265 and AV1. OpenH264 on the processor stays as the
 //! H.264 decoder that works everywhere. Decoded pictures stay as the
 //! decoders give them, in planes, and a [`Card`] turns them into pixels on
-//! the graphics card as the window draws them.
+//! the graphics card as the window draws them. On Windows, a picture
+//! decoded on the graphics card can stay there until it is drawn: a
+//! [`Kept`], which is being tried.
 
 mod camera;
 // Drawing goes through OpenGL's C interface.
@@ -23,10 +25,17 @@ mod convert;
 mod encode;
 mod endpoints;
 mod feed;
+// Direct3D and the driver's sharing with OpenGL are C interfaces.
+#[allow(unsafe_code)]
+mod kept;
+// Direct3D is a C interface.
 mod microphone;
 mod queue;
 mod sound;
 mod speaker;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod straight;
 mod video;
 mod voice;
 
@@ -36,10 +45,11 @@ pub use convert::Planes;
 pub use encode::{Encoded, PictureEncoder, Sending};
 pub use endpoints::{microphones, speakers};
 pub use feed::{CameraFeed, Carrier, Fed, Feeding, Limits};
+pub use kept::Kept;
 pub use microphone::Microphone;
 pub use sound::SoundDecoder;
 pub use speaker::Speaker;
-pub use video::{Picture, VideoDecoder, decodable};
+pub use video::{Pane, Picture, VideoDecoder, decodable};
 pub use voice::{VOICE_FRAME, VOICE_RATE, VoiceEncoder};
 
 /// What can go wrong with pictures and sound.

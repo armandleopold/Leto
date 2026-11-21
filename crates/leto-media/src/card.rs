@@ -10,10 +10,15 @@
 //! It draws with OpenGL 3.1 or OpenGL ES 3, through the context the window
 //! draws with. Where the card offers less, [`Card::fits`] says so and the
 //! pixels are made on the processor as before.
+//!
+//! A picture that stayed on the card it was decoded on is pixels there
+//! already: it is drawn as it is, from where it is (see `kept.rs`).
 
 use glow::{HasContext as _, PixelUnpackData};
 
-use crate::{Error, Planes};
+#[cfg(windows)]
+use crate::kept::windows::Seen;
+use crate::{Error, Kept, Planes};
 
 type Gl = glow::Context;
 type Program = <Gl as glow::HasContext>::Program;
@@ -33,6 +38,15 @@ void main() {
 
 /// BT.601 in limited range, as `convert.rs` has it in 256ths: brightness
 /// goes from 16 to 235, and each colour from 16 to 240 around 128.
+///
+/// A colour serves two pixels across and two down. An encoder puts it where
+/// the left one of the two is, and halfway between the two rows: that is
+/// where H.264, H.265 and AV1 have it unless a stream says otherwise, and
+/// where Sunshine and Apollo make it. A texture has it in the middle of the
+/// two pixels, half a pixel further right. So the colours are read half a
+/// pixel to the right of the brightness, which puts each back under the
+/// pixels it was made from; read at the same place, every edge of colour
+/// would be drawn half a pixel off and smeared over its neighbours.
 const FRAGMENT: &str = r"
 uniform sampler2D luma;
 uniform sampler2D chroma;
@@ -40,13 +54,25 @@ in vec2 place;
 out vec4 colour;
 void main() {
     float y = 1.1641 * (texture(luma, place).r - 16.0 / 255.0);
-    vec2 c = texture(chroma, place).rg - 128.0 / 255.0;
+    vec2 half_a_pixel = vec2(0.5 / float(textureSize(luma, 0).x), 0.0);
+    vec2 c = texture(chroma, place + half_a_pixel).rg - 128.0 / 255.0;
     colour = vec4(
         y + 1.5977 * c.y,
         y - 0.3906 * c.x - 0.8125 * c.y,
         y + 2.0156 * c.x,
         1.0
     );
+}
+";
+
+/// A picture that is pixels on the card already, drawn as it is.
+#[cfg(windows)]
+const FRAGMENT_OF_PIXELS: &str = r"
+uniform sampler2D picture;
+in vec2 place;
+out vec4 colour;
+void main() {
+    colour = vec4(texture(picture, place).rgb, 1.0);
 }
 ";
 
@@ -60,6 +86,15 @@ pub struct Card {
     chroma: Texture,
     /// Width and height of the picture the textures were made for.
     size: Option<(usize, usize)>,
+    /// Draws a picture that stayed on the card.
+    #[cfg(windows)]
+    of_pixels: Program,
+    /// Where pictures stay on the card, as OpenGL sees it, once one did.
+    #[cfg(windows)]
+    seen: Option<Seen>,
+    /// The picture shown last stayed on the card.
+    #[cfg(windows)]
+    stays: bool,
 }
 
 impl Card {
@@ -79,7 +114,9 @@ impl Card {
         if !Self::fits(gl) {
             return Err(Error::Video("the graphics card draws no pictures from planes".into()));
         }
-        let program = program(gl)?;
+        #[cfg(windows)]
+        let of_pixels = program(gl, FRAGMENT_OF_PIXELS)?;
+        let program = program(gl, FRAGMENT)?;
         // SAFETY: plain calls into the context, which is current on this
         // thread, with names it gave.
         unsafe {
@@ -90,14 +127,53 @@ impl Card {
             gl.use_program(Some(program));
             gl.uniform_1_i32(gl.get_uniform_location(program, "luma").as_ref(), 0);
             gl.uniform_1_i32(gl.get_uniform_location(program, "chroma").as_ref(), 1);
+            #[cfg(windows)]
+            {
+                gl.use_program(Some(of_pixels));
+                gl.uniform_1_i32(gl.get_uniform_location(of_pixels, "picture").as_ref(), 0);
+            }
             gl.use_program(None);
-            Ok(Self { program, corners, luma, chroma, size: None })
+            Ok(Self {
+                program,
+                corners,
+                luma,
+                chroma,
+                size: None,
+                #[cfg(windows)]
+                of_pixels,
+                #[cfg(windows)]
+                seen: None,
+                #[cfg(windows)]
+                stays: false,
+            })
         }
     }
 
+    /// Whether a card reached through `gl` draws pictures that stayed on
+    /// the card they were decoded on: its driver shares them with Direct3D.
+    /// Called on the thread that draws, with the context current. Only on
+    /// Windows, and a picture can still fail to be shown: one decoded on
+    /// another card than the window is drawn by.
+    pub fn keeps(gl: &Gl) -> bool {
+        #[cfg(windows)]
+        // SAFETY: the context is current on this thread, as every call here
+        // is made.
+        let keeps = Self::fits(gl) && unsafe { crate::kept::windows::shares() };
+        #[cfg(not(windows))]
+        let keeps = {
+            let _ = gl;
+            false
+        };
+        keeps
+    }
+
     /// Puts `planes` on the card: they are what [`Self::draw`] draws from
-    /// now on.
-    pub fn show(&mut self, gl: &Gl, planes: &Planes) {
+    /// now on. A picture that stayed on the card is found there, which can
+    /// fail: what was shown before then stays.
+    pub fn show(&mut self, gl: &Gl, planes: &Planes) -> Result<(), Error> {
+        if let Some(kept) = &planes.kept {
+            return self.show_kept(gl, kept);
+        }
         let (width, height) = (planes.width, planes.height);
         let (colour_width, colour_height) = planes.chroma_size();
         let fits = width > 0
@@ -112,10 +188,10 @@ impl Card {
             number(colour_width),
             number(colour_height),
         ) else {
-            return;
+            return Ok(());
         };
         if !fits {
-            return;
+            return Ok(());
         }
         let new_size = self.size != Some((width, height));
         // SAFETY: plain calls into the context, current on this thread, with
@@ -162,13 +238,66 @@ impl Card {
             gl.bind_texture(glow::TEXTURE_2D, None);
         }
         self.size = Some((width, height));
+        #[cfg(windows)]
+        {
+            self.stays = false;
+        }
+        Ok(())
+    }
+
+    /// Finds `kept` on the card: it is what [`Self::draw`] draws from now
+    /// on.
+    #[cfg(windows)]
+    fn show_kept(&mut self, gl: &Gl, kept: &Kept) -> Result<(), Error> {
+        if self.seen.as_ref().is_none_or(|seen| !seen.shows(kept)) {
+            // SAFETY: the context is current on this thread, and is the one
+            // the texture left was opened with.
+            unsafe {
+                if let Some(seen) = self.seen.take() {
+                    seen.close(gl);
+                }
+                self.seen = Some(Seen::open(gl, kept).map_err(Error::Video)?);
+            }
+        }
+        if let Some(seen) = &mut self.seen {
+            seen.take().map_err(Error::Video)?;
+        }
+        self.stays = true;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    fn show_kept(&mut self, _gl: &Gl, kept: &Kept) -> Result<(), Error> {
+        kept.never()
     }
 
     /// Draws the picture shown last over the whole of the viewport, or
-    /// nothing before the first.
-    pub fn draw(&self, gl: &Gl) {
+    /// nothing before the first. Drawing a picture that stayed on the card
+    /// can fail, and then draws nothing.
+    pub fn draw(&mut self, gl: &Gl) -> Result<(), Error> {
+        #[cfg(windows)]
+        if self.stays {
+            let (program, corners) = (self.of_pixels, self.corners);
+            let Some(seen) = &mut self.seen else { return Ok(()) };
+            // SAFETY: plain calls into the context, current on this thread,
+            // with names it gave: the one the texture was opened with.
+            return unsafe {
+                seen.draw(gl, |texture| {
+                    gl.use_program(Some(program));
+                    gl.active_texture(glow::TEXTURE0);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                    gl.bind_vertex_array(Some(corners));
+                    gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+                    gl.bind_vertex_array(None);
+                    gl.bind_texture(glow::TEXTURE_2D, None);
+                    gl.use_program(None);
+                })
+            }
+            .map_err(Error::Video);
+        }
         if self.size.is_none() {
-            return;
+            return Ok(());
         }
         // SAFETY: plain calls into the context, current on this thread, with
         // names it gave.
@@ -187,6 +316,7 @@ impl Card {
             gl.bind_texture(glow::TEXTURE_2D, None);
             gl.use_program(None);
         }
+        Ok(())
     }
 
     /// Waits until the card did everything it was asked before, putting
@@ -207,6 +337,13 @@ impl Card {
             gl.delete_vertex_array(self.corners);
             gl.delete_texture(self.luma);
             gl.delete_texture(self.chroma);
+            #[cfg(windows)]
+            {
+                gl.delete_program(self.of_pixels);
+                if let Some(seen) = self.seen {
+                    seen.close(gl);
+                }
+            }
         }
     }
 }
@@ -234,9 +371,9 @@ unsafe fn texture(gl: &Gl) -> Result<Texture, String> {
     }
 }
 
-/// The program that turns planes into pixels, in the language version the
-/// context speaks.
-fn program(gl: &Gl) -> Result<Program, Error> {
+/// A program that draws a picture as `fragment` says, in the language
+/// version the context speaks.
+fn program(gl: &Gl, fragment: &str) -> Result<Program, Error> {
     let first = if gl.version().is_embedded {
         "#version 300 es\nprecision highp float;\n"
     } else {
@@ -248,7 +385,7 @@ fn program(gl: &Gl) -> Result<Program, Error> {
     unsafe {
         let program = gl.create_program().map_err(|error| failed("no program", error))?;
         let mut shaders = Vec::new();
-        for (kind, source) in [(glow::VERTEX_SHADER, VERTEX), (glow::FRAGMENT_SHADER, FRAGMENT)] {
+        for (kind, source) in [(glow::VERTEX_SHADER, VERTEX), (glow::FRAGMENT_SHADER, fragment)] {
             let shader = gl.create_shader(kind).map_err(|error| failed("no shader", error))?;
             gl.shader_source(shader, &format!("{first}{source}"));
             gl.compile_shader(shader);

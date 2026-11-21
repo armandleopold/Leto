@@ -264,7 +264,8 @@ impl Which {
             #[cfg(any(windows, target_os = "linux"))]
             Self::System(name) => Ok(Box::new(device::Device::open(name.as_deref())?)),
             #[cfg(not(any(windows, target_os = "linux")))]
-            Self::System(_) => {
+            Self::System(name) => {
+                let _ = name;
                 Err(Error::Camera("Leto does not read cameras on this system yet".to_owned()))
             }
             Self::Card => Ok(Box::new(card::Card::new())),

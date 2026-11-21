@@ -53,36 +53,65 @@ pub fn show(ui: &mut Ui, state: &mut State, now: f64) -> bool {
 /// the settings, the camera and the rest, and searching again. Returns
 /// whether the person asked for the settings.
 fn header(ui: &mut Ui, state: &mut State, now: f64) -> bool {
-    let mut settings = false;
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            widgets::title(ui, "Your PCs");
-            if state.searching {
-                widgets::waiting(ui, "Looking on your network…");
-            } else {
-                ui.label(widgets::dim(match state.hosts.len() {
-                    0 => "PCs running Apollo or Sunshine show up here.".to_owned(),
-                    1 => "1 PC".to_owned(),
-                    count => format!("{count} PCs"),
-                }));
-            }
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let again = ui.add_enabled_ui(!state.searching, |ui| {
-                widgets::icon_button(ui, icons::refresh, "Search again")
-            });
-            if again.inner.clicked() {
-                state.search(now);
-            }
-            if widgets::icon_button(ui, icons::camera, super::devices::NAME).clicked() {
-                state.check_devices();
-            }
-            settings = widgets::icon_button(ui, icons::gear, "Settings").clicked();
-        });
-    });
-    settings
+    if ui.available_width() < NARROW {
+        // A phone held upright: the buttons go on a line of their own.
+        let settings = ui
+            .allocate_ui_with_layout(
+                vec2(ui.available_width(), 36.0),
+                Layout::right_to_left(Align::Center),
+                |ui| header_buttons(ui, state, now),
+            )
+            .inner;
+        titles(ui, state);
+        settings
+    } else {
+        ui.horizontal(|ui| {
+            titles(ui, state);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                header_buttons(ui, state, now)
+            })
+            .inner
+        })
+        .inner
+    }
 }
+
+/// The title of the list of PCs and the line under it.
+fn titles(ui: &mut Ui, state: &State) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        widgets::title(ui, "Your PCs");
+        if state.searching {
+            widgets::waiting(ui, "Looking on your network…");
+        } else {
+            let line = match state.hosts.len() {
+                0 => "PCs running Apollo or Sunshine show up here.".to_owned(),
+                1 => "1 PC".to_owned(),
+                count => format!("{count} PCs"),
+            };
+            ui.add(egui::Label::new(widgets::dim(line)).wrap());
+        }
+    });
+}
+
+/// The buttons of the header, from the right. Returns whether the settings
+/// were asked for.
+fn header_buttons(ui: &mut Ui, state: &mut State, now: f64) -> bool {
+    let again = ui.add_enabled_ui(!state.searching, |ui| {
+        widgets::icon_button(ui, icons::refresh, "Search again")
+    });
+    if again.inner.clicked() {
+        state.search(now);
+    }
+    if widgets::icon_button(ui, icons::camera, super::devices::NAME).clicked() {
+        state.check_devices();
+    }
+    widgets::icon_button(ui, icons::gear, "Settings").clicked()
+}
+
+/// Below this width, in points, the header puts its buttons above the
+/// titles rather than beside them.
+const NARROW: f32 = 520.0;
 
 /// The grid of PCs, ending with the card that adds one.
 fn cards(ui: &mut Ui, hosts: &[HostSummary], waking: &[HostId], adding: bool) -> Option<Chosen> {
@@ -122,14 +151,14 @@ fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Optio
     let lit = response.hovered() || response.has_focus();
 
     let painter = ui.painter();
-    let fill = if lit { theme::SURFACE_HOVER } else { theme::SURFACE };
-    let border = if lit { theme::SUN.gamma_multiply(0.7) } else { theme::LINE };
+    let fill = if lit { theme::surface_hover() } else { theme::surface() };
+    let border = if lit { theme::sun().gamma_multiply(0.7) } else { theme::line() };
     painter.rect(rect, theme::CARD_RADIUS, fill, Stroke::new(1.0, border), StrokeKind::Inside);
 
-    let ink = if offline { theme::DIM } else { theme::MOON };
+    let ink = if offline { theme::dim() } else { theme::text() };
     let tile = Rect::from_min_size(rect.min + vec2(16.0, 16.0), Vec2::splat(42.0));
-    painter.rect_filled(tile, theme::CONTROL_RADIUS, theme::GROUND);
-    icons::monitor(painter, tile.shrink(10.0), if offline { theme::DIM } else { theme::SUN });
+    painter.rect_filled(tile, theme::CONTROL_RADIUS, theme::ground());
+    icons::monitor(painter, tile.shrink(10.0), if offline { theme::dim() } else { theme::sun() });
 
     let text_width = size.x - 32.0;
     widgets::line(painter, rect.min + vec2(16.0, 70.0), &host.name, 19.0, ink, text_width);
@@ -140,7 +169,7 @@ fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Optio
             painter.circle_filled(dot_center, 4.0, color);
         }
         Dot::Hollow => {
-            painter.circle_stroke(dot_center, 3.5, Stroke::new(1.5, theme::DIM));
+            painter.circle_stroke(dot_center, 3.5, Stroke::new(1.5, theme::dim()));
         }
     }
     let state_pos = rect.min + vec2(33.0, 100.0);
@@ -150,7 +179,7 @@ fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Optio
     let way = if host.tunnel { " · WireGuard" } else { "" };
     let detail = format!("{} · {}{way}", host.kind.name(), shown_address(host));
     let detail_pos = rect.min + vec2(16.0, 122.0);
-    widgets::line(painter, detail_pos, &detail, theme::SMALL - 0.5, theme::DIM, text_width);
+    widgets::line(painter, detail_pos, &detail, theme::SMALL - 0.5, theme::dim(), text_width);
 
     // On top of the card, so that it takes its own clicks.
     let menu_rect =
@@ -177,24 +206,24 @@ fn add_card(ui: &mut Ui, size: Vec2) -> bool {
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a PC"));
     let lit = response.hovered() || response.has_focus();
     let painter = ui.painter();
-    let border = if lit { theme::SUN.gamma_multiply(0.7) } else { theme::LINE };
-    let fill = if lit { theme::SURFACE } else { theme::GROUND };
+    let border = if lit { theme::sun().gamma_multiply(0.7) } else { theme::line() };
+    let fill = if lit { theme::surface() } else { theme::ground() };
     painter.rect(rect, theme::CARD_RADIUS, fill, Stroke::new(1.0, border), StrokeKind::Inside);
 
     let center = rect.center();
     let icon = Rect::from_center_size(center - vec2(0.0, 22.0), Vec2::splat(22.0));
-    icons::plus(painter, icon, if lit { theme::SUN } else { theme::DIM });
+    icons::plus(painter, icon, if lit { theme::sun() } else { theme::dim() });
     let font = egui::FontId::proportional(theme::BODY);
     painter.text(
         center + vec2(0.0, 12.0),
         egui::Align2::CENTER_CENTER,
         "Add a PC",
         font,
-        theme::MOON,
+        theme::text(),
     );
     let font = egui::FontId::proportional(theme::SMALL - 0.5);
     let hint = "by its address";
-    painter.text(center + vec2(0.0, 33.0), egui::Align2::CENTER_CENTER, hint, font, theme::DIM);
+    painter.text(center + vec2(0.0, 33.0), egui::Align2::CENTER_CENTER, hint, font, theme::dim());
 
     response.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }
@@ -204,7 +233,7 @@ fn nothing_found(ui: &mut Ui, state: &mut State, now: f64) {
     ui.add_space((ui.available_height() * 0.16).clamp(16.0, 120.0));
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
-        icons::monitor(ui.painter(), rect, theme::LINE);
+        icons::monitor(ui.painter(), rect, theme::line());
         ui.add_space(6.0);
 
         if !state.searched {
@@ -215,7 +244,7 @@ fn nothing_found(ui: &mut Ui, state: &mut State, now: f64) {
 
         ui.label(RichText::new("No PC found yet").size(20.0));
         ui.scope(|ui| {
-            ui.set_max_width(440.0);
+            ui.set_max_width(ui.available_width().min(440.0));
             let advice = if state.network_searched {
                 "Leto finds PCs that run Apollo or Sunshine on the same network as this device. \
                  Check that yours is on, or add it by its address."
@@ -245,8 +274,8 @@ fn nothing_found(ui: &mut Ui, state: &mut State, now: f64) {
 }
 
 fn primary(text: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(text).color(theme::GROUND))
-        .fill(theme::SUN)
+    egui::Button::new(RichText::new(text).color(theme::on_sun()))
+        .fill(theme::sun())
         .stroke(Stroke::NONE)
         .corner_radius(theme::CONTROL_RADIUS)
 }
@@ -257,8 +286,8 @@ fn quiet(text: &str) -> egui::Button<'_> {
 
 fn add_form(ui: &mut Ui, state: &mut State) {
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::LINE))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::line()))
         .corner_radius(theme::CARD_RADIUS)
         .inner_margin(egui::Margin::same(18))
         .show(ui, |ui| {
@@ -297,7 +326,7 @@ fn add_form(ui: &mut Ui, state: &mut State) {
             });
             if let Some(error) = &state.add.error {
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(RichText::new(error).color(theme::PROBLEM)).wrap());
+                ui.add(egui::Label::new(RichText::new(error).color(theme::problem())).wrap());
             }
 
             if submit {
@@ -323,9 +352,9 @@ fn status(host: &HostSummary, waking: bool) -> (Dot, &'static str) {
         (Reachability::Offline, ..) if host.wakeable => (Dot::Hollow, "Offline · click to wake"),
         (Reachability::Offline, ..) => (Dot::Hollow, "Offline"),
         (Reachability::Unknown, ..) => (Dot::Hollow, "Checking…"),
-        (Reachability::Online, false, _) => (Dot::Full(theme::SUN), "Not paired yet"),
-        (Reachability::Online, true, true) => (Dot::Full(theme::READY), "An app is running"),
-        (Reachability::Online, true, false) => (Dot::Full(theme::READY), "Ready"),
+        (Reachability::Online, false, _) => (Dot::Full(theme::sun()), "Not paired yet"),
+        (Reachability::Online, true, true) => (Dot::Full(theme::ready()), "An app is running"),
+        (Reachability::Online, true, false) => (Dot::Full(theme::ready()), "Ready"),
     }
 }
 

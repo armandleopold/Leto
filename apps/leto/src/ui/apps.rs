@@ -107,7 +107,9 @@ pub fn show(
     match &view.apps {
         Loadable::Loading => widgets::waiting(ui, "Asking the PC for its apps…"),
         Loadable::Failed(problem) => {
-            ui.add(egui::Label::new(RichText::new(&problem.message).color(theme::PROBLEM)).wrap());
+            ui.add(
+                egui::Label::new(RichText::new(&problem.message).color(theme::problem())).wrap(),
+            );
             ui.add_space(6.0);
             if problem.needs_pairing {
                 if widgets::primary_button(ui, "Pair again").clicked() {
@@ -127,7 +129,7 @@ pub fn show(
             let mut chosen = None;
             let mut quit = false;
             if let Some(notice) = &view.notice {
-                let color = if notice.problem { theme::PROBLEM } else { theme::DIM };
+                let color = if notice.problem { theme::problem() } else { theme::dim() };
                 ui.add(egui::Label::new(RichText::new(&notice.text).color(color)).wrap());
                 ui.add_space(4.0);
             }
@@ -167,14 +169,14 @@ fn running_card(ui: &mut Ui, view: &AppsView) -> (bool, bool) {
     let mut resume = false;
     let mut quit = false;
     egui::Frame::new()
-        .fill(theme::SURFACE)
+        .fill(theme::surface())
         .corner_radius(theme::CARD_RADIUS)
         .inner_margin(egui::Margin::symmetric(16, 10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.set_min_height(40.0);
                 let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                ui.painter().circle_filled(dot.center(), 4.0, theme::READY);
+                ui.painter().circle_filled(dot.center(), 4.0, theme::ready());
                 let text = match view.running() {
                     Some(app) => format!("{} is running", app.title),
                     None => "An app is running".to_owned(),
@@ -246,7 +248,7 @@ fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32, running: bo
                 .paint_at(ui, picture);
         }
         Cover::Loading | Cover::Missing => {
-            painter.rect_filled(picture, theme::CONTROL_RADIUS, theme::SURFACE);
+            painter.rect_filled(picture, theme::CONTROL_RADIUS, theme::surface());
             // The first letter stands in for the picture.
             let letter: String = app.title.chars().take(1).flat_map(char::to_uppercase).collect();
             painter.text(
@@ -254,24 +256,26 @@ fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32, running: bo
                 Align2::CENTER_CENTER,
                 letter,
                 FontId::proportional(width * 0.42),
-                theme::LINE,
+                theme::line(),
             );
         }
     }
-    let border = if lit { Stroke::new(2.0, theme::SUN) } else { Stroke::new(1.0, theme::LINE) };
+    let border = if lit { Stroke::new(2.0, theme::sun()) } else { Stroke::new(1.0, theme::line()) };
     painter.rect_stroke(picture, theme::CONTROL_RADIUS, border, StrokeKind::Inside);
 
+    // What is written on a cover is read on a picture, by night and by day.
+    let on_picture = &theme::NIGHT;
     if running {
         let font = FontId::proportional(11.5);
-        let label = painter.layout_no_wrap("Running".to_owned(), font, theme::MOON);
+        let label = painter.layout_no_wrap("Running".to_owned(), font, on_picture.text);
         let badge = Rect::from_min_size(
             picture.left_top() + vec2(8.0, 8.0),
             vec2(label.size().x + 26.0, 20.0),
         );
         painter.rect_filled(badge, 6, Color32::from_black_alpha(190));
-        painter.circle_filled(badge.left_center() + vec2(10.0, 0.0), 3.5, theme::READY);
+        painter.circle_filled(badge.left_center() + vec2(10.0, 0.0), 3.5, on_picture.ready);
         let text = pos2(badge.left() + 19.0, badge.center().y - label.size().y / 2.0);
-        painter.galley(text, label, theme::MOON);
+        painter.galley(text, label, on_picture.text);
     }
 
     if app.hdr {
@@ -281,12 +285,12 @@ fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32, running: bo
         );
         painter.rect_filled(badge, 6, Color32::from_black_alpha(190));
         let font = FontId::proportional(11.5);
-        painter.text(badge.center(), Align2::CENTER_CENTER, "HDR", font, theme::MOON);
+        painter.text(badge.center(), Align2::CENTER_CENTER, "HDR", font, on_picture.text);
     }
 
     let title = pos2(rect.left() + 2.0, picture.bottom() + 8.0);
     let drawn =
-        widgets::line(painter, title, &app.title, theme::BODY - 0.5, theme::MOON, width - 4.0);
+        widgets::line(painter, title, &app.title, theme::BODY - 0.5, theme::text(), width - 4.0);
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
     // The whole title for the ones that were cut.
     if drawn.width() >= width - 6.0 {

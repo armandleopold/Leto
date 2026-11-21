@@ -33,7 +33,9 @@ Progress:
   and Alt+F4 too; Ctrl+Alt+Shift+Z gives the keyboard and the mouse back and
   Ctrl+Alt+Shift+S shows the statistics. The pointer is this device's own,
   as smooth as the mouse, and the PC is asked to leave its own out of the
-  pictures. The PC is asked for a screen of its own just like this device's,
+  pictures; Ctrl+Alt+Shift+P or a button of the bar shows the PC's own
+  instead, with its shapes, and back. The pointer reaches the far edges of
+  the PC's screen. The PC is asked for a screen of its own just like this device's,
   in size and pace, which Apollo makes. A window another one hides or covers
   shows one picture a second, or
   none. See [architecture.md](architecture.md#a-stream).
@@ -70,18 +72,30 @@ Progress:
   buttons and wheel, gamepad
   buttons, silence in the background and statistics. Leto keeps them. See
   [architecture.md](architecture.md#a-stream).
+- Being tried: on Windows, a picture decoded on the graphics card stays
+  there until the window draws it, instead of coming through memory. Behind
+  a setting under Advanced, off by default, and never run on a real graphics
+  card yet. See [architecture.md](architecture.md#a-stream).
+- Being tried: on Windows, the graphics card that decodes a picture draws
+  and shows it itself with Direct3D 11, as Moonlight does, with no OpenGL
+  and without waiting for the window. Behind a setting under Advanced, off
+  by default, and run so far only by Windows' software card in the tests. See
+  [architecture.md](architecture.md#a-stream).
 - Done: decoding on the graphics card on Windows, and AV1 and H.265 with it.
   The PC is offered what the card decodes, AV1 first, then H.265, and H.264
   always; the settings choose the codec and the decoder. See
   [architecture.md](architecture.md#a-stream).
+- Done: a light look beside the dark one. The app wears the one the system
+  asks for, on Windows and in a browser, and a stream stays dark.
 - Done: waking a PC that sleeps or is off. Leto learns the address of its
   network card when pairing and sends it the packet that wakes it when the
   PC is chosen while offline, or with `leto-cli wake`. See
   [architecture.md](architecture.md#waking-a-pc).
 - Done: a WireGuard tunnel inside Leto. Given a WireGuard file, in the
   settings or with `leto-cli tunnel use`, Leto reaches a PC at home through
-  it by itself, with no WireGuard app and no administrator rights. Never
-  tried against a real WireGuard server. See
+  it by itself, with no WireGuard app and no administrator rights. Tried
+  once against a real WireGuard server, on a Raspberry Pi, from the Windows
+  app. See
   [architecture.md](architecture.md#through-a-wireguard-tunnel).
 - Later in this step: HDR, surround sound, decoding on the graphics card on
   macOS and Linux, and H.265 and AV1 in the browser.
@@ -184,8 +198,13 @@ Questions settled in this step:
 
 ## 3. The Android client
 
-- Start from Super Artemis, renamed and restyled as Leto, with a simpler
-  default interface.
+- Started as the Leto app itself in a NativeActivity (`apps/leto-android`),
+  rather than from Super Artemis: one Rust app everywhere, as the goal is.
+  Super Artemis stays the reference for what a phone needs.
+- The v0 lists and pairs PCs, streams with sound, a finger as the mouse
+  and the phone's keyboard. Next: hardware decoding with MediaCodec, the
+  clipboard, gamepads, the microphone and the cameras, and a touch
+  interface beyond the desktop one.
 - Microphone (already there) and the phone's cameras over the return channel.
 - Move protocol code to the shared Rust core where it pays off.
 

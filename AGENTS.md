@@ -16,6 +16,7 @@ cargo run -p leto          # the app
 cargo run -p leto-cli -- pcs
 cargo xtask ci             # everything the pipeline checks
 cargo xtask web            # the web client, into dist/web
+cargo xtask android        # the Android app, into dist/android/leto.apk
 cargo run -p leto-cli -- bridge   # serves the web client to browsers
 ```
 
@@ -77,6 +78,16 @@ the stand-in host behind a tunnel end of Leto's own (`leto_tunnel::Relay`).
 A host reached through a tunnel must use the ports of a real one, counted
 from its own: `--port` on the stand-in host, `Options::real_ports` in a test.
 
+`cargo xtask android` lints the Android app and builds its APK. It needs the
+Android SDK in `ANDROID_HOME` with build tools, a platform and the NDK, plus
+Java and `zip`, as GitHub's Ubuntu runners have. The APK is signed with the
+keystore in `LETO_ANDROID_KEYSTORE` (its password in
+`LETO_ANDROID_KEY_PASSWORD`), or else with a test key made once in
+`target/android`: a phone only takes an update signed with the key of the
+version it has. The `Android` workflow runs the APK on an emulator against the
+stand-in host (`apps/leto-android/ci/emulator.sh`) and keeps its
+screenshots. The emulator reaches the computer it runs on at `10.0.2.2`.
+
 The web client needs its bridge: `cargo xtask web` builds the client, then
 `leto-cli bridge` serves it on port 5386 and prints the address to open and
 the code a new browser has to be given. The address is HTTPS with a
@@ -97,6 +108,12 @@ The desktop app has a made-up camera too: with `LETO_CAMERA=card` in its
 environment, the screen "Camera and microphone" shows a test card instead of
 the system's camera, read and converted as a camera's pictures are. The same
 card is what the app and `leto-cli play --camera` then send to a PC.
+
+The app is light or dark as the system asks. To see one look on a system
+that does not say which it wants, as the container, set `LETO_THEME=light`
+or `LETO_THEME=dark` in the app's environment. A colour is asked of
+`theme.rs` when it is used (`theme::text()`), never kept: the look can change
+between two frames.
 
 `cargo xtask ci` runs, in order: `fmt`, `clippy` (warnings are errors), `test`,
 and `targets` (a compile check for macOS, the web, Android and iOS). Each is
@@ -120,6 +137,17 @@ machine. The pipeline adds the address before it runs the tests.
 The Windows build is not part of `targets`: the Windows job of the pipeline
 builds and tests it for real.
 
+## Releases
+
+A release is a tag named after the workspace version in `Cargo.toml`:
+change the version, merge, then `git tag v0.0.2 && git push origin v0.0.2`
+(or run the Release workflow by hand with that tag). The Release workflow
+builds the app and `leto-cli` for Windows, Linux and macOS with the web
+client beside them, publishes them on GitHub with the source and
+`SHA256SUMS.txt`, then starts the Pages workflow, which puts the files of the
+latest release on leto.re for download. A tag that does not match the
+version stops it before anything is built.
+
 ## Where things go
 
 - `crates/`: everything Leto can do. Libraries, tested, no user interface.
@@ -129,7 +157,8 @@ builds and tests it for real.
   goes in `backend/`, and `ui/` only draws. See `docs/architecture.md`.
 - What the app asks of the operating system beyond what egui does (the
   keyboard below the window, the mode of a screen) goes in `leto-system`,
-  and the app asks for it through `window.rs`.
+  and the app asks for it through `window.rs`. The engine asks it for one
+  thing, a clock that counts finely while a stream runs.
 - `leto-client` hands a stream over still encoded and `leto-media` decodes
   it. Neither depends on the other, outside the tests of `leto-client`: the
   app's backend joins them. The camera goes the other way under the same

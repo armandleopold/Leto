@@ -23,9 +23,9 @@ use crate::stats::Counts;
 /// How long a window that is only glanced at shows each picture.
 const GLANCE: Duration = Duration::from_secs(1);
 
-/// How long a stream may go without any sound before Leto says none
-/// arrives. A PC sends sound all the time, silence included, from the first
-/// moments of a stream.
+/// How long a stream goes without any sound before the log says none has
+/// arrived yet. That is no problem: Sunshine and Apollo send nothing while
+/// the PC plays nothing.
 const SILENCE: Duration = Duration::from_secs(5);
 
 /// How many packets of sound that all fail to decode mean that none will:
@@ -78,6 +78,14 @@ pub struct Outlet {
     pace: Mutex<Pace>,
     /// The sound is decoded and not played.
     muted: AtomicBool,
+    /// Pictures decoded on the graphics card may stay there: the window
+    /// draws them from where they are.
+    kept: AtomicBool,
+    /// The pane the graphics card is to show the pictures on itself.
+    pane: Mutex<Option<leto_media::Pane>>,
+    /// How large the pictures are that the graphics card shows itself,
+    /// until the interface heard of it.
+    straight: Mutex<Option<[usize; 2]>>,
     /// Why the stream has no pictures, when it has none.
     picture_problem: Mutex<Option<String>>,
     /// What happened to the sound so far.
@@ -95,19 +103,25 @@ struct Heard {
     lost: u64,
     /// The problem last written in the log.
     told: Option<&'static str>,
+    /// The log said that no sound has arrived yet.
+    told_silent: bool,
 }
 
 impl Heard {
-    /// Why nothing is heard, judging by what arrived by `now`.
-    fn problem(&self, now: Instant) -> Option<&'static str> {
-        let since = self.since?;
-        if self.arrived == 0 && now.saturating_duration_since(since) >= SILENCE {
-            Some("No sound arrives from the PC.")
-        } else if self.arrived >= UNPLAYABLE && self.lost == self.arrived {
-            Some("The sound from the PC does not decode.")
-        } else {
-            None
-        }
+    /// Why nothing is heard, judging by what arrived.
+    ///
+    /// Sound that never arrives is not a problem to tell the person: a PC
+    /// that plays nothing sends nothing, and nothing tells that apart from
+    /// sound that is lost on the way.
+    fn problem(&self) -> Option<&'static str> {
+        (self.arrived >= UNPLAYABLE && self.lost == self.arrived)
+            .then_some("The sound from the PC does not decode.")
+    }
+
+    /// Whether the stream has gone a while without any sound by `now`.
+    fn silent(&self, now: Instant) -> bool {
+        self.arrived == 0
+            && self.since.is_some_and(|since| now.saturating_duration_since(since) >= SILENCE)
     }
 }
 
@@ -115,6 +129,25 @@ impl Outlet {
     /// The latest picture, once.
     pub fn take_picture(&self) -> Option<Planes> {
         self.picture.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    /// How large the pictures are that the graphics card now shows itself,
+    /// once: the interface leaves them their place.
+    pub fn take_straight(&self) -> Option<[usize; 2]> {
+        self.straight.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    /// The graphics card is to show the pictures itself on `pane`, or no
+    /// longer.
+    pub fn set_pane(&self, pane: Option<leto_media::Pane>) {
+        let mut asked = self.pane.lock().unwrap_or_else(PoisonError::into_inner);
+        if *asked != pane {
+            log::debug!(
+                "pictures decoded on the graphics card {}",
+                if pane.is_some() { "may go straight to the screen" } else { "go to the window" }
+            );
+            *asked = pane;
+        }
     }
 
     /// What happened to the pictures of the stream so far.
@@ -142,6 +175,17 @@ impl Outlet {
         }
     }
 
+    /// Lets pictures decoded on the graphics card stay there, for a window
+    /// that draws them from it, or has them read back into memory.
+    pub fn set_kept(&self, kept: bool) {
+        if self.kept.swap(kept, Ordering::Relaxed) != kept {
+            log::debug!(
+                "pictures decoded on the graphics card {}",
+                if kept { "may stay there" } else { "are read back from it" }
+            );
+        }
+    }
+
     fn pace(&self) -> Pace {
         *self.pace.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -158,7 +202,12 @@ impl Outlet {
             return set;
         }
         let mut heard = self.heard();
-        let problem = heard.problem(now);
+        if heard.silent(now) && !heard.told_silent {
+            // For whoever reads the log of a stream that had no sound.
+            log::info!("no sound has arrived from the PC yet, as when it plays nothing");
+            heard.told_silent = true;
+        }
+        let problem = heard.problem();
         if problem != heard.told {
             match problem {
                 Some(problem) => log::warn!(
@@ -239,6 +288,11 @@ pub struct Screen {
     left: Option<Instant>,
     /// Pictures went undecoded: the next ones are no use until a keyframe.
     stale: bool,
+    /// The pictures stay on the graphics card, as the log was told.
+    kept: bool,
+    /// How large the pictures are that the graphics card shows itself, as
+    /// the interface was told.
+    straight: Option<[usize; 2]>,
 }
 
 impl Screen {
@@ -252,6 +306,8 @@ impl Screen {
             last: None,
             left: None,
             stale: false,
+            kept: false,
+            straight: None,
         }
     }
 
@@ -313,6 +369,21 @@ impl VideoSink for Screen {
         let Some(decoder) = &mut self.decoder else { return Decoded::Ok };
         let fate = fate(pace, frame.waiting, self.left.map(|left| left.elapsed()));
         let seen = fate == Fate::Shown;
+        decoder.show_on(*self.outlet.pane.lock().unwrap_or_else(PoisonError::into_inner));
+        decoder.keep_on_card(self.outlet.kept.load(Ordering::Relaxed));
+        let kept = decoder.keeps_on_card();
+        if self.kept != kept {
+            self.kept = kept;
+            log::info!(
+                "pictures {}",
+                if kept {
+                    "stay on the graphics card until they are drawn"
+                } else {
+                    "come through memory to be drawn"
+                }
+            );
+            self.outlet.count(|counts| counts.kept_on_card = kept);
+        }
         let start = Instant::now();
         let decoded = if seen {
             decoder.decode_planes(frame.data, &mut self.picture)
@@ -328,11 +399,42 @@ impl VideoSink for Screen {
                 });
                 Decoded::Ok
             }
-            Ok(true) => {
+            Ok(true) if self.picture.shown => {
+                // The graphics card showed it already: the interface only
+                // hears how large the pictures are, once.
                 let copying = decoder.copying();
                 self.outlet.count(|counts| {
                     counts.decoded(Some(took));
                     counts.copied(copying);
+                    counts.straight = true;
+                    *counts.shown.get_or_insert(0) += 1;
+                });
+                self.left = Some(Instant::now());
+                let size = [self.picture.width, self.picture.height];
+                if self.straight != Some(size) {
+                    self.straight = Some(size);
+                    log::info!("pictures go straight from the graphics card to the screen");
+                    let outlet = &self.outlet;
+                    *outlet.straight.lock().unwrap_or_else(PoisonError::into_inner) = Some(size);
+                    // A picture the window was still to draw is older.
+                    outlet.picture.lock().unwrap_or_else(PoisonError::into_inner).take();
+                    self.ctx.request_repaint();
+                }
+                Decoded::Ok
+            }
+            Ok(true) => {
+                let copying = decoder.copying();
+                let was_straight = self.straight.take().is_some();
+                if was_straight {
+                    log::info!("pictures go through the window again");
+                }
+                self.outlet.count(|counts| {
+                    counts.decoded(Some(took));
+                    counts.copied(copying);
+                    if was_straight {
+                        counts.straight = false;
+                        counts.shown = None;
+                    }
                 });
                 self.left = Some(Instant::now());
                 let planes = std::mem::take(&mut self.picture);
@@ -443,23 +545,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_stream_without_sound_says_so_after_a_while() {
+    fn a_pc_that_plays_nothing_is_not_a_stream_without_sound() {
         let outlet = Outlet::default();
         let start = Instant::now();
-        assert_eq!(outlet.sound_problem_at(start + SILENCE), None, "no sound was promised yet");
-
         outlet.sound_begins(start);
-        assert_eq!(outlet.sound_problem_at(start + Duration::from_secs(1)), None, "it may come");
-        let silent = outlet.sound_problem_at(start + SILENCE).expect("too long without sound");
-        assert!(silent.contains("No sound arrives"), "{silent}");
+        assert!(!outlet.heard().silent(start + Duration::from_secs(1)), "it may come");
+        // Nothing arrived for a long while: the log says so once, and the
+        // person is told of no problem.
+        assert!(outlet.heard().silent(start + SILENCE));
+        assert_eq!(outlet.sound_problem_at(start + SILENCE), None);
+        assert!(outlet.heard().told_silent);
+        assert_eq!(outlet.sound_problem_at(start + SILENCE * 100), None);
 
-        // Sound that arrives late is sound all the same.
+        // The PC plays something at last.
         outlet.sound_arrived(true);
-        assert_eq!(outlet.sound_problem_at(start + SILENCE * 2), None);
-
-        // A new stream starts with none.
-        outlet.sound_begins(start + SILENCE * 2);
-        assert!(outlet.sound_problem_at(start + SILENCE * 3).is_some());
+        assert!(!outlet.heard().silent(start + SILENCE * 100));
+        assert_eq!(outlet.sound_problem_at(start + SILENCE * 100), None);
     }
 
     #[test]
@@ -490,6 +591,8 @@ mod tests {
             outlet.sound_problem_at(start + SILENCE).as_deref(),
             Some("This device has no sound output.")
         );
+        // The log is not told about silence it has no part in.
+        assert!(!outlet.heard().told_silent);
     }
 
     /// The whole way of a picture: drawn and encoded by the stand-in PC,

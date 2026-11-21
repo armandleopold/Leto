@@ -349,8 +349,12 @@ impl ControlHost {
     pub fn peer_estimated_rtt(&self, peer: ControlPeerId) -> Option<EstimatedRttInfo> {
         let peer = self.host.peer(peer.0)?;
 
+        // Leto: the mean that follows what is measured, once there is one.
+        // ENet's own stays up to 7 ms above the truth, see `RoundTrip`.
+        let heard = peer.address().and_then(|addr| self.host.round_trip(addr));
+
         Some(EstimatedRttInfo {
-            rtt: peer.round_trip_time(),
+            rtt: heard.unwrap_or(peer.round_trip_time()),
             rtt_variance: peer.round_trip_time_variance(),
         })
     }

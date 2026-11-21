@@ -59,7 +59,8 @@ pub fn shortcuts(raw: &mut RawInput) {
 }
 
 /// The text on the clipboard, when there is some.
-fn pasted() -> Option<String> {
+#[cfg(not(target_os = "android"))]
+pub fn pasted() -> Option<String> {
     let text = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text());
     match text {
         Ok(text) if !text.is_empty() => Some(text.replace("\r\n", "\n")),
@@ -68,6 +69,21 @@ fn pasted() -> Option<String> {
             log::debug!("nothing to paste: {error}");
             None
         }
+    }
+}
+
+/// The text on the clipboard, when there is some: Android's is reached
+/// through Java.
+#[cfg(target_os = "android")]
+pub fn pasted() -> Option<String> {
+    leto_system::clipboard::text().map(|text| text.replace("\r\n", "\n"))
+}
+
+/// Puts `text` on the clipboard: the system's own where egui cannot reach
+/// it, egui's elsewhere.
+pub fn copy(ctx: &egui::Context, text: String) {
+    if !leto_system::clipboard::copy(&text) {
+        ctx.copy_text(text);
     }
 }
 

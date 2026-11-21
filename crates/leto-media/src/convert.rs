@@ -1,7 +1,7 @@
 //! Pictures as decoders give them, kept as they are for a graphics card to
 //! turn into pixels, or turned into pixels here.
 
-use crate::Picture;
+use crate::{Kept, Picture};
 
 /// A decoded picture as the decoders give it, before it is turned into
 /// pixels: a plane of brightness, one byte a pixel, then a plane of colour
@@ -12,6 +12,10 @@ use crate::Picture;
 ///
 /// That is less than half the bytes of the pixels, and a graphics card
 /// turns it into pixels as it draws it for next to nothing.
+///
+/// A picture that stayed on the graphics card it was decoded on has its
+/// size and no planes: it is [`Self::kept`], and only a [`crate::Card`]
+/// shows it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Planes {
     pub width: usize,
@@ -19,6 +23,11 @@ pub struct Planes {
     pub stride: usize,
     pub luma: Vec<u8>,
     pub chroma: Vec<u8>,
+    /// Where the picture is, when it never left the graphics card.
+    pub kept: Option<Kept>,
+    /// The decoder showed the picture itself, straight on the screen:
+    /// there is nothing of it to show, only its size.
+    pub shown: bool,
 }
 
 impl Planes {
@@ -49,8 +58,38 @@ impl Planes {
         self.stride = width.div_ceil(2) * 2;
         self.luma.clear();
         self.chroma.clear();
+        self.kept = None;
+        self.shown = false;
         self.luma.reserve(self.stride * height);
         self.chroma.reserve(self.stride * height.div_ceil(2));
+    }
+
+    /// Says the picture, `width` by `height`, stayed on the graphics card:
+    /// there are no planes of it.
+    // Only Windows keeps pictures there.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn keep(&mut self, kept: Kept, width: usize, height: usize) {
+        self.width = width;
+        self.height = height;
+        self.stride = 0;
+        self.luma.clear();
+        self.chroma.clear();
+        self.kept = Some(kept);
+        self.shown = false;
+    }
+
+    /// Says the picture, `width` by `height`, was shown by its decoder:
+    /// there are no planes of it.
+    // Only Windows shows pictures that way.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn show(&mut self, width: usize, height: usize) {
+        self.width = width;
+        self.height = height;
+        self.stride = 0;
+        self.luma.clear();
+        self.chroma.clear();
+        self.kept = None;
+        self.shown = true;
     }
 
     /// Copies `source`, leaving out the padding of its rows. Returns `false`,

@@ -28,14 +28,15 @@ organised so that it stays one product. It follows the structure of
 
 ```
 apps/
-  leto/           The graphical app (egui): desktop, and the browser through WebAssembly
+  leto/           The graphical app (egui), a library with a thin `main.rs`: desktop, and the browser through WebAssembly
+  leto-android/   The same app on Android, in a NativeActivity: its entry, its log, its Wi-Fi lock, its manifest
   leto-cli/       The command line: the same engine, for scripts and diagnostics
 crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
-  leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
+  leto-system/    What Leto asks of the system itself: every key for a stream, what the screen is like, a clock that counts finely during a stream, and a pane inside the window for pictures shown without it. Windows only for now, `unsafe` allowed
   leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
@@ -52,7 +53,6 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 | Crate | Purpose | Step |
 |---|---|---|
 | `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 4 |
-| `apps/leto-android` | The Android app, started from Super Artemis | 3 |
 | `leto-host` | The host, ported from Apollo | 4 |
 
 ## Platforms
@@ -61,7 +61,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 |---|---|---|---|
 | Windows | Yes | Yes | Tests run on Windows in the pipeline, and by hand |
 | Web | Yes, through the bridge | No | Built in the pipeline, and by hand |
-| Android | Yes | No | Compile check for now, and by hand once the app exists |
+| Android | Yes | No | APK built and run on an emulator against the stand-in host in the pipeline, and by hand |
 | Linux | Yes | Yes | Tests run on Linux in the pipeline |
 | macOS | Yes | Yes | Compile check on every change (with zig as the C and C++ compiler), tests on `main` |
 | iOS | Yes | No | Compile check only |
@@ -72,9 +72,28 @@ instead of scattering `cfg` attributes through the interface.
 ## The app
 
 `apps/leto` is an [egui](https://github.com/emilk/egui) app. The same code
-draws the native window and, compiled to WebAssembly, the web client
-(`cargo xtask web` builds it into `dist/web`). The look is fixed: the "Braise"
-palette from `leto_core::brand`, dark, whatever the system theme.
+draws the native window, the Android app (`cargo xtask android` builds it
+into `dist/android/leto.apk`) and, compiled to WebAssembly, the web client
+(`cargo xtask web` builds it into `dist/web`).
+
+On Android the app runs in a NativeActivity with no Java of its own:
+`apps/leto-android` hands the activity to `leto::run_android`, which keeps
+the settings in the app's own folder. A finger is the mouse; two fingers
+tapped are the right button and moved together are the wheel
+(`touch.rs`); the stream's bar has a button for the phone's keyboard.
+Pictures are decoded by OpenH264 in software for now, and the sound plays
+through AAudio.
+
+The look is the "Braise" palette from `leto_core::brand`, by night and by day
+(`theme.rs`): a warm black ground with ivory text, or the same turned over,
+ivory under warm black, with the orange accent a little deeper so that it
+shows on ivory. Leto wears the one the system asks for and changes with it
+while it runs: Windows tells the app, and a browser tells the page
+(`prefers-color-scheme`). Linux tells neither, so the app is dark there
+unless `LETO_THEME=light` is in its environment. A stream is always shown by
+night, whatever the system asks for: black surrounds its pictures, and what
+is drawn over them has to be read on them. A test checks that what is
+written can be read on both grounds.
 
 It is made of three parts that do not reach into each other:
 
@@ -130,7 +149,12 @@ crates that know nothing of each other:
    large as fits, undistorted.
 
 Leaving a stream keeps the app running on the PC, like closing Moonlight. The
-apps screen then offers to resume it or to close it.
+apps screen then offers to resume it or to close it. The PC is told that the
+client leaves, in one packet that is not waited for, as Moonlight tells it
+(a change to the vendored engine): a PC that is told nothing keeps the place
+of a client it no longer hears for seconds, up to a minute, and a client
+that comes back within that time finds a PC still busy with the stream it
+left.
 
 A stream that loses its PC while the person watches it is not left. The engine
 says so (`Event::Reconnecting`) and asks the PC for the stream again, after 1,
@@ -172,7 +196,9 @@ V-Sync off, when the system's shortcuts go to the PC (always, in full screen
 only, never), the PC's pointer drawn in the picture instead of this device's,
 the mouse buttons swapped, the wheel reversed, A and B and X
 and Y swapped on gamepads, Leto silent in the background, the statistics
-from the start, decoding on the processor only, and a codec of their own. What the PC must know travels with the request
+from the start, decoding on the processor only, a codec of their own, and on
+Windows pictures that stay on the graphics card or go straight from it to
+the screen, both being tried. What the PC must know travels with the request
 (`Request::Play::choices`, `StreamSettings::chosen`); the rest stays in the
 app. The settings are kept as JSON: `settings.json` beside the paired PCs on
 the desktop, the page's local storage in a browser. A choice that is missing,
@@ -187,8 +213,9 @@ the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
 Moonlight: what the PC sends, what arrives, what is lost, decoded, skipped to
 keep up and shown per second, how long a picture takes to decode, how much of
 that goes to copying it out of the decoder (from the graphics card, waiting
-for the card included), how long the PC takes to make it, and the time to the
-PC and back (`stats.rs`, counted by the backend).
+for the card included) or to leaving it on the card, how long the PC takes
+to make it, and the time to the PC and back (`stats.rs`, counted by the
+backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones
@@ -227,16 +254,70 @@ What this first version does, and what it leaves for later:
   decoders and OpenH264 alike, and go back to the graphics card as they are
   when the window draws: `leto_media::Card` puts them in two textures and a
   small program on the card turns them into pixels, BT.601 in limited range
-  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). That
+  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). A
+  colour serves two pixels across and two down, and the PC's encoder puts it
+  where the left one of the two is; a texture has it between the two. The
+  program reads the colours half a pixel to the right for that: read at the
+  same place as the brightness, every edge of colour is drawn half a pixel
+  off and smeared. On a pattern of hard edges of colour, with the colours
+  placed as Sunshine places them, that takes a third off the largest error
+  and a sixth off the average one. The processor's `convert.rs` gives each
+  colour to its four pixels unmixed, and is not changed. That
   is less than half the bytes of the pixels, and the processor no longer
   spends 6 ms a picture at 1920 × 1200 making pixels. It needs OpenGL 3.1 or
   OpenGL ES 3: where the card offers less, or turns the program down, the
   processor makes the pixels as before. With V-Sync on, each drawing first
   waits until the card is done with the one before (`glFinish`), so that a
   picture never waits behind others to reach the screen: the driver would
-  otherwise queue two or three, each a refresh later. The picture still goes
-  from the card to memory and back: drawing it from where the decoder left
-  it would need Direct3D and OpenGL to share it.
+  otherwise queue two or three, each a refresh later.
+- A picture decoded on the graphics card still goes from the card to memory
+  and back that way, and reading it waits until the card has finished it,
+  which is most of what "decoding" takes. Behind a setting, off by default
+  and being tried, it stays on the card instead (`leto-media/src/kept.rs`).
+  The decoder's pictures are Direct3D's and the window draws with OpenGL.
+  The decoder has the card copy each picture into a texture of Leto's, as
+  Moonlight does, and waits for nothing. When the window is about to draw,
+  the card's video processor turns the latest picture into pixels in a
+  texture of Direct3D's (BT.601 in limited range, colour to the left of its
+  pixels, nothing "improved"), and the driver gives the window's OpenGL that
+  same texture to draw from (`WGL_NV_DX_interop2`). The planes then say
+  where the picture is and hold nothing (`Planes::kept`). The log says every
+  ten seconds what a drawing costs the window. The app asks for it each
+  frame, only when the setting is on and the window's card says it shares
+  (`Card::keeps`, `Outlet::set_kept`, `VideoDecoder::keep_on_card`). It
+  falls back by itself, with one line in the log: a decoder that cannot
+  leave a picture there reads it as before, and a window that cannot draw
+  one (a laptop that decodes on one card and draws on the other) says so,
+  after which pictures come through memory until Leto starts again. Nothing
+  of this has run on a real graphics card yet: no test here has one.
+- Behind another setting, off by default and being tried, the window does
+  not draw the pictures at all: the card that decoded one draws it itself
+  and shows it at once, with Direct3D 11 and no OpenGL, the way Moonlight
+  does on Windows (`leto-media/src/straight.rs`; `d3d11va.cpp` of
+  moonlight-qt was read for it, not copied). The app opens a pane over the
+  place of the pictures: a window of its own inside Leto's, which takes no
+  click and no key (`leto_system::pane`). On the decoder's thread the card
+  copies each picture to be shown out of the decoder's textures into one a
+  small program reads, that program turns brightness and colours into
+  pixels as it draws them over the whole pane (the numbers of `card.rs`,
+  colour to the left of its pixels), and the pane's pictures are swapped at
+  once (`Present` with no interval, torn where Windows allows it and V-Sync
+  is off). A picture shown that way has nothing left to show
+  (`Planes::shown`): the interface hears only how large the pictures are,
+  leaves them their place as it does in a browser (`Picture::Behind`), and
+  draws only when it has something of its own to show. What it shows over
+  the pictures (the bar, its grip, the statistics, the signs) shows through
+  holes cut in the pane, on black (`Player::over`, `LetoApp::place_pane`).
+  The app asks for it each frame of a stream, only when the setting is on
+  (`Outlet::set_pane`, `VideoDecoder::show_on`), and it falls back by
+  itself with one line in the log: a card that makes no such program or
+  shows no picture there leaves the pictures to the paths above. Only
+  pictures of eight bits a colour in NV12 go that way. The tests on Windows
+  compile the card's programs and have Windows' own card made of software
+  (WARP) draw a picture, laid out as a decoder lays it, on a pane inside
+  another window, read its pixels back and show it. No real graphics card
+  and no decoder has run it yet, and whether Windows honours holes in such
+  a pane is not known.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.
@@ -250,14 +331,23 @@ What this first version does, and what it leaves for later:
   says why instead of waiting.
 - Leto asks the PC for BT.601 colours in limited range, in standard dynamic
   range. HDR comes with the decoders that can show it.
+- A stream waits a few milliseconds at a time in many places: the engine
+  for packets, the decoder for the graphics card, the sound for its queue.
+  Windows wakes such a wait on the ticks of its clock, 15.6 ms apart unless
+  a program asks for finer ones, which is two pictures of a fast stream. So
+  each `Session` asks for ticks a millisecond apart for as long as it lives
+  (`leto_system::clock`), as Moonlight does through SDL. Other systems count
+  finely by themselves.
 - Sound is stereo Opus, decoded in Rust and played on the system's default
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
-  drifts behind the picture. A PC sends sound all the time, silence included,
-  so a stream that has had none for five seconds, or whose first second of
-  sound did not decode, shows "No sound" in its bar and says why in the log,
-  as speakers that did not open do.
+  drifts behind the picture. A stream whose first second of sound did not
+  decode shows "No sound" in its bar and says why in the log, as speakers
+  that did not open do. A stream that has had no sound at all does not:
+  Sunshine and Apollo send nothing while the PC plays nothing, as a real
+  Apollo showed, and nothing tells that apart from sound lost on the way.
+  The log notes it after five seconds, for whoever reads it.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
@@ -288,6 +378,14 @@ passes them on.
   the pointer of this device is on the picture. The "game mouse" sends how
   far the mouse moved instead, with the pointer kept inside the window, for
   games that turn the view with it.
+- **The last pixel of the picture is the far edge of the PC's screen.** The
+  PC is told which pixel of the window the pointer is on, counted from the
+  picture's corner, out of one less than the pixels the picture covers
+  there (`Controls::pointer_at`), as Moonlight tells it. Told a place on
+  the picture out of the picture's size, a PC stops one row and one column
+  short of its far edges, since a pointer is never further than on the last
+  pixel: a taskbar that hides at the bottom of the PC's screen then never
+  comes out.
 - **The pointer on the picture is this device's own**, which moves the
   moment the mouse does, rather than the PC's, which shows a round trip and
   a picture later. Sunshine, Apollo and Foundation Sunshine leave their
@@ -304,19 +402,23 @@ passes them on.
   A PC that refuses the keyboard or the mouse, or GameStream, draws its own
   pointer, and so does a person who turns "This device's pointer" off. The
   pointer here is an arrow whatever the PC shows: the protocol does not say
-  the PC's shapes. Leaving lets the last keys go out first (`LAST_WORDS` in
-  `Session::stop`): stopping the stream drops what still waits to be sent,
-  which the stand-in host showed for almost half of the streams left.
+  the PC's shapes, so the arrows that resize a window or the bar of a text
+  field only show in the PC's own pointer. Ctrl+Alt+Shift+P and a button
+  of the bar switch between the two during a stream, where there is a
+  choice: they turn the same setting, which is kept. Leaving lets the last
+  keys go out first (`LAST_WORDS` in `Session::stop`): stopping the stream
+  drops what still waits to be sent, which the stand-in host showed for
+  almost half of the streams left.
 - **While a stream is connected the keyboard is the PC's.** The app takes
   the keys away from egui before it acts on them (`raw_input_hook`), Tab and
   Escape included. Some combinations stay on this device, as in Moonlight,
   found by the letter the layout prints: Ctrl+Alt+Shift with Q leaves, with X
   fills the screen, with M switches the mouse mode, with T turns the
-  microphone on or off, with C the camera, with S the statistics, and with Z
-  gives the keyboard and the mouse back to this device until Z again or a
-  click on the picture. Everything held down is let go of when the window
-  loses the keyboard, when it is given back and before leaving, so nothing
-  stays stuck on the PC.
+  microphone on or off, with C the camera, with S the statistics, with P
+  shows the other pointer, and with Z gives the keyboard and the mouse back
+  to this device until Z again or a click on the picture. Everything held
+  down is let go of when the window loses the keyboard, when it is given
+  back and before leaving, so nothing stays stuck on the PC.
 - **On Windows the system's own shortcuts are the PC's too**: the Windows
   key, Alt+Tab, Alt+F4. Windows acts on them before any window hears of them,
   so while a stream has the keyboard `leto-system` listens to the keyboard
@@ -667,6 +769,32 @@ gives itself. Sunshine and Apollo tell which of their addresses a question
 came in on, which, asked from beyond a forwarded port, is their address on
 their own network.
 
+A PC known only through a VPN tells its address there, and its address
+nearby has to come from somewhere else. One way is the announcement the PC
+makes on the local network, which a firewall can keep from Leto. The other
+is its name: a PC says the name of the computer it runs on, and this
+device's own system often knows where that name leads, from the router or
+by asking the network as Windows and macOS do for the names of computers.
+So while Leto listens for announcements it also asks the system, once a
+minute at most, for the name of each PC it keeps and for that name with
+`.local` (`discovery::by_name`). Only an address of a local network is
+asked at, since a name can mean something else on the internet, and only a
+name that can be a computer's. An address where the PC answers, and proves
+who it is when it is paired, joins the others.
+
+Neither worked on the first laptop it was tried on: nothing was announced
+to Leto there and the name led nowhere. So a third way needs nothing from
+the network but what a stream needs. While a paired PC answers, but not at
+an address of a local network this device is on, Leto looks around on that
+network (`Client::look_around_on`): it tries a connection on the PC's port
+at each address around its own, the 253 that share its first three numbers
+at most, for a third of a second, all at once (`discovery::listening`).
+What takes one is asked who it is, and only a PC that proves to be one Leto
+paired with is kept, at that address too. Each network is looked around on
+once while Leto runs. It is some 250 connections tried on whatever local
+network the device is on, at home or not, which a network that is not the
+person's own may notice: that is its cost.
+
 Each time it looks for a PC, it asks at every address at once and uses the
 first that answers: the nearest way there, the one with the shortest round
 trip. Moonlight prefers a PC's address on the local network for the same
@@ -721,13 +849,16 @@ Windows. Its text never reaches a log, and a browser
 cannot give or remove one through the bridge: the tunnel belongs to the
 device the engine runs on.
 
-What it does not do, and what was never tried:
+What it does not do, and what was tried:
 
-- It was never tried against a real WireGuard server. Two of Leto's own
-  tunnel ends talk to each other in the tests, and a whole session goes
-  through them to the stand-in host: finding it, pairing, the apps, pictures,
-  sound and input. boringtun is the WireGuard that Cloudflare runs, but
-  nothing here met `wg` or a router's WireGuard.
+- It met one real WireGuard server, on 2026-11-21: the Windows app reached
+  a PC through the WireGuard of a Raspberry Pi at home, of which the PC is
+  a peer too, and the person who tried it reports that it works well. Which
+  of pictures, sound and input were looked at is not known, and no other
+  server was tried, a router's among them. In the tests two of Leto's own
+  tunnel ends talk to each other, and a whole session goes through them to
+  the stand-in host: finding it, pairing, the apps, pictures, sound and
+  input.
 - Leto should have a peer of its own on the server. The same keys in use at
   the same time by the WireGuard app, on this device or another, take the
   tunnel from each other every few seconds.
@@ -743,7 +874,9 @@ What it does not do, and what was never tried:
   address, since a broadcast does not cross WireGuard. That wakes it only
   while the device the tunnel ends on still knows which card has that
   address, which routers forget after a while, and never when the tunnel
-  ends on the sleeping PC itself. See below.
+  ends on the sleeping PC itself. A PC that is a peer of the server, and
+  known to Leto by its address inside WireGuard, is in that case: that
+  address is the PC's own end of a tunnel, asleep with it. See below.
 - Not in the browser: the web client reaches PCs through the bridge, which
   uses the tunnel of the device it runs on.
 
@@ -806,6 +939,14 @@ is written there too, which matters on Windows, where the app has no
 terminal. Leto's own crates log in detail, other libraries only what they
 find worth telling; `RUST_LOG` changes that and also prints to the terminal.
 
+During a stream the app writes a line every ten seconds with what its
+statistics show: pictures arrived, decoded and skipped in a second, the bit
+rate, the loss, how long a picture took to decode and how much of that to
+leave the decoder, how long the PC took to make one, the way to the PC and
+back, and on how many pixels of the screen the pictures are drawn: one for
+each of theirs, or more or fewer, which makes them less sharp. A log of a
+stream that felt slow or looked soft says where to look.
+
 A log names PCs and their addresses, and each request's path, but never a
 secret: the folder can be sent as it is. The settings folder around it holds
 this device's key and is never to be sent.
@@ -824,6 +965,10 @@ with a comment that says why it does not apply and when to remove it.
 operating system directly (capture, codecs, virtual devices) opts back in with
 `#![allow(unsafe_code)]` at its top, and keeps that code in as few modules as
 possible. `leto-system` is one: its `unsafe` is in the modules for Windows,
-each call with the reason it is sound. `leto-media` opts in for one module
-only, its Windows video decoder (`video/windows.rs`), which calls Media
-Foundation and Direct3D 11.
+each call with the reason it is sound. `leto-media` opts in for four modules
+only: its Windows video decoder (`video/windows.rs`), which calls Media
+Foundation and Direct3D 11, the drawing of pictures by the graphics card
+(`card.rs`), which calls OpenGL, the pictures that stay on the card
+(`kept.rs`), which calls Direct3D 11 and the driver's sharing with OpenGL,
+and the pictures the card shows itself (`straight.rs`), which calls
+Direct3D 11 and DXGI.

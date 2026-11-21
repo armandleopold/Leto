@@ -231,6 +231,15 @@ impl ControlStream {
 
         Ok(())
     }
+
+    /// Leto: tells the host this client leaves, in one packet that is not
+    /// waited for, as moonlight-common-c does when a stream is stopped
+    /// (`enet_peer_disconnect_now`). The packet waits in `poll_transmit`.
+    pub fn disconnect_now(&mut self, disconnect_data: u32) -> Result<(), Error> {
+        self.host.disconnect_now(self.peer, disconnect_data)?;
+
+        Ok(())
+    }
     pub fn can_discard(&mut self) -> bool {
         self.events.is_empty() && self.host.can_discard()
     }

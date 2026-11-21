@@ -588,8 +588,8 @@ async fn a_stream_reaches_the_browser_and_input_reaches_the_pc() {
     assert!(host.stream_report().unwrap().keyframes_requested > asked_before);
 
     // The browser closes its tab: the stream is left, the app keeps running.
-    // Nobody tells the host: it has to miss the client, which takes it
-    // seconds at best.
+    // The host is told. Were that one packet lost, it would have to miss
+    // the client, which takes it seconds at best.
     drop(browser);
     let start = Instant::now();
     while !host.stream_report().is_some_and(|report| report.client_left) {

@@ -38,10 +38,37 @@ Each is marked with a comment that starts with `Leto:`.
   reliably, as moonlight-common-c sends it. The commit sent it unreliable
   and sequenced, so a state lost on the way was never sent again, and a
   button let go stayed held on the PC until the gamepad moved again.
+- `src/stream/std/mod.rs`, `src/stream/std/driver.rs` (`last_words`),
+  `src/stream/proto/control/stream.rs` (`disconnect_now`): a stream that is
+  stopped tells the host that the client leaves, in one packet sent before
+  the threads stop, as moonlight-common-c does (`enet_peer_disconnect_now`).
+  The commit said nothing, so the host went on streaming to nobody until it
+  gave up on the silence, seconds to a minute later.
+- `src/stream/std/driver.rs` and `src/stream/std/mod.rs`: the control
+  connection is told the time before the application sends over it
+  (`stream_mut_now`). The commit only told it when a packet arrived or a
+  timeout fired, so a message sent in between was stamped with a time up to
+  50 ms old, and the way to the host and back, which is measured from that
+  stamp, came out longer whenever something was sent: 9 ms on the loopback
+  interface with the mouse moving, where it is under 1 ms.
+- `src/stream/proto/enet.rs` (`RoundTrip`, `acknowledged_sent_times`) and
+  `src/stream/proto/control/peer.rs`: the way to a peer and back is a mean
+  that keeps its fractions, made from the acknowledgements as they arrive.
+  ENet's own, which the commit reported, is in whole milliseconds and moves
+  by an eighth of each difference, rounded down: once raised, it comes down
+  to 7 ms above the truth and stays, so a host 1 ms away read 8 ms. Its
+  tests are at the end of `enet.rs`; like the rest of this crate's, they
+  do not build here (the crate's test helper needs what Leto leaves out).
+- `src/high/std.rs` (`pair`): before pairing, one step out of order makes
+  the host drop an attempt that never got its PIN. Sunshine and Apollo keep
+  one such attempt under the unique id every Moonlight client shares, and
+  a later pairing went on with the earlier attempt's certificate, so its
+  last step was refused ("The PC refused the pairing."). Tested against the
+  stand-in host, which keeps attempts the same way.
 
 ## Updating
 
 Copy `src/` from a newer commit, apply the changes above again, and compare
-its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself
-and sends the state of a gamepad reliably, Leto can go back to taking the
-crate with git.
+its `Cargo.toml` with this one. Once a commit upstream chooses AV1 itself,
+sends the state of a gamepad reliably and stamps what is sent with the time
+it is sent at, Leto can go back to taking the crate with git.
