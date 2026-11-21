@@ -12,7 +12,7 @@ use openh264::{
     formats::YUVSource,
 };
 
-use crate::Error;
+use crate::{Error, Planes};
 
 // Media Foundation and Direct3D are reached through their C interfaces.
 #[cfg(windows)]
@@ -52,6 +52,8 @@ pub struct VideoDecoder {
     by: By,
     /// Pictures in a row that did not decode.
     failures: u32,
+    /// A picture on its way to pixels.
+    planes: Planes,
 }
 
 /// Who decodes.
@@ -64,7 +66,7 @@ enum By {
 impl VideoDecoder {
     /// An H.264 decoder on the processor, which works everywhere.
     pub fn new() -> Result<Self, Error> {
-        Ok(Self { codec: Codec::H264, by: By::OpenH264(Software::new()?), failures: 0 })
+        Ok(Self::by(Codec::H264, By::OpenH264(Software::new()?)))
     }
 
     /// A decoder for a stream in `codec`, `width` by `height` at `fps`. On
@@ -120,7 +122,7 @@ impl VideoDecoder {
             return Err(None);
         }
         let decoder = windows::Decoder::new(codec, width, height, fps, hardware).map_err(Some)?;
-        Ok(Self { codec, by: By::Windows(decoder), failures: 0 })
+        Ok(Self::by(codec, By::Windows(decoder)))
     }
 
     #[cfg(not(windows))]
@@ -132,6 +134,10 @@ impl VideoDecoder {
         _hardware: bool,
     ) -> Result<Self, Option<Error>> {
         Err(None)
+    }
+
+    fn by(codec: Codec, by: By) -> Self {
+        Self { codec, by, failures: 0, planes: Planes::default() }
     }
 
     pub const fn codec(&self) -> Codec {
@@ -148,20 +154,35 @@ impl VideoDecoder {
     }
 
     /// Decodes one picture (an access unit, with start codes for H.264 and
-    /// H.265) into `picture`, reusing its memory.
+    /// H.265) into `planes`, reusing their memory, as the decoder gives it:
+    /// for a graphics card to turn into pixels as it draws it.
     ///
     /// Returns `false` when the data held no picture to show. After an error
     /// the following pictures are unreliable until a keyframe arrives.
+    pub fn decode_planes(&mut self, data: &[u8], planes: &mut Planes) -> Result<bool, Error> {
+        let decoded = match &mut self.by {
+            By::OpenH264(decoder) => decoder.decode(data, Some(planes)),
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.decode(data, Some(planes)),
+        };
+        self.count(decoded)
+    }
+
+    /// Decodes one picture into `picture`, reusing its memory, as
+    /// [`Self::decode_planes`] does, then turns it into pixels here.
     ///
     /// Colours are converted as BT.601 in limited range, which is what Leto
     /// asks hosts to send.
     pub fn decode(&mut self, data: &[u8], picture: &mut Picture) -> Result<bool, Error> {
-        let decoded = match &mut self.by {
-            By::OpenH264(decoder) => decoder.decode(data, Some(picture)),
-            #[cfg(windows)]
-            By::Windows(decoder) => decoder.decode(data, Some(picture)),
+        let mut planes = std::mem::take(&mut self.planes);
+        let decoded = self.decode_planes(data, &mut planes);
+        let shown = match decoded {
+            Ok(true) if planes.to_rgba(picture) => Ok(true),
+            Ok(true) => Err(Error::Video("a decoded picture is smaller than it says".into())),
+            other => other,
         };
-        self.count(decoded)
+        self.planes = planes;
+        shown
     }
 
     /// Decodes one picture without turning it into pixels: for a picture
@@ -215,15 +236,19 @@ impl Software {
         Ok(Self { decoder })
     }
 
-    fn decode(&mut self, data: &[u8], picture: Option<&mut Picture>) -> Result<bool, Error> {
+    fn decode(&mut self, data: &[u8], planes: Option<&mut Planes>) -> Result<bool, Error> {
         let decoded = self.decoder.decode(data).map_err(|error| Error::Video(error.to_string()))?;
         let Some(decoded) = decoded else { return Ok(false) };
-        if let Some(picture) = picture {
-            let (width, height) = decoded.dimensions();
-            picture.width = width;
-            picture.height = height;
-            picture.rgba.resize(width * height * 4, 0);
-            decoded.write_rgba8(&mut picture.rgba);
+        if let Some(planes) = planes {
+            let (luma, blue, red) = decoded.strides();
+            let copied = planes.copy_i420(
+                decoded.dimensions(),
+                [decoded.y(), decoded.u(), decoded.v()],
+                [luma, blue, red],
+            );
+            if !copied {
+                return Err(Error::Video("a decoded picture is smaller than it says".into()));
+            }
         }
         Ok(true)
     }

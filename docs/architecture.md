@@ -167,8 +167,8 @@ time to the PC and back (`stats.rs`, counted by the backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones
-build on it, but turns only one a second into pixels, which is most of the
-work; the window then draws once a second. While the window is out of sight
+build on it, but hands only one a second on to be drawn, which is most of
+the work; the window then draws once a second. While the window is out of sight
 nothing is decoded, and the PC is asked for a keyframe when it is back. What
 the PC sends stays the same: the protocol has no way to slow a PC down during
 a stream, and Moonlight does not either (it can mute the sound when it loses
@@ -196,8 +196,22 @@ What this first version does, and what it leaves for later:
   Store's video extensions bring H.265 and AV1. What this device decodes is
   found once, in the background as Leto starts: each decoder is started at
   1280 × 720, and the card has to name the codec among its decoder profiles to
-  count as decoding it. The decoded picture comes back from the card in NV12
-  and is turned into RGB on the processor (`convert.rs`).
+  count as decoding it. The decoded picture comes back from the card in NV12,
+  as planes of brightness and colour.
+- Decoded pictures stay in planes (`leto_media::Planes`), from Windows'
+  decoders and OpenH264 alike, and go back to the graphics card as they are
+  when the window draws: `leto_media::Card` puts them in two textures and a
+  small program on the card turns them into pixels, BT.601 in limited range
+  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). That
+  is less than half the bytes of the pixels, and the processor no longer
+  spends 6 ms a picture at 1920 × 1200 making pixels. It needs OpenGL 3.1 or
+  OpenGL ES 3: where the card offers less, or turns the program down, the
+  processor makes the pixels as before. With V-Sync on, each drawing first
+  waits until the card is done with the one before (`glFinish`), so that a
+  picture never waits behind others to reach the screen: the driver would
+  otherwise queue two or three, each a refresh later. The picture still goes
+  from the card to memory and back: drawing it from where the decoder left
+  it would need Direct3D and OpenGL to share it.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.

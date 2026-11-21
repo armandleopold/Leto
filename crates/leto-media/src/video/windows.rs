@@ -45,8 +45,8 @@ use windows::{
 };
 
 use crate::{
-    Error, Picture,
-    convert::{Nv12, nv12_to_rgba},
+    Error,
+    convert::{Nv12, Planes},
 };
 
 /// The size a decoder is tried at, to know that it works.
@@ -183,9 +183,9 @@ impl Decoder {
         self.card.is_some()
     }
 
-    /// Decodes one picture, and turns it into `picture` when it is given.
+    /// Decodes one picture, and copies it into `planes` when they are given.
     /// Returns whether there was a picture.
-    pub fn decode(&mut self, data: &[u8], picture: Option<&mut Picture>) -> Result<bool, Error> {
+    pub fn decode(&mut self, data: &[u8], planes: Option<&mut Planes>) -> Result<bool, Error> {
         // The thread that decodes may not be the one that made the decoder.
         start().map_err(|error| failed("Media Foundation did not start", &error))?;
         let sample = self.sample(data)?;
@@ -202,7 +202,7 @@ impl Decoder {
             }
             Err(error) => return Err(failed("the decoder took no picture", &error)),
         }
-        self.take_output(picture)
+        self.take_output(planes)
     }
 
     /// The data of one picture, as a sample the decoder reads.
@@ -228,9 +228,9 @@ impl Decoder {
         }
     }
 
-    /// Takes every picture the decoder has ready. Each goes into `picture`,
-    /// when it is given, so the last one stays.
-    fn take_output(&mut self, mut picture: Option<&mut Picture>) -> Result<bool, Error> {
+    /// Takes every picture the decoder has ready. Each goes into `planes`,
+    /// when they are given, so the last one stays.
+    fn take_output(&mut self, mut planes: Option<&mut Planes>) -> Result<bool, Error> {
         let mut shown = false;
         loop {
             let given = if self.gives_samples { None } else { Some(self.empty_sample()?) };
@@ -249,8 +249,8 @@ impl Decoder {
             drop(std::mem::ManuallyDrop::into_inner(output.pEvents));
             match result {
                 Ok(()) => {
-                    if let (Some(sample), Some(picture)) = (sample, picture.as_deref_mut()) {
-                        shown |= self.read(&sample, picture)?;
+                    if let (Some(sample), Some(planes)) = (sample, planes.as_deref_mut()) {
+                        shown |= self.read(&sample, planes)?;
                     }
                 }
                 Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(shown),
@@ -329,8 +329,8 @@ impl Decoder {
         }
     }
 
-    /// Turns the picture in `sample` into `picture`.
-    fn read(&self, sample: &IMFSample, picture: &mut Picture) -> Result<bool, Error> {
+    /// Copies the picture in `sample` into `planes`.
+    fn read(&self, sample: &IMFSample, planes: &mut Planes) -> Result<bool, Error> {
         // SAFETY: reading the sample the decoder just gave.
         let buffer = unsafe { sample.GetBufferByIndex(0) }
             .map_err(|error| failed("a picture without pixels", &error))?;
@@ -348,8 +348,7 @@ impl Decoder {
                     &mut length,
                 )
                 .map_err(|error| failed("the picture could not be read", &error))?;
-                let read =
-                    self.convert(start, length, first_row.offset_from(start), pitch, picture);
+                let read = self.copy(start, length, first_row.offset_from(start), pitch, planes);
                 let _ = rows.Unlock2D();
                 read
             }
@@ -362,39 +361,39 @@ impl Decoder {
                     .Lock(&mut start, None, Some(&mut length))
                     .map_err(|error| failed("the picture could not be read", &error))?;
                 let pitch = i32::try_from(self.coded.0).unwrap_or(0);
-                let read = self.convert(start, length, 0, pitch, picture);
+                let read = self.copy(start, length, 0, pitch, planes);
                 let _ = buffer.Unlock();
                 read
             }
         }
     }
 
-    /// Turns the NV12 at `offset` in the `length` bytes from `start`, rows
-    /// `pitch` bytes apart, into `picture`.
+    /// Copies the NV12 at `offset` in the `length` bytes from `start`, rows
+    /// `pitch` bytes apart, into `planes`.
     ///
     /// # Safety
     ///
     /// `start` points to `length` bytes that can be read until this returns.
-    unsafe fn convert(
+    unsafe fn copy(
         &self,
         start: *const u8,
         length: u32,
         offset: isize,
         pitch: i32,
-        picture: &mut Picture,
+        planes: &mut Planes,
     ) -> Result<bool, Error> {
         // SAFETY: as the caller promises.
         let bytes = unsafe { std::slice::from_raw_parts(start, length as usize) };
-        let planes = usize::try_from(offset).ok().and_then(|offset| bytes.get(offset..));
-        let split = planes.zip(usize::try_from(pitch).ok()).and_then(|(planes, stride)| {
-            let luma = stride.checked_mul(self.rows(planes.len(), stride))?;
-            let (luma, chroma) = planes.split_at_checked(luma)?;
+        let laid_out = usize::try_from(offset).ok().and_then(|offset| bytes.get(offset..));
+        let split = laid_out.zip(usize::try_from(pitch).ok()).and_then(|(laid_out, stride)| {
+            let luma = stride.checked_mul(self.rows(laid_out.len(), stride))?;
+            let (luma, chroma) = laid_out.split_at_checked(luma)?;
             Some((luma, chroma, stride))
         });
         let (width, height) = self.shown;
         match split {
             Some((luma, chroma, stride))
-                if nv12_to_rgba(&Nv12 { width, height, stride, luma, chroma }, picture) =>
+                if planes.copy_nv12(&Nv12 { width, height, stride, luma, chroma }) =>
             {
                 Ok(true)
             }
@@ -567,7 +566,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::VideoDecoder;
+    use crate::{Picture, VideoDecoder};
 
     /// Not a size a decoder works at: it rounds the rows up to 80, and only
     /// 72 of them are shown.
@@ -607,16 +606,18 @@ mod tests {
         }
     }
 
-    /// Decodes `pictures` and gives the last picture that came out.
+    /// Decodes `pictures` and gives the last picture that came out, in
+    /// pixels.
     fn decoded(decoder: &mut Decoder, pictures: &[Vec<u8>]) -> Option<Picture> {
         let mut last = None;
         for data in pictures {
-            let mut picture = Picture::default();
-            if decoder.decode(data, Some(&mut picture)).expect("a picture decodes") {
-                last = Some(picture);
+            let mut planes = Planes::default();
+            if decoder.decode(data, Some(&mut planes)).expect("a picture decodes") {
+                last = Some(planes);
             }
         }
-        last
+        let mut picture = Picture::default();
+        last.is_some_and(|planes| planes.to_rgba(&mut picture)).then_some(picture)
     }
 
     #[test]
