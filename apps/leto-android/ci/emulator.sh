@@ -26,7 +26,13 @@ adb shell pidof re.leto.app || fail "the app is not running"
 done_
 
 step "Add the PC by its address"
-screen accent 2-pcs || fail "no Add a PC button"
+# The first start makes this device's key, which takes the emulator, that
+# translates the arm64 app, up to half a minute: wait for the first screen.
+for try in $(seq 12); do
+  screen accent 2-pcs && break
+  [ "$try" = 12 ] && fail "no Add a PC button"
+  sleep 5
+done
 sleep 3
 adb shell input text 10.0.2.2
 sleep 1
