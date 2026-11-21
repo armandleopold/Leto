@@ -5,6 +5,8 @@
 //! graphics card when it can: that is what makes those codecs worth having,
 //! as the processor alone is too slow for them at the sizes of a stream.
 
+use std::time::{Duration, Instant};
+
 use leto_core::engine::{Codec, Decodable};
 use openh264::{
     OpenH264API,
@@ -144,6 +146,18 @@ impl VideoDecoder {
         self.codec
     }
 
+    /// How long the last picture decoded into planes spent getting out of
+    /// the decoder: copied from the graphics card, for one decoded there,
+    /// waiting for the card to finish it included. Nothing for a picture
+    /// decoded unseen.
+    pub fn copying(&self) -> Duration {
+        match &self.by {
+            By::OpenH264(decoder) => decoder.copying,
+            #[cfg(windows)]
+            By::Windows(decoder) => decoder.copying(),
+        }
+    }
+
     /// The pictures are decoded on the graphics card.
     pub fn on_graphics_card(&self) -> bool {
         match &self.by {
@@ -223,6 +237,8 @@ impl VideoDecoder {
 /// H.264 by OpenH264, on the processor.
 struct Software {
     decoder: Decoder,
+    /// How long the last picture took to copy out.
+    copying: Duration,
 }
 
 impl Software {
@@ -233,13 +249,15 @@ impl Software {
         let config = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
         let decoder = Decoder::with_api_config(OpenH264API::from_source(), config)
             .map_err(|error| Error::Video(error.to_string()))?;
-        Ok(Self { decoder })
+        Ok(Self { decoder, copying: Duration::ZERO })
     }
 
     fn decode(&mut self, data: &[u8], planes: Option<&mut Planes>) -> Result<bool, Error> {
+        self.copying = Duration::ZERO;
         let decoded = self.decoder.decode(data).map_err(|error| Error::Video(error.to_string()))?;
         let Some(decoded) = decoded else { return Ok(false) };
         if let Some(planes) = planes {
+            let start = Instant::now();
             let (luma, blue, red) = decoded.strides();
             let copied = planes.copy_i420(
                 decoded.dimensions(),
@@ -249,6 +267,7 @@ impl Software {
             if !copied {
                 return Err(Error::Video("a decoded picture is smaller than it says".into()));
             }
+            self.copying = start.elapsed();
         }
         Ok(true)
     }

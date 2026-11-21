@@ -23,6 +23,7 @@ leto-protocol = { path = "crates/leto-protocol" }
 leto-return = { path = "crates/leto-return" }
 leto-system = { path = "crates/leto-system" }
 leto-testhost = { path = "crates/leto-testhost" }
+leto-tunnel = { path = "crates/leto-tunnel" }
 
 # Third-party
 clap = { version = "4.6", features = ["derive"] }

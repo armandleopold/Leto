@@ -36,6 +36,7 @@ crates/
   leto-client/    The client engine: find a PC, pair, list its apps, stream one. Built on moonlight-common-rust
   leto-media/     Pictures and sound: video decoders (H.264 everywhere, H.265 and AV1 by Windows), Opus, the speakers, the microphone, the camera and its encoder. No networking
   leto-system/    What the app asks of the system itself: every key for a stream, and what the screen is like. Windows only for now, `unsafe` allowed
+  leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
@@ -116,13 +117,35 @@ crates that know nothing of each other:
    that stream. What arrives is handed over still encoded, to a `VideoSink`
    and an `AudioSink`, on threads that belong to the stream.
 2. The app's backend gives it two sinks built on `leto-media`. The video sink
-   decodes each picture and keeps only the latest one for the window. The
-   audio sink decodes each packet and queues it for the speakers.
+   decodes each picture and keeps only the latest one for the window. A
+   picture that newer ones already wait behind is decoded, since they build
+   on it, but not copied out of the decoder: the engine tells the sink how
+   many wait (a `Leto:` change in the vendored `moonlight-common`, as
+   moonlight-common-c's `LiGetPendingVideoFrames`). A decoder slower than
+   the stream, as at 144 pictures a second in 3840 × 1080, then skips
+   pictures instead of falling further and further behind, which the mouse
+   pointer shows first; one still goes through every 100 ms. The audio sink
+   decodes each packet and queues it for the speakers.
 3. The window picks the latest picture up when it redraws and shows it as
    large as fits, undistorted.
 
 Leaving a stream keeps the app running on the PC, like closing Moonlight. The
 apps screen then offers to resume it or to close it.
+
+A stream that loses its PC while the person watches it is not left. The engine
+says so (`Event::Reconnecting`) and asks the PC for the stream again, after 1,
+2 and 3 seconds and then every 5, until it plays, the person leaves it, or the
+PC answers in a way that asking again will not change (`Event::PlayFailed`).
+A PC that does not answer, or answers as one still busy with the stream it
+lost, is asked again (`service.rs`, `passing`). The window keeps the last
+picture and puts "Connection lost. Reconnecting…" over it, from the moment
+the engine says so or once three seconds pass without a new picture,
+whichever comes first: a PC that goes silent can take the connection ten
+seconds or more to notice. The camera sent to the PC stops with the stream
+and starts again when it is back. The stand-in host's `drop` breaks a stream
+and `busy` makes it refuse new ones, which is how the tests lose a PC. A
+browser that loses its bridge still ends the stream: only the bridge asks a
+PC again.
 
 A stream is made for the screen it is shown on. When the person picks an
 app, the window says what its screen is like (`window::screen`): its pixels
@@ -161,9 +184,11 @@ shortcuts, which it does not let a page have.
 
 The window fills the screen as the stream connects, and gives it back when
 the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
-Moonlight: what the PC sends, what arrives, what is lost, decoded and shown
-per second, how long a picture takes to decode and to make on the PC, and the
-time to the PC and back (`stats.rs`, counted by the backend).
+Moonlight: what the PC sends, what arrives, what is lost, decoded, skipped to
+keep up and shown per second, how long a picture takes to decode, how much of
+that goes to copying it out of the decoder (from the graphics card, waiting
+for the card included), how long the PC takes to make it, and the time to the
+PC and back (`stats.rs`, counted by the backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones
@@ -229,7 +254,10 @@ What this first version does, and what it leaves for later:
   output. Between the network and the speakers sits a queue of a few tens of
   milliseconds: it waits for a small cushion before playing, fills up again
   after running dry, and skips ahead when sound piles up, so that sound never
-  drifts behind the picture.
+  drifts behind the picture. A PC sends sound all the time, silence included,
+  so a stream that has had none for five seconds, or whose first second of
+  sound did not decode, shows "No sound" in its bar and says why in the log,
+  as speakers that did not open do.
 
 The stand-in host streams for real: it speaks RTSP, encrypts, and sends a
 moving test card as H.264 and a melody as Opus, so the whole path is tested
@@ -294,16 +322,39 @@ passes them on.
   so while a stream has the keyboard `leto-system` listens to the keyboard
   ahead of Windows with a low-level hook, and keeps every key from going
   further while Leto's window is in front. Windows waits for the hook's
-  answer only so long, then hands the key on anyway, so the hook has a
-  thread of its own at a high priority and only decides: another thread
-  tells the window. Windows asks the hook set last first, so Leto sets it
-  each time its window comes in front, and again when a key gets past it to
-  the window; the log then counts the keys and how long they waited, never
-  which. Keys are
-  named by their scan code, the numeric keypad included. A key goes back to
-  whoever got it go down, so nothing stays held on either side, and the Ctrl
-  that AltGr makes up is dropped: the PC makes up its own. Ctrl+Alt+Del and
-  Windows+L stay with Windows, which no program can take. Leto's own
+  answer only so long, then hands the key on anyway and removes the hook
+  without a word, so the hook has a thread of its own at a high priority,
+  only decides and waits for no other thread: another thread tells the
+  window. Windows asks the hook set last first, so Leto sets it each time
+  its window comes in front, again when a key gets past it to the window or
+  reaches it late, and every second besides. The new one is set first, and
+  the old one goes half a second later, since Windows may be handing it a
+  key at that moment. On some computers Windows never calls the hook at all, security
+  software perhaps seeing to it: the keys then reach Leto's window, which
+  takes each from its messages for the stream before acting on it, so that
+  Alt+F4 does not close Leto, and Windows is asked to leave aside the
+  shortcuts programs registered (`RIDEV_NOHOTKEYS`), which it does for a
+  program that reads the keyboard itself: the Start menu is Explorer's, as
+  are Windows+E, Windows+D and the rest. Alt+Tab and Alt+Esc never reach a
+  window: Windows sees them as the Tab or Esc goes down with Alt held. So
+  each time an Alt reaches the window for the stream, Leto tells Windows
+  that it came up again, with a key of its own making (`SendInput`, marked
+  as Leto's): the stream still holds Alt, Windows sees a plain Tab, and the
+  window gets it for the PC. That Alt coming up reaches the window too,
+  where its mark has it dropped, and the low-level hook lets it go its way.
+  Held down, Alt repeats, and Windows hears it go down again, so each repeat
+  is let go of too. For a Tab that comes before that, Leto also registers
+  Alt+Tab and Alt+Esc as its own shortcuts while the stream has the keyboard
+  (`RegisterHotKey`), which a program in front may do, and Windows then
+  tells the window's thread of them instead of switching windows. The log
+  says when Windows did not let Leto have them, another program having them
+  already, or did not take the Alt Leto let go of. The log counts the keys, how
+  long they waited, how many came late and how many reached the window,
+  never which. Keys are named by their scan code, the numeric keypad
+  included. A key goes back to whoever got it go down, so nothing stays held
+  on either side, and the Ctrl that AltGr makes up is dropped: the PC makes
+  up its own. Ctrl+Alt+Del and Windows+L stay with Windows, which no program
+  can take. Leto's own
   shortcuts are found by the letter the layout prints on the key, which
   Windows tells even when Ctrl and Alt held together, AltGr on a French
   layout, change what the key types. The person can keep the system's
@@ -604,6 +655,122 @@ the HTTP the bridge speaks. The
 bridge is tested end to end against the stand-in host with a WebSocket
 client. The browser's half was checked by hand in Chromium, against the same
 host: nothing runs a browser in the pipeline yet.
+
+## The ways to a PC
+
+A PC can often be reached in more than one way: on the local network,
+through a VPN, by a name. `leto-client` keeps up to four addresses for each
+PC: the ones it was added by or found at on the network, and the one the PC
+gives itself. Sunshine and Apollo tell which of their addresses a question
+came in on, which, asked from beyond a forwarded port, is their address on
+their own network.
+
+Each time it looks for a PC, it asks at every address at once and uses the
+first that answers: the nearest way there, the one with the shortest round
+trip. Moonlight prefers a PC's address on the local network for the same
+reason. The other addresses stay for when that one stops answering, for
+example away from home. A paired PC must prove who it is at each address; an
+answer that does not prove it is only taken when no address does better, and
+then shows the PC as not paired, as before. An address where another PC now
+answers adds that PC to the list. The addresses are kept in `client.json`,
+the one that answered last as `address` and the others as `other_addresses`.
+
+## Through a WireGuard tunnel
+
+Away from home, a PC is safest reached through a VPN rather than through
+ports opened on the router. With WireGuard that used to mean the WireGuard
+app, connected by hand before Leto. Leto can now open the tunnel itself:
+the person gives it a WireGuard file, as their server or the WireGuard app
+writes one, in the settings (pasted, or dropped on the window) or with
+`leto-cli tunnel use <file>`. `leto-cli tunnel` shows it, and `tunnel
+remove` takes it away.
+
+The system's WireGuard makes a network card of its own, which takes
+administrator rights, and carries everything. Leto's tunnel
+(`crates/leto-tunnel`) is a UDP socket like any other and carries only
+Leto's own connections to a PC. WireGuard itself is boringtun, which only
+turns packets into packets; TCP inside the tunnel (pairing, the list of
+apps, starting a stream) is smoltcp; UDP, the pictures, the sound and the
+input of a stream, is written by hand to stay out of a stack's way.
+
+The rest of Leto, and moonlight-common-rust, open ordinary sockets. So each
+address of a PC that the tunnel leads to (its `AllowedIPs`) gets a *door*: a
+local address, `127.77.0.1` for the first, that leads through the tunnel to
+that address, port for port. A door listens on the ports a host uses, all
+derived from its base port as Sunshine and Apollo do: what connects to
+`127.77.0.1:47989` reaches `10.8.0.3:47989`. The door is one more way in
+[the race for the nearest](#the-ways-to-a-pc), and starts 150 ms after the
+direct ways: at home the local network still wins, and with the system's
+WireGuard connected the PC is still reached through it. A PC reached
+through Leto's tunnel says "WireGuard" in the list, and its stream asks for
+video packets of 1024 bytes, as Moonlight does for a PC far away, so that
+each fits in a WireGuard packet.
+
+The tunnel opens the first time a PC it leads to is looked for, and tries
+again ten seconds after a failure. The settings show whether the other end
+answers, this device's address in the tunnel and its public key, which the
+server must know. The peer's name is looked up again when it stops
+answering, since an address at home changes.
+
+The file holds a private key. It is kept as `wireguard.conf` beside
+`client.json`, which holds the pairing key, and as private: readable by its
+owner alone on systems with Unix permissions, in the person's profile on
+Windows. Its text never reaches a log, and a browser
+cannot give or remove one through the bridge: the tunnel belongs to the
+device the engine runs on.
+
+What it does not do, and what was never tried:
+
+- It was never tried against a real WireGuard server. Two of Leto's own
+  tunnel ends talk to each other in the tests, and a whole session goes
+  through them to the stand-in host: finding it, pairing, the apps, pictures,
+  sound and input. boringtun is the WireGuard that Cloudflare runs, but
+  nothing here met `wg` or a router's WireGuard.
+- Leto should have a peer of its own on the server. The same keys in use at
+  the same time by the WireGuard app, on this device or another, take the
+  tunnel from each other every few seconds.
+- One file, with one peer, and IPv4 inside the tunnel. `MTU`,
+  `PersistentKeepalive` and a pre-shared key are followed; `DNS`, scripts
+  and routing lines mean nothing to a tunnel that carries Leto alone, and
+  are ignored.
+- Doors need local addresses other than `127.0.0.1`. Windows, Linux and
+  Android have all of `127.0.0.0/8`; macOS and iOS only have `127.0.0.1`
+  unless more are added by hand, so there the tunnel cannot open a door
+  yet.
+- The packet that wakes a PC goes through the tunnel too, to the PC's own
+  address, since a broadcast does not cross WireGuard. That wakes it only
+  while the device the tunnel ends on still knows which card has that
+  address, which routers forget after a while, and never when the tunnel
+  ends on the sleeping PC itself. See below.
+- Not in the browser: the web client reaches PCs through the bridge, which
+  uses the tunnel of the device it runs on.
+
+## Waking a PC
+
+A PC that sleeps or is off can be woken by its network card, which still
+listens for a "magic packet": six bytes of `0xFF`, then the card's address
+sixteen times (Wake-on-LAN, `leto_client::wake`). Sunshine and Apollo tell
+that address only to a device they paired with, over HTTPS, and zeros to
+anyone else, so `leto-client` learns it when pairing and again each time it
+reaches the paired PC, and keeps it in `client.json` as `card`. A PC added
+but never paired cannot be woken.
+
+Choosing an offline PC that Leto can wake, in the app, or `leto-cli wake`,
+sends the packet and then asks the PC every two seconds until it answers,
+for two minutes, sending it again every ten seconds in case one was lost.
+The PC then opens as if it had been on. A sleeping PC answers nothing, so
+the packet goes everywhere it could land, as Moonlight does: to each of the
+PC's addresses, to every local network this device is on as a broadcast,
+and to the IPv6 address every device on a link listens to, each on ports 9
+and 47009 and on the ports of the streaming software, moved with the PC's
+own port.
+
+What it needs on the PC: Wake-on-LAN turned on in its firmware and in the
+settings of its network card, and a wired connection, as few Wi-Fi cards
+wake. The packet reaches it on the same network. From elsewhere it needs a
+router that forwards one of those ports to the PC's network as a broadcast,
+or a device at home that is awake and passes it on: a tunnel that ends on
+the sleeping PC itself is asleep with it.
 
 ## Trust between a client and a PC
 

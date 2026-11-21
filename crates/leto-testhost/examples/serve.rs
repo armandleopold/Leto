@@ -55,7 +55,10 @@ Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
 
   --name NAME   The name the host gives itself (default: Salon)
   --id ID       The unique id it reports (default: a fixed one)
-  --port PORT   The port to listen on (default: any free port)
+  --port PORT   The port to listen on (default: any free port). The other
+                ports are then counted from it, as Sunshine and Apollo do:
+                HTTPS 5 below, RTSP 21 above, pictures, control and sound
+                9, 10 and 11 above, the camera 13 above
   --announce    Listen on every interface and announce the host on the
                 network, so that clients find it on their own
   --apollo      Behave as an Apollo host that lets a newly paired device
@@ -100,9 +103,12 @@ fn main() -> ExitCode {
         let parsed = match arg.as_str() {
             "--name" => value().map(|name| options.name = name),
             "--id" => value().map(|id| options.id = id),
-            "--port" => value()
-                .and_then(|port| port.parse().map_err(|_| ()))
-                .map(|port| options.port = port),
+            "--port" => value().and_then(|port| port.parse().map_err(|_| ())).map(|port| {
+                options.port = port;
+                // A port asked for by number brings the others with it, as
+                // on a real host: a firewall or a tunnel can name them.
+                options.real_ports = true;
+            }),
             "--announce" => {
                 announce = true;
                 Ok(())
@@ -161,6 +167,7 @@ fn main() -> ExitCode {
 
     println!("Pair from a client, then type the PIN it shows here and press Enter.");
     println!("Type \"close\" to close the running app, \"drop\" to break the stream.");
+    println!("Type \"busy\" to start no stream for now, \"free\" to start them again.");
     println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
     println!("Type \"inputs\" to see what the keyboard, mouse and gamepads of the client sent.");
     println!("Type \"voice\" to save what the microphone of the client sent to {VOICE_FILE}.");
@@ -176,6 +183,14 @@ fn main() -> ExitCode {
             "drop" => {
                 host.drop_stream();
                 println!("The stream is broken. The app keeps running.");
+            }
+            "busy" => {
+                host.refuse_streams(true);
+                println!("The host starts no stream for now, and says it is busy.");
+            }
+            "free" => {
+                host.refuse_streams(false);
+                println!("The host starts streams again.");
             }
             "allow" => {
                 host.set_permissions(Some(permission::ALL));

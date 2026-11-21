@@ -255,6 +255,16 @@ impl Shell for Desk {
                     });
                 }
             }
+            // The camera went along with the stream that was lost: it is
+            // sent again once the PC says, when the stream is back, what it
+            // takes. The microphone listens on, for the stream to come.
+            engine::Event::Reconnecting { attempt } => {
+                let mut film = self.film();
+                if film.stream == Some(*attempt) {
+                    film.feed = None;
+                    film.limits = None;
+                }
+            }
             // Nobody listens or looks any more, so nothing is captured any
             // more: at once, not when the window gets to hear of it.
             engine::Event::PlayFailed { attempt, .. }
@@ -337,6 +347,11 @@ impl Backend {
             looking: Arc::default(),
             chime: Arc::default(),
         }
+    }
+
+    /// The engine here can run a WireGuard tunnel of its own.
+    pub fn has_tunnel(&self) -> bool {
+        true
     }
 
     /// Open when the engine started, closed for good when it did not.

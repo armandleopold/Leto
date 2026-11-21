@@ -80,6 +80,15 @@ pub fn info(painter: &Painter, rect: Rect, color: Color32) {
     painter.circle_filled(pos2(rect.center().x, at(rect, 0.5, 0.29).y), stroke.width * 0.75, color);
 }
 
+/// A triangle with an exclamation mark: something went wrong.
+pub fn warning(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let corners = vec![at(rect, 0.5, 0.08), at(rect, 0.96, 0.9), at(rect, 0.04, 0.9)];
+    painter.add(egui::Shape::closed_line(corners, stroke));
+    painter.line_segment([at(rect, 0.5, 0.38), at(rect, 0.5, 0.62)], stroke);
+    painter.circle_filled(at(rect, 0.5, 0.76), stroke.width * 0.75, color);
+}
+
 /// Four corners pulling apart: fill the screen.
 pub fn expand(painter: &Painter, rect: Rect, color: Color32) {
     let stroke = stroke(rect, color);

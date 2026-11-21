@@ -25,8 +25,10 @@ pub fn list(client: &Client, wait: u64, json: bool) -> Result<String, String> {
     let mut lines =
         vec![format!("{:<20} {:<21} {:<19} {}", "NAME", "ADDRESS", "SOFTWARE", "STATE")];
     for host in &hosts {
+        // Said when Leto reaches it through its own tunnel.
+        let through = if host.tunnel { ", through WireGuard" } else { "" };
         lines.push(format!(
-            "{:<20} {:<21} {:<19} {}",
+            "{:<20} {:<21} {:<19} {}{through}",
             host.name,
             join_address(&host.address, host.port),
             host.kind.name(),
@@ -83,6 +85,17 @@ pub fn forget(client: &Client, pc: &str, json: bool) -> Result<String, String> {
         return to_json(&host);
     }
     Ok(format!("Forgot {}.", host.name))
+}
+
+pub fn wake(client: &Client, pc: &str, wait: u64, json: bool) -> Result<String, String> {
+    let host = find(client, pc, false)?;
+    eprintln!("Waking {} up…", host.name);
+    let host =
+        client.wake_up(&host.id, Duration::from_secs(wait)).map_err(|error| error.to_string())?;
+    if json {
+        return to_json(&host);
+    }
+    Ok(format!("{} is awake.", host.name))
 }
 
 /// Finds the PC a person means by a name, an address or an id: among the
@@ -197,6 +210,26 @@ mod tests {
 
         let error = apps(&client, HOST_NAME, false).unwrap_err();
         assert_eq!(error, "this device is not paired with the PC");
+    }
+
+    #[test]
+    fn a_pc_is_woken_only_once_it_told_its_card() {
+        let settings = Settings::new("wake");
+        let host = FakeHost::start();
+        let pin: Pin = "4821".parse().unwrap();
+        host.type_pin(pin);
+        pair(&settings.client(), &host.address(), Some(pin), false).unwrap();
+        // A PC that answers is awake already.
+        let client = settings.client();
+        assert_eq!(wake(&client, HOST_NAME, 5, false).unwrap(), format!("{HOST_NAME} is awake."));
+
+        // One never paired has not told its card: it cannot be woken.
+        let never = Settings::new("wake-unpaired");
+        let host = FakeHost::start();
+        add(&never.client(), &host.address(), false).unwrap();
+        drop(host);
+        let error = wake(&never.client(), HOST_NAME, 1, false).unwrap_err();
+        assert!(error.starts_with("Leto cannot wake this PC yet"), "{error}");
     }
 
     #[test]

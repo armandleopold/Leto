@@ -5,13 +5,15 @@
 //! work the backend has to do comes out of [`State::take_requests`].
 
 use leto_core::{
-    engine::{Choices, ScreenMode},
+    engine::{Choices, ScreenMode, WireGuardFile},
     input::InputAllowed,
-    model::{AppSummary, HostId, HostSummary, Pin, Reachability},
+    model::{AppSummary, HostId, HostSummary, Pin, Reachability, TunnelSummary},
 };
 
 /// Seconds between two searches while the list of PCs is on screen.
 const SEARCH_EVERY: f64 = 15.0;
+/// Seconds between two looks at the tunnel while the settings show it.
+const TUNNEL_EVERY: f64 = 2.0;
 
 /// Work for the backend, and its news. Covers arrive ready to draw.
 pub use leto_core::engine::{AppsProblem, Request, StreamEnd};
@@ -96,6 +98,10 @@ pub struct StreamView {
     pub attempt: u64,
     /// The stream is connected. Before that, the PC is starting the app.
     pub connected: bool,
+    /// The stream lost its PC, and Leto is getting it back. It stays
+    /// connected meanwhile: the last picture, the keys and the full screen
+    /// stay as they were.
+    pub reconnecting: bool,
     /// What the PC lets this device play with, known once connected.
     pub input: InputAllowed,
     pub microphone: Mic,
@@ -171,6 +177,26 @@ pub struct AddForm {
     pub error: Option<String>,
 }
 
+/// Leto's own WireGuard tunnel, as the settings show it, and the form that
+/// takes its file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TunnelForm {
+    /// The tunnel as the backend last told it. None without one, and
+    /// before the backend has said.
+    pub summary: Option<TunnelSummary>,
+    /// The backend has said at least once.
+    pub known: bool,
+    /// The form is open: the person is giving a file.
+    pub open: bool,
+    /// The file, as pasted or dropped so far. It holds a private key and
+    /// never shows in a log.
+    pub draft: WireGuardFile,
+    /// The backend is trying the file, or removing the tunnel.
+    pub busy: bool,
+    /// Why the file last given was not used.
+    pub refused: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct State {
     pub screen: Screen,
@@ -182,6 +208,10 @@ pub struct State {
     pub network_searched: bool,
     pub add: AddForm,
     pub notice: Option<String>,
+    /// The PCs asked to wake up, until they answer or Leto gives up.
+    pub waking: Vec<HostId>,
+    pub tunnel: TunnelForm,
+    tunnel_asked: f64,
     last_search: f64,
     attempts: u64,
     requests: Vec<Request>,
@@ -197,6 +227,9 @@ impl State {
             network_searched: true,
             add: AddForm::default(),
             notice: None,
+            waking: Vec::new(),
+            tunnel: TunnelForm::default(),
+            tunnel_asked: f64::NEG_INFINITY,
             last_search: f64::NEG_INFINITY,
             attempts: 0,
             requests: Vec::new(),
@@ -228,7 +261,13 @@ impl State {
     pub fn open(&mut self, id: &HostId, now: f64) {
         let Some(host) = self.hosts.iter().find(|host| host.id == *id).cloned() else { return };
         self.notice = None;
-        if host.reachability == Reachability::Offline {
+        if host.reachability == Reachability::Offline && host.wakeable {
+            // It sleeps or is off: wake it, and open it once it answers.
+            if !self.waking.contains(id) {
+                self.waking.push(id.clone());
+                self.requests.push(Request::Wake(id.clone()));
+            }
+        } else if host.reachability == Reachability::Offline {
             // It may just have been switched on.
             self.search(now);
         } else if host.paired {
@@ -289,6 +328,7 @@ impl State {
             app: app.clone(),
             attempt: self.attempts,
             connected: false,
+            reconnecting: false,
             input: InputAllowed::ALL,
             // Off at the start of every stream: a PC hears and sees this
             // device only once the person says so.
@@ -462,6 +502,34 @@ impl State {
         }
     }
 
+    /// Called every frame while the settings show the tunnel: asks the
+    /// backend how it is doing, now and then.
+    pub fn watch_tunnel(&mut self, now: f64) {
+        if now - self.tunnel_asked >= TUNNEL_EVERY {
+            self.tunnel_asked = now;
+            self.requests.push(Request::Tunnel);
+        }
+    }
+
+    /// The person gave a WireGuard file to use from now on.
+    pub fn use_tunnel(&mut self) {
+        if self.tunnel.busy || self.tunnel.draft.0.trim().is_empty() {
+            return;
+        }
+        self.tunnel.busy = true;
+        self.tunnel.refused = None;
+        self.requests.push(Request::UseTunnel(self.tunnel.draft.clone()));
+    }
+
+    /// The person wants no tunnel any more.
+    pub fn remove_tunnel(&mut self) {
+        if !self.tunnel.busy {
+            self.tunnel.busy = true;
+            self.tunnel.refused = None;
+            self.requests.push(Request::RemoveTunnel);
+        }
+    }
+
     /// Takes in news from the backend. `now` is the app time in seconds.
     pub fn apply(&mut self, event: Event, now: f64) {
         match event {
@@ -529,17 +597,36 @@ impl State {
                 if let Screen::Stream(view) = &mut self.screen
                     && view.attempt == attempt
                 {
+                    // A stream that comes back keeps the microphone the
+                    // person turned on.
+                    let back = std::mem::take(&mut view.reconnecting);
                     view.connected = true;
                     view.input = input;
-                    view.microphone = if microphone { Mic::Off } else { Mic::NotTaken };
+                    view.microphone = match &view.microphone {
+                        Mic::On if back && microphone => Mic::On,
+                        _ if microphone => Mic::Off,
+                        _ => Mic::NotTaken,
+                    };
+                }
+            }
+            Event::Reconnecting { attempt } => {
+                if let Screen::Stream(view) = &mut self.screen
+                    && view.attempt == attempt
+                {
+                    view.reconnecting = true;
                 }
             }
             Event::Camera { attempt, offer } => {
                 if let Screen::Stream(view) = &mut self.screen
                     && view.attempt == attempt
-                    && view.camera == Cam::Unknown
                 {
-                    view.camera = if offer.is_some() { Cam::Off } else { Cam::NotTaken };
+                    // A stream that came back keeps the camera as the person
+                    // left it, when the PC still takes one.
+                    match (offer, &view.camera) {
+                        (None, _) => view.camera = Cam::NotTaken,
+                        (Some(_), Cam::Unknown | Cam::NotTaken) => view.camera = Cam::Off,
+                        (Some(_), Cam::Off | Cam::On | Cam::Failed(_)) => {}
+                    }
                 }
             }
             Event::PlayFailed { attempt, message } => {
@@ -584,6 +671,40 @@ impl State {
                     }
                 }
             }
+            Event::Tunnel { summary, refused } => {
+                let form = &mut self.tunnel;
+                form.summary = summary;
+                form.known = true;
+                // An answer to a look changes nothing of a form in use.
+                if form.busy {
+                    form.busy = false;
+                    if refused.is_none() {
+                        // Used, or removed: the key leaves the window.
+                        form.open = false;
+                        form.draft = WireGuardFile(String::new());
+                    }
+                    form.refused = refused;
+                }
+            }
+            Event::WakeEnded { host, result } => {
+                if !self.waking.contains(&host) {
+                    return;
+                }
+                self.waking.retain(|waking| *waking != host);
+                // Opened as the person asked, unless they went on to
+                // something else meanwhile.
+                match result {
+                    Ok(woken) if self.screen == Screen::Pcs => {
+                        if woken.paired {
+                            self.show_apps(woken);
+                        } else {
+                            self.start_pairing(woken);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(message) => self.notice = Some(message),
+                }
+            }
             // Covers are pictures: the drawing side keeps them.
             Event::Cover { .. } => {}
             Event::Notice(message) => self.notice = Some(message),
@@ -608,6 +729,8 @@ mod tests {
             reachability,
             busy: false,
             running_app: None,
+            wakeable: false,
+            tunnel: false,
         }
     }
 
@@ -728,12 +851,47 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_pc_that_is_off_searches_again() {
+    fn choosing_a_pc_that_is_off_and_cannot_be_woken_searches_again() {
         let salon = host("Salon", true, Reachability::Offline);
         let mut state = state_with(vec![salon.clone()]);
         state.open(&salon.id, 1.0);
         assert_eq!(state.screen, Screen::Pcs);
         assert_eq!(state.take_requests(), [Request::Search]);
+    }
+
+    #[test]
+    fn choosing_a_pc_that_is_off_wakes_it_and_opens_it_once_it_answers() {
+        let salon = HostSummary { wakeable: true, ..host("Salon", true, Reachability::Offline) };
+        let mut state = state_with(vec![salon.clone()]);
+        state.open(&salon.id, 1.0);
+        assert_eq!(state.take_requests(), [Request::Wake(salon.id.clone())]);
+        assert_eq!(state.waking, std::slice::from_ref(&salon.id));
+        // Asked once, however impatient the person is.
+        state.open(&salon.id, 2.0);
+        assert_eq!(state.take_requests(), []);
+
+        let awake = HostSummary { reachability: Reachability::Online, ..salon.clone() };
+        state.apply(Event::WakeEnded { host: salon.id.clone(), result: Ok(awake) }, 30.0);
+        assert!(state.waking.is_empty());
+        assert_eq!(state.take_requests(), [Request::Apps(salon.id.clone())]);
+        assert!(matches!(&state.screen, Screen::Apps(view) if view.host.id == salon.id));
+    }
+
+    #[test]
+    fn a_pc_that_does_not_wake_up_says_why_and_one_that_wakes_late_stays_put() {
+        let salon = HostSummary { wakeable: true, ..host("Salon", true, Reachability::Offline) };
+        let mut state = state_with(vec![salon.clone()]);
+        state.open(&salon.id, 1.0);
+        let why = "The PC did not wake up within 120 seconds.".to_owned();
+        state.apply(Event::WakeEnded { host: salon.id.clone(), result: Err(why.clone()) }, 121.0);
+        assert_eq!((&state.screen, state.notice.as_ref()), (&Screen::Pcs, Some(&why)));
+
+        // The person went on to another screen meanwhile: it stays on screen.
+        state.open(&salon.id, 130.0);
+        state.check_devices();
+        let awake = HostSummary { reachability: Reachability::Online, ..salon.clone() };
+        state.apply(Event::WakeEnded { host: salon.id.clone(), result: Ok(awake) }, 140.0);
+        assert!(matches!(state.screen, Screen::Devices(_)), "{:?}", state.screen);
     }
 
     #[test]
@@ -977,6 +1135,40 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_that_lost_its_pc_stays_on_screen_until_it_is_back() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"), None, Choices::default());
+        state.apply(playing(1, true), 3.0);
+        state.apply(camera_news(1, true), 3.1);
+        state.switch_microphone();
+        state.switch_camera();
+        state.take_requests();
+
+        state.apply(Event::Reconnecting { attempt: 1 }, 20.0);
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(view.connected && view.reconnecting);
+        assert_eq!(state.take_requests(), []);
+        // News of a stream left earlier changes nothing.
+        state.apply(Event::Reconnecting { attempt: 9 }, 21.0);
+
+        // Back: the microphone and the camera the person turned on stay on.
+        state.apply(playing(1, true), 30.0);
+        state.apply(camera_news(1, true), 30.1);
+        let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+        assert!(view.connected && !view.reconnecting);
+        assert_eq!(view.microphone, Mic::On);
+        assert_eq!(view.camera, Cam::On);
+
+        // Unless the PC that is back takes none.
+        state.apply(Event::Reconnecting { attempt: 1 }, 40.0);
+        state.apply(playing(1, false), 41.0);
+        state.apply(camera_news(1, false), 41.1);
+        assert_eq!(microphone(&state), &Mic::NotTaken);
+        assert_eq!(camera(&state), &Cam::NotTaken);
+    }
+
+    #[test]
     fn a_stream_that_does_not_start_says_why_on_the_apps_screen() {
         let salon = host("Salon", true, Reachability::Online);
         let mut state = state_with_apps(&salon);
@@ -1203,5 +1395,92 @@ mod tests {
         state.apply(Event::Hosts(vec![salon.clone()]), 100.0);
         assert_eq!(devices(&state).camera, Trial::On);
         assert_eq!(state.hosts, [salon]);
+    }
+
+    fn tunnel() -> TunnelSummary {
+        TunnelSummary {
+            address: "10.8.0.4".to_owned(),
+            endpoint: Some("home.example.org:51820".to_owned()),
+            covers: vec!["10.8.0.0/24".to_owned()],
+            public_key: "bGV0bw==".to_owned(),
+            running: false,
+            handshake: None,
+            problem: None,
+        }
+    }
+
+    #[test]
+    fn the_tunnel_is_looked_at_now_and_then_while_the_settings_show_it() {
+        let mut state = state_with(Vec::new());
+        state.watch_tunnel(1.0);
+        state.watch_tunnel(1.5);
+        assert_eq!(state.take_requests(), [Request::Tunnel]);
+        assert!(!state.tunnel.known);
+
+        state.apply(Event::Tunnel { summary: Some(tunnel()), refused: None }, 1.6);
+        assert!(state.tunnel.known);
+        assert_eq!(state.tunnel.summary, Some(tunnel()));
+
+        state.watch_tunnel(1.0 + TUNNEL_EVERY);
+        assert_eq!(state.take_requests(), [Request::Tunnel]);
+    }
+
+    #[test]
+    fn a_wireguard_file_is_given_once_and_leaves_the_window_when_it_is_used() {
+        let mut state = state_with(Vec::new());
+        state.tunnel.open = true;
+        // Nothing to give yet.
+        state.use_tunnel();
+        assert_eq!(state.take_requests(), []);
+
+        state.tunnel.draft = WireGuardFile("[Interface]".to_owned());
+        state.use_tunnel();
+        state.use_tunnel();
+        assert_eq!(
+            state.take_requests(),
+            [Request::UseTunnel(WireGuardFile("[Interface]".to_owned()))]
+        );
+        assert!(state.tunnel.busy);
+
+        // A look that was on its way answers first: the form stays as it is.
+        state.tunnel.busy = false;
+        state.apply(Event::Tunnel { summary: None, refused: None }, 2.0);
+        assert!(state.tunnel.open);
+        assert_eq!(state.tunnel.draft, WireGuardFile("[Interface]".to_owned()));
+
+        state.tunnel.busy = true;
+        state.apply(Event::Tunnel { summary: Some(tunnel()), refused: None }, 2.1);
+        assert!(!state.tunnel.busy);
+        assert!(!state.tunnel.open);
+        assert_eq!(state.tunnel.draft, WireGuardFile::default());
+        assert_eq!(state.tunnel.summary, Some(tunnel()));
+    }
+
+    #[test]
+    fn a_file_that_is_refused_stays_in_the_form_with_the_reason() {
+        let mut state = state_with(Vec::new());
+        state.tunnel.open = true;
+        state.tunnel.draft = WireGuardFile("hello".to_owned());
+        state.use_tunnel();
+        let why = "This is not a WireGuard file.".to_owned();
+        state.apply(Event::Tunnel { summary: None, refused: Some(why.clone()) }, 2.0);
+
+        assert!(state.tunnel.open);
+        assert!(!state.tunnel.busy);
+        assert_eq!(state.tunnel.refused, Some(why));
+        assert_eq!(state.tunnel.draft, WireGuardFile("hello".to_owned()));
+    }
+
+    #[test]
+    fn the_tunnel_is_removed_once_however_often_it_is_asked() {
+        let mut state = state_with(Vec::new());
+        state.apply(Event::Tunnel { summary: Some(tunnel()), refused: None }, 1.0);
+        state.remove_tunnel();
+        state.remove_tunnel();
+        assert_eq!(state.take_requests(), [Request::RemoveTunnel]);
+
+        state.apply(Event::Tunnel { summary: None, refused: None }, 2.0);
+        assert!(!state.tunnel.busy);
+        assert_eq!(state.tunnel.summary, None);
     }
 }

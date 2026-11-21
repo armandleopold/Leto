@@ -158,6 +158,8 @@ mod tests {
             reachability: Reachability::Online,
             busy: false,
             running_app: None,
+            wakeable: false,
+            tunnel: false,
         }
     }
 

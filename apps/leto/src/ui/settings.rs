@@ -5,12 +5,21 @@
 use egui::{Align, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, vec2};
 use leto_core::engine::{BITRATES_KBPS, Codec, Decodable, ScreenMode};
 
-use super::widgets;
+use super::{tunnel, widgets};
 use crate::{
     input::Shortcut,
     settings::{CODECS, Capture, Decoder, FRAME_RATES, RESOLUTIONS, Settings, codec_name},
+    state::TunnelForm,
     theme,
 };
+
+/// What the person asked for in the settings, beyond what they changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Asked {
+    /// To go back to where they were.
+    pub back: bool,
+    pub tunnel: Option<tunnel::Asked>,
+}
 
 /// Widest the settings get, in points: a name stays near its control.
 const WIDTH: f32 = 820.0;
@@ -30,17 +39,21 @@ const SWITCH_WIDTH: f32 = 44.0;
 const DESKTOP: bool = cfg!(not(target_arch = "wasm32"));
 
 /// Draws the settings. `native` is the screen the window is on, when it
-/// knows, `decodable` what this device decodes, and `back_to` names where
-/// the back button leads. Returns whether the person asked to go back.
+/// knows, `decodable` what this device decodes, `tunnel` Leto's own
+/// WireGuard tunnel where this device can have one, and `back_to` names
+/// where the back button leads.
 pub fn show(
     ui: &mut Ui,
     settings: &mut Settings,
     native: Option<ScreenMode>,
     decodable: Decodable,
+    tunnel: Option<&mut TunnelForm>,
     back_to: &str,
-) -> bool {
+) -> Asked {
+    let mut asked = Asked::default();
     if widgets::back_button(ui, back_to).clicked() {
-        return true;
+        asked.back = true;
+        return asked;
     }
     ui.add_space(4.0);
     widgets::title(ui, "Settings");
@@ -56,6 +69,9 @@ pub fn show(
         |ui| {
             picture_and_sound(ui, settings, native);
             hands_and_more(ui, settings, decodable);
+            if let Some(form) = tunnel {
+                card(ui, "WireGuard tunnel", |ui| asked.tunnel = tunnel::show(ui, form));
+            }
             ui.add_space(4.0);
             let defaults = settings.defaults();
             let changed = *settings != defaults;
@@ -66,7 +82,7 @@ pub fn show(
             }
         },
     );
-    false
+    asked
 }
 
 fn picture_and_sound(ui: &mut Ui, settings: &mut Settings, native: Option<ScreenMode>) {
@@ -417,13 +433,15 @@ mod tests {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 900.0))),
                 ..Default::default()
             };
-            let mut left = true;
+            let mut tunnel = TunnelForm::default();
+            let mut asked = None;
             let mut output = ctx.run_ui(input, |ui| {
-                left = show(ui, &mut settings, native, Decodable::SOFTWARE, "PCs");
+                let tunnel = Some(&mut tunnel);
+                asked = Some(show(ui, &mut settings, native, Decodable::SOFTWARE, tunnel, "PCs"));
             });
             // Nothing draws the frame: its textures go nowhere.
             output.textures_delta.clear();
-            assert!(!left);
+            assert_eq!(asked, Some(Asked::default()));
             assert_eq!(settings.bitrate_kbps, Some(30_000));
         }
     }

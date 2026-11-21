@@ -30,7 +30,8 @@ No gaming PC at hand? This keeps a stand-in host running on this machine. The
 app finds it, and you type the PIN the app shows into its terminal. It streams
 a test card and a melody, and draws on the card what your keyboard, mouse and
 gamepad do. Type `close` to close the running app as its owner would, `drop`
-to break the stream, or `inputs` to list what it received:
+to break the stream, `busy` and `free` to refuse new streams for a while, or
+`inputs` to list what it received:
 
 ```sh
 cargo run -p leto-testhost --example serve -- --port 47989 --announce
@@ -62,6 +63,19 @@ cargo run -p leto-cli -- play Salon Desktop --seconds 10
 
 It also says whether the PC takes a microphone and a camera, and with
 `--microphone` and `--camera` it sends this device's meanwhile.
+
+`leto-cli wake Salon` wakes a paired PC that is off and waits for it to
+answer. The stand-in host tells its card (`leto_testhost::HOST_CARD`) only to
+a paired device, as Apollo does; to see a packet arrive, listen on UDP at its
+port plus 9 once it is stopped, as the tests in
+`crates/leto-client/tests/wake.rs` do.
+
+`leto-cli tunnel use home.conf` gives Leto a WireGuard tunnel of its own to
+reach PCs through, `leto-cli tunnel` shows it and `tunnel remove` takes it
+away. No WireGuard server at hand? `crates/leto-client/tests/tunnel.rs` puts
+the stand-in host behind a tunnel end of Leto's own (`leto_tunnel::Relay`).
+A host reached through a tunnel must use the ports of a real one, counted
+from its own: `--port` on the stand-in host, `Options::real_ports` in a test.
 
 The web client needs its bridge: `cargo xtask web` builds the client, then
 `leto-cli bridge` serves it on port 5386 and prints the address to open and
@@ -123,6 +137,9 @@ builds and tests it for real.
   decodes it. The browser's microphone and camera come back the same way,
   encoded by the browser. What the two say to each other is in
   `leto_core::bridge`: change both ends together.
+- WireGuard, and everything that goes through it, is in `leto-tunnel`, which
+  knows nothing of PCs. `leto-client` only decides which addresses get a
+  door (`tunnel.rs`), and everything else opens ordinary sockets to it.
 - How a camera is fitted to what a PC takes (size, pictures a second, bit
   rate) is one rule for every client, in `leto_core::engine`.
 - Code of the web build that needs no browser goes outside
@@ -155,8 +172,9 @@ builds and tests it for real.
 - **A browser has to be known to the bridge.** Never add a way to ask the
   bridge for anything, or to send it input, that skips its gate.
 - **A log tells no secret.** People send their logs to whoever helps them.
-  Never log a PIN, a key, a bridge code, or the query of a request (during
-  pairing it carries the challenges). See `leto_client::logs`.
+  Never log a PIN, a key, a bridge code, the text of a WireGuard file, or
+  the query of a request (during pairing it carries the challenges). See
+  `leto_client::logs`.
 - **Code ported from another project** says so in a comment at the top of the
   module: which project, which file, which commit.
 - Write code, comments, documentation and commit messages in English.

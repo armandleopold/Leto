@@ -197,6 +197,13 @@ impl AudioPayloader {
                     .expect("valid slice size"),
             );
 
+            // Leto: the shards are as long as the data packets' payloads,
+            // which encryption pads to a whole block: shorter than the room
+            // made for them, and Reed-Solomon wants them all the same length.
+            let shard_len = RtpAudioHeader::SIZE + AudioFecHeader::SIZE + payload_len;
+            fec_packet1.truncate(shard_len);
+            fec_packet2.truncate(shard_len);
+
             // Generate Fec Payload
             reed_solomon
                 .encode_sep(

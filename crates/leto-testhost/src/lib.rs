@@ -101,6 +101,9 @@ pub mod permission {
 
 pub const HOST_NAME: &str = "Salon";
 pub const HOST_ID: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+/// The address of the host's network card, told only to a paired device
+/// over HTTPS, as Apollo does. Everyone else is told zeros.
+pub const HOST_CARD: &str = "00:11:22:33:44:55";
 
 /// One app the host offers.
 #[derive(Debug, Clone)]
@@ -153,6 +156,27 @@ pub struct Options {
     /// it. Whichever the client asks for, the pictures are H.264: enough to
     /// see what a client chooses, as [`StreamReport::codec`] tells.
     pub encodes: Codecs,
+    /// How long the host waits before answering a question over HTTP or
+    /// HTTPS, as a PC far away seems to.
+    pub answer_after: Duration,
+    /// Use the ports a Sunshine or an Apollo uses, counted from `port`:
+    /// HTTPS five below it, RTSP twenty-one above, pictures, control and
+    /// sound nine, ten and eleven above, and the microphone thirteen above
+    /// on a host that takes no camera, which has that port otherwise. Only
+    /// with a `port`. Without it every other port is any free one, so that
+    /// many hosts run side by side.
+    pub real_ports: bool,
+}
+
+impl Options {
+    /// The port `above` the host's own that a real host would use, where
+    /// this one does as real hosts do: any free port otherwise.
+    fn port_at(&self, above: i32) -> u16 {
+        if !self.real_ports || self.port == 0 {
+            return 0;
+        }
+        u16::try_from(i32::from(self.port) + above).unwrap_or(0)
+    }
 }
 
 impl Default for Options {
@@ -172,6 +196,8 @@ impl Default for Options {
             microphone: true,
             camera: Some((1920, 1080)),
             encodes: Codecs::of(Codec::H264),
+            answer_after: Duration::ZERO,
+            real_ports: false,
         }
     }
 }
@@ -211,6 +237,8 @@ struct Shared {
     https_port: u16,
     /// Where the camera of a client arrives, when the host takes one.
     cameras: Option<Arc<camera::Cameras>>,
+    /// Starts no stream for now: see [`FakeHost::refuse_streams`].
+    busy: AtomicBool,
     stop: AtomicBool,
 }
 
@@ -274,7 +302,7 @@ impl FakeHost {
 
     pub fn start_with(options: Options) -> Self {
         let (http, cameras) = listen(&options);
-        let https = TcpListener::bind((options.interface.as_str(), 0)).unwrap();
+        let https = TcpListener::bind((options.interface.as_str(), options.port_at(-5))).unwrap();
         let (cameras, api) = cameras.unzip();
         let shared = Arc::new(Shared {
             identity: Mutex::new(new_identity()),
@@ -287,6 +315,7 @@ impl FakeHost {
             http_port: http.local_addr().unwrap().port(),
             https_port: https.local_addr().unwrap().port(),
             cameras,
+            busy: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
 
@@ -401,6 +430,12 @@ impl FakeHost {
     /// The last picture of the camera a client is sending.
     pub fn seen(&self) -> Option<Arc<Seen>> {
         self.shared.cameras.as_ref().and_then(|cameras| cameras.seen())
+    }
+
+    /// Starts no stream, for now, and says that it is busy: as a host that
+    /// has not noticed yet that the client it streamed to is gone.
+    pub fn refuse_streams(&self, refused: bool) {
+        self.shared.busy.store(refused, Ordering::SeqCst);
     }
 
     /// The host's owner stops letting devices send their camera, or lets
@@ -566,6 +601,7 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, service: Service) -> thread
 
 fn handle_plain(mut stream: TcpStream, shared: &Shared) {
     let Some(target) = read_request(&mut stream) else { return };
+    thread::sleep(shared.options.answer_after);
     let (kind, body) = respond(shared, &target, None, local_ip(&stream));
     write_response(&mut stream, kind, &body);
 }
@@ -581,6 +617,7 @@ fn handle_secure(stream: TcpStream, shared: &Shared) {
     }
     let client =
         stream.conn.peer_certificates().and_then(|chain| chain.first()).map(|c| c.to_vec());
+    thread::sleep(shared.options.answer_after);
     let (kind, body) = respond(shared, &target, Some(client), local_ip(&stream.sock));
     write_response(&mut stream, kind, &body);
     stream.conn.send_close_notify();
@@ -696,11 +733,12 @@ fn respond(
                 (false, Some(_)) => "<Permission>0</Permission>".to_owned(),
                 (_, None) => String::new(),
             };
+            let card = if authorized { HOST_CARD } else { "00:00:00:00:00:00" };
             xml(&format!(
                 "<appversion>{}</appversion><hostname>{}</hostname>\
              <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
              <HttpsPort>{}</HttpsPort><ExternalPort>{}</ExternalPort>\
-             <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>00:11:22:33:44:55</mac>\
+             <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>{card}</mac>\
              <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>{}</ServerCodecModeSupport>\
              <PairStatus>{}</PairStatus><currentgame>{}</currentgame>\
              <state>{}</state>{permission}",
@@ -751,6 +789,10 @@ fn respond(
             let needed = if joins { VIEW_OR_LAUNCH } else { permission::LAUNCH_APPS };
             if !allowed(needed) {
                 return failure(403, "Permission denied");
+            }
+            if shared.busy.load(Ordering::SeqCst) {
+                // As a host still busy with a client it has not missed yet.
+                return failure(503, "The host is busy");
             }
             launch(shared, path == "/resume", &query, local)
         }
@@ -817,7 +859,16 @@ fn launch(
         scale_percent: query.get("scaleFactor").and_then(|scale| scale.parse().ok()),
     });
     playing.end_stream(false);
-    let session = match stream::Session::start(local, launch) {
+    let options = &shared.options;
+    let ports = stream::Ports {
+        rtsp: options.port_at(21),
+        video: options.port_at(9),
+        control: options.port_at(10),
+        audio: options.port_at(11),
+        // The camera listens there too, on a host that takes one.
+        microphone: if shared.cameras.is_some() { 0 } else { options.port_at(13) },
+    };
+    let session = match stream::Session::start(local, launch, ports) {
         Ok(session) => session,
         Err(error) => return failure(503, &format!("Failed to start the stream: {error}")),
     };

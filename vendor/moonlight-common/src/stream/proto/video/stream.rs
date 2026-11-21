@@ -93,6 +93,14 @@ impl VideoStream {
         }
     }
 
+    /// Leto: the pictures that arrived and wait to be taken.
+    pub fn frames_waiting(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|event| matches!(event, VideoStreamEvent::OnFrame(_)))
+            .count()
+    }
+
     fn do_idr_request(&mut self) -> Result<(), Error> {
         if self.last_now >= self.idr_deadline {
             // move idr deadline forward

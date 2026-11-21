@@ -41,6 +41,11 @@ const F11_FILLS: bool = cfg!(not(target_arch = "wasm32"));
 const FILLS_ON_CONNECT: bool = cfg!(not(target_arch = "wasm32"));
 /// Seconds between two updates of the statistics.
 const STATISTICS_EVERY: f64 = 1.0;
+/// Seconds without a picture after which a stream says that it lost its
+/// PC: one stands still a moment longer on a bad network, or when the
+/// picture does, but a PC sends pictures several times a second all the
+/// same.
+const LOST_AFTER: f64 = 3.0;
 
 /// The quietest sound the microphone's meter shows, in decibels below the
 /// loudest a microphone captures.
@@ -126,6 +131,8 @@ pub struct Player {
     slipped: bool,
     /// Pictures the window was given to show so far.
     shown: u64,
+    /// How many pictures had arrived when that last changed, and when.
+    arrived: Option<(u64, f64)>,
     /// The statistics over the picture, while they show.
     statistics: Option<Statistics>,
     /// The PCs that leave their own pointer out of the pictures, because
@@ -440,6 +447,18 @@ pub fn show(
     }
 
     overlay(ui, window, view, player, status, now, &mut asked);
+    if view.connected {
+        let arrived = status.counts.map_or(player.shown, |counts| counts.received);
+        if seems_lost(view, picture.is_some(), arrived, now, &mut player.arrived) {
+            connection_lost(ui.ctx(), window, player.bar);
+        } else if picture.is_some()
+            && let Some((_, since)) = player.arrived
+        {
+            // The sign comes even while no picture does, with one more
+            // drawing: without the keyboard, the window draws once a second.
+            ui.ctx().request_repaint_after_secs((since + LOST_AFTER - now).max(0.0) as f32);
+        }
+    }
     if view.connected
         && let Some(statistics) = &mut player.statistics
     {
@@ -772,6 +791,12 @@ fn statistics_lines(
             None => per_second(rates.decoded),
         },
     ));
+    if let Some(took) = rates.copying_ms {
+        lines.push(("Copied out", format!("{took:.1} ms of that for each picture shown")));
+    }
+    if rates.skipped > 0.0 {
+        lines.push(("Skipped", format!("{}, to keep up", per_second(rates.skipped))));
+    }
     lines.push(("Shown", per_second(rates.shown)));
     if let Some(took) = rates.host_ms {
         lines.push(("On the PC", format!("{took:.1} ms to capture and encode")));
@@ -846,6 +871,52 @@ fn waiting(ui: &mut Ui, window: Rect, view: &StreamView, problem: Option<&str>) 
     })
     .inner
 }
+
+/// Whether the stream seems to have lost its PC: the engine is getting it
+/// back, or no picture arrived for a while after the first one. `arrived`
+/// counts the pictures that arrived so far, and `changed` keeps what it was
+/// when it last changed, and when.
+fn seems_lost(
+    view: &StreamView,
+    has_picture: bool,
+    arrived: u64,
+    now: f64,
+    changed: &mut Option<(u64, f64)>,
+) -> bool {
+    let since = match *changed {
+        Some((count, at)) if count == arrived => at,
+        _ => changed.insert((arrived, now)).1,
+    };
+    view.connected && (view.reconnecting || has_picture && now - since >= LOST_AFTER)
+}
+
+/// Says that the stream lost its PC and is getting it back, under the bar
+/// when the bar shows.
+fn connection_lost(ctx: &egui::Context, window: Rect, bar: Option<Rect>) {
+    let top = bar.map_or(10.0, |bar| bar.bottom() - window.top() + 8.0);
+    egui::Area::new(Id::unique("stream-lost"))
+        .order(Order::Foreground)
+        .anchor(Align2::CENTER_TOP, vec2(0.0, top))
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_black_alpha(225))
+                .stroke(Stroke::new(1.0, theme::PROBLEM))
+                .corner_radius(theme::CARD_RADIUS)
+                .inner_margin(Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (sign, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                        icons::warning(ui.painter(), sign, theme::PROBLEM);
+                        let text = RichText::new(LOST).color(theme::PROBLEM).size(theme::SMALL);
+                        ui.label(text);
+                    });
+                });
+        });
+}
+
+/// What the sign says.
+const LOST: &str = "Connection lost. Reconnecting…";
 
 /// What the bar shows.
 struct Bar<'a> {
@@ -1273,10 +1344,13 @@ mod tests {
                 reachability: Reachability::Online,
                 busy: true,
                 running_app: Some(1),
+                wakeable: false,
+                tunnel: false,
             },
             app: AppSummary { id: 1, title: "Desktop".into(), hdr: false },
             attempt: 1,
             connected: true,
+            reconnecting: false,
             input,
             microphone: Mic::Off,
             camera: Cam::Off,
@@ -1400,6 +1474,30 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_says_it_lost_its_pc_after_three_seconds_without_a_picture() {
+        let mut view = view(InputAllowed::ALL);
+        let mut changed = None;
+        assert!(!seems_lost(&view, true, 10, 0.0, &mut changed));
+        assert!(!seems_lost(&view, true, 10, 2.9, &mut changed));
+        assert!(seems_lost(&view, true, 10, 3.0, &mut changed));
+        // A picture comes: all is well again.
+        assert!(!seems_lost(&view, true, 11, 3.5, &mut changed));
+        assert!(!seems_lost(&view, true, 11, 6.4, &mut changed));
+        assert!(seems_lost(&view, true, 11, 6.6, &mut changed));
+
+        // Before the first picture, the stream waits for it instead.
+        let mut changed = None;
+        assert!(!seems_lost(&view, false, 0, 0.0, &mut changed));
+        assert!(!seems_lost(&view, false, 0, 10.0, &mut changed));
+
+        // Once Leto knows, it says so at once, picture or not.
+        view.reconnecting = true;
+        assert!(seems_lost(&view, false, 0, 10.1, &mut changed));
+        view.connected = false;
+        assert!(!seems_lost(&view, false, 0, 10.2, &mut changed));
+    }
+
+    #[test]
     fn the_bar_says_how_to_get_out_of_the_stream() {
         let said = note(&view(InputAllowed::ALL), Hands::Pointer);
         assert_eq!(
@@ -1443,14 +1541,20 @@ mod tests {
         let lines = statistics_lines(&statistics, Some(counts), None);
         assert_eq!(lines.last(), Some(&("Arrived", "Counting…".to_owned())));
 
-        for _ in 0..144 {
+        for picture in 0..144 {
             counts.received(20_000, Some(0), Some(Duration::from_millis(5)));
             counts.decoded(Some(Duration::from_millis(9)));
+            // Every other one waits behind the next and is skipped.
+            if picture % 2 == 0 {
+                counts.copied(Duration::from_millis(7));
+            } else {
+                counts.skipped += 1;
+            }
         }
         // Not a second yet: nothing changes.
-        statistics.update(Some(counts), 140, 10.5);
+        statistics.update(Some(counts), 70, 10.5);
         assert_eq!(statistics.rates, None);
-        statistics.update(Some(counts), 144, 11.0);
+        statistics.update(Some(counts), 72, 11.0);
         let lines = statistics_lines(&statistics, Some(counts), Some(Duration::from_millis(3)));
         let said: Vec<_> = lines.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         assert_eq!(
@@ -1461,7 +1565,9 @@ mod tests {
                 "Arrived: 144.0 per second, 23.0 Mbit/s".to_owned(),
                 "Lost on the way: 0 in all, 0.0 % lately".to_owned(),
                 "Decoded: 144.0 per second, 9.0 ms each".to_owned(),
-                "Shown: 144.0 per second".to_owned(),
+                "Copied out: 7.0 ms of that for each picture shown".to_owned(),
+                "Skipped: 72.0 per second, to keep up".to_owned(),
+                "Shown: 72.0 per second".to_owned(),
                 "On the PC: 5.0 ms to capture and encode".to_owned(),
                 "Network: 3 ms there and back".to_owned(),
             ]

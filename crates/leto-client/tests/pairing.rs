@@ -12,7 +12,7 @@ use std::{
 };
 
 use leto_client::{Client, Error, HostKind, Pin, Reachability};
-use leto_testhost::{COVER_PNG, FakeHost, HOST_ID, HOST_NAME};
+use leto_testhost::{COVER_PNG, FakeHost, HOST_ID, HOST_NAME, Options};
 
 /// A fresh settings folder per test.
 struct Settings(PathBuf);
@@ -216,6 +216,58 @@ fn forgetting_a_host_removes_it_on_both_sides() {
     assert!(client.hosts().is_empty());
     assert!(settings.open().hosts().is_empty());
     assert_eq!(host.paired_clients(), 0);
+}
+
+#[test]
+fn a_pc_known_at_two_addresses_is_reached_at_the_nearest() {
+    let settings = Settings::new();
+    // One PC, two ways there: one far away, as through a VPN, one near.
+    let far = FakeHost::start_with(Options {
+        answer_after: Duration::from_millis(400),
+        ..Options::default()
+    });
+    let near = FakeHost::start();
+    let client = settings.open();
+
+    client.add(&near.address()).unwrap();
+    let id = client.add(&far.address()).unwrap().id;
+    assert_eq!(client.hosts().len(), 1, "the same PC twice: {:?}", client.hosts());
+    assert_eq!(client.host(&id).unwrap().port, far.port());
+
+    let refreshed = client.refresh();
+    assert_eq!(refreshed.len(), 1);
+    assert_eq!(refreshed[0].port, near.port(), "the nearest address is the one to use");
+
+    // Both are remembered, and the nearest is found again after a restart.
+    let client = settings.open();
+    assert_eq!(client.refresh()[0].port, near.port());
+
+    // When the near way is gone, the far one still leads to the PC.
+    drop(near);
+    let refreshed = client.refresh();
+    assert_eq!(refreshed[0].reachability, Reachability::Online);
+    assert_eq!(refreshed[0].port, far.port());
+}
+
+#[test]
+fn a_paired_pc_stays_paired_at_each_of_its_addresses() {
+    let settings = Settings::new();
+    let host = FakeHost::start();
+    let client = settings.open();
+    let id = pair(&client, &host).id;
+
+    let again = client.add(&format!("localhost:{}", host.port())).unwrap();
+    assert_eq!(again.id, id);
+    assert!(again.paired, "the PC proved who it is at that address too");
+    assert_eq!(client.hosts().len(), 1);
+
+    let client = settings.open();
+    let refreshed = client.refresh();
+    assert_eq!(refreshed.len(), 1);
+    assert!(refreshed[0].paired);
+    assert_eq!(client.apps(&id).unwrap().len(), 2);
+    let saved = fs::read_to_string(settings.0.join("client.json")).unwrap();
+    assert!(saved.contains("other_addresses"), "{saved}");
 }
 
 /// The address this machine uses on its network, if it has one.
