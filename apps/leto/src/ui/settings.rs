@@ -408,8 +408,7 @@ mod tests {
         for width in [480.0, 1400.0] {
             let ctx = egui::Context::default();
             let mut settings = Settings { bitrate_kbps: Some(30_000), ..Settings::default() };
-            let native =
-                Some(ScreenMode { width: 2560, height: 1440, refresh_hz: 144, scale_percent: 125 });
+            let native = Some(ScreenMode { width: 2560, height: 1440, refresh_hz: 144 });
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 900.0))),
                 ..Default::default()

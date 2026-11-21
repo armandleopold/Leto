@@ -237,7 +237,7 @@ fn a_stream_for_a_screen_asks_the_pc_for_a_screen_just_like_it() {
     };
     assert_eq!(host.screen_asked(), Some(asked));
 
-    let screen = ScreenMode { width: 1280, height: 720, refresh_hz: 30, scale_percent: 150 };
+    let screen = ScreenMode { width: 1280, height: 720, refresh_hz: 30 };
     desk.service.ask(Request::Play {
         host: id,
         app: 1,
@@ -253,7 +253,8 @@ fn a_stream_for_a_screen_asks_the_pc_for_a_screen_just_like_it() {
     let asked = ScreenAsked {
         mode: Some("1280x720x30".into()),
         virtual_display: true,
-        scale_percent: Some(150),
+        // Apollo would make a screen that much larger than this one.
+        scale_percent: None,
     };
     assert_eq!(host.screen_asked(), Some(asked));
 }

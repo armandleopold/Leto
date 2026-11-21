@@ -55,7 +55,7 @@ use moonlight_common::{
 pub use service::{Service, Shell};
 pub use session::{
     AudioSetup, AudioSink, Counter, Decoded, Ended, InputError, Session, StreamSettings, Tally,
-    VideoFrame, VideoSetup, VideoSink, VirtualDisplay,
+    VideoFrame, VideoSetup, VideoSink,
 };
 use store::{Identity, Saved, SavedHost, Store};
 use transport::Transport;
@@ -438,7 +438,7 @@ impl Client {
         // HTTPS connection, and both sides encrypt the stream with it.
         let key = AesKey::new_random(&RustCryptoBackend)?;
         let key_id = AesIv::new_random(&RustCryptoBackend)?;
-        if settings.virtual_display.is_some() {
+        if settings.virtual_display {
             log::info!(
                 "asking {} for a screen of its own, {}×{} at {} pictures per second, {} kbit/s",
                 self.for_log(id),
