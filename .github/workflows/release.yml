@@ -149,7 +149,7 @@ jobs:
         run: |
           cp "target/release/leto${{ matrix.exe }}" "target/release/leto-cli${{ matrix.exe }}" "$ARCHIVE/"
           cp LICENSE "$ARCHIVE/LICENSE.txt"
-          cp .github/release/LISEZ-MOI.txt "$ARCHIVE/"
+          cp .github/release/README.txt "$ARCHIVE/"
       - name: Pack (zip)
         if: runner.os == 'Windows'
         shell: pwsh

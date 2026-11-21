@@ -1,25 +1,25 @@
-// Fills the download section from telechargements/version.json, which the
+// Fills the download section from downloads/version.json, which the
 // Pages workflow writes next to the files of the latest release. Without it
 // the page keeps saying that there is nothing to download yet.
 (function () {
   "use strict";
 
   var platforms = [
-    { suffix: "-windows-x86_64.zip", label: "Windows", detail: "Windows 10 et 11, 64 bits", tried: true },
-    { suffix: "-macos-arm64.tar.gz", label: "macOS", detail: "Mac avec puce Apple" },
-    { suffix: "-linux-x86_64.tar.gz", label: "Linux", detail: "64 bits, glibc 2.35 ou plus récent" },
-    { suffix: "-android.apk", label: "Android", detail: "Android 8 ou plus récent" },
-    { suffix: "-web.zip", label: "Client Web seul", detail: "Pour une passerelle déjà installée" },
-    { suffix: "-source.tar.gz", label: "Code source", detail: "Celui de cette version" }
+    { suffix: "-windows-x86_64.zip", label: "Windows", detail: "Windows 10 and 11, 64-bit", tried: true },
+    { suffix: "-macos-arm64.tar.gz", label: "macOS", detail: "Mac with Apple silicon" },
+    { suffix: "-linux-x86_64.tar.gz", label: "Linux", detail: "64-bit, glibc 2.35 or newer" },
+    { suffix: "-android.apk", label: "Android", detail: "Android 8 or newer" },
+    { suffix: "-web.zip", label: "Web client only", detail: "For a bridge already set up" },
+    { suffix: "-source.tar.gz", label: "Source code", detail: "Of this version" }
   ];
 
   function size(bytes) {
-    return (bytes / 1048576).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " Mo";
+    return (bytes / 1048576).toLocaleString("en-GB", { maximumFractionDigits: 1 }) + " MB";
   }
 
   function date(iso) {
     var d = new Date(iso + "T12:00:00Z");
-    return isNaN(d) ? iso : d.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+    return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   }
 
   function guess() {
@@ -42,7 +42,7 @@
       if (!file) return;
       var a = document.createElement("a");
       a.className = "dl" + (p.label === mine ? " mine" : "");
-      a.href = "telechargements/" + encodeURIComponent(file.name);
+      a.href = "downloads/" + encodeURIComponent(file.name);
       a.setAttribute("download", "");
       var title = document.createElement("strong");
       title.textContent = p.label;
@@ -52,7 +52,7 @@
       a.appendChild(detail);
       if (p.label === mine) {
         var tag = document.createElement("em");
-        tag.textContent = "Votre système";
+        tag.textContent = "Your system";
         a.appendChild(tag);
       }
       list.appendChild(a);
@@ -62,13 +62,13 @@
     list.hidden = false;
     document.querySelector("[data-release-notes]").hidden = false;
     document.querySelector("[data-release-intro]").textContent =
-      "Leto " + release.version + ", publié le " + date(release.date) +
-      ". C'est une version de développement : voyez plus haut ce qui a été essayé.";
+      "Leto " + release.version + ", published on " + date(release.date) +
+      ". This is a development version: see above for what has been tried.";
     document.querySelector("[data-release-pill]").textContent =
-      "En développement · version " + release.version;
+      "In development · version " + release.version;
   }
 
-  fetch("telechargements/version.json", { cache: "no-cache" })
+  fetch("downloads/version.json", { cache: "no-cache" })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (release) { if (release) show(release); })
     .catch(function () {});

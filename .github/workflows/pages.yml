@@ -1,7 +1,7 @@
 name: Pages
 
 # Publishes site/ with GitHub Pages, together with the files of the latest
-# release in site/telechargements, which the download section of the page
+# release in downloads/, which the download section of the page
 # lists.
 on:
   push:
@@ -47,14 +47,14 @@ jobs:
             echo "No release yet: nothing to download."
             exit 0
           fi
-          mkdir -p _site/telechargements
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir _site/telechargements
+          mkdir -p _downloads/
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir _downloads/
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '{
             version: (.tag_name | ltrimstr("v")),
             date: (.published_at[0:10]),
             files: [.assets[] | {name, size}]
-          }' > _site/telechargements/version.json
-          cat _site/telechargements/version.json
+          }' > _downloads//version.json
+          cat _downloads//version.json
       - uses: actions/upload-pages-artifact@v5
       - id: deployment
         uses: actions/deploy-pages@v5
