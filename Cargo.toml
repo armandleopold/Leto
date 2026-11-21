@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["apps/*", "crates/*", "xtask"]
 # Code of others, built as it is: Leto's lints and tests are not for it.
-exclude = ["vendor/moonlight-common"]
+exclude = ["vendor/moonlight-common", "vendor/cpal"]
 
 [workspace.package]
 version = "0.0.1"
@@ -92,3 +92,7 @@ opt-level = 2
 # `leto-media` decodes such frames.
 [profile.dev.package.opus-decoder]
 overflow-checks = false
+
+# cpal with one change for Android: see vendor/cpal/LETO.md.
+[patch.crates-io]
+cpal = { path = "vendor/cpal" }
