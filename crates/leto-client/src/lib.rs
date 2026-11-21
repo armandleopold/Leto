@@ -85,6 +85,11 @@ const WAKE_AGAIN: Duration = Duration::from_secs(10);
 /// How many addresses Leto keeps for one PC. The ones that answered least
 /// recently go first.
 const ADDRESSES_KEPT: usize = 4;
+/// How often, at most, this device's system is asked where the names of
+/// the PCs lead: a name that leads nowhere is slow to say so.
+const NAMES_ASKED_EVERY: Duration = Duration::from_secs(60);
+/// How long an address a PC's name led to has to answer. It is nearby.
+const NEARBY_PATIENCE: Duration = Duration::from_secs(1);
 /// How long the direct ways to a PC have to answer before the one through
 /// Leto's tunnel asks: at home, the local network answers within it.
 const TUNNEL_HEAD_START: Duration = Duration::from_millis(150);
@@ -239,6 +244,8 @@ pub struct Client {
     saving: Mutex<()>,
     /// The way through Leto's WireGuard tunnel, if it has one.
     ways: Arc<tunnel::Ways>,
+    /// When the system was last asked where the names of the PCs lead.
+    names_asked: Mutex<Option<Instant>>,
 }
 
 impl Client {
@@ -313,6 +320,7 @@ impl Client {
             hosts: Arc::new(Mutex::new(hosts)),
             saving: Mutex::new(()),
             ways: Arc::new(tunnel::Ways::open(directory)),
+            names_asked: Mutex::new(None),
         })
     }
 
@@ -346,9 +354,16 @@ impl Client {
 
     /// Listens on the local network for `duration` and returns the hosts that
     /// announced themselves and answered. They join [`Client::hosts`].
+    ///
+    /// Meanwhile the PCs Leto keeps are looked for by their names, which
+    /// finds the address nearby of one known only from further away.
     pub fn discover(&self, duration: Duration) -> Result<Vec<HostSummary>, Error> {
-        let announcements =
-            discovery::listen(duration).map_err(|error| Error::Discovery(error.to_string()))?;
+        let (announcements, named) = thread::scope(|scope| {
+            let naming = scope.spawn(|| self.where_names_lead(duration));
+            (discovery::listen(duration), naming.join().unwrap_or_default())
+        });
+        self.ask_nearby(&named);
+        let announcements = announcements.map_err(|error| Error::Discovery(error.to_string()))?;
         let mut found: Vec<HostSummary> = Vec::new();
         for announcement in announcements {
             match self.probe(&announcement.address.to_string(), announcement.port) {
@@ -360,6 +375,94 @@ impl Client {
             }
         }
         Ok(found)
+    }
+
+    /// The addresses nearby that the names of the PCs Leto keeps lead to,
+    /// by this device's system, and that Leto does not know them at yet:
+    /// each with the PC it would be and the port to ask on. Asked once in a
+    /// while only.
+    fn where_names_lead(&self, patience: Duration) -> Vec<(HostId, String, u16)> {
+        {
+            let mut asked = self.names_asked.lock().unwrap_or_else(PoisonError::into_inner);
+            if asked.is_some_and(|asked| asked.elapsed() < NAMES_ASKED_EVERY) {
+                return Vec::new();
+            }
+            *asked = Some(Instant::now());
+        }
+        let kept: Vec<_> = self
+            .lock()
+            .iter()
+            .filter(|(_, entry)| entry.saved)
+            .map(|(id, entry)| (id.clone(), entry.summary.name.clone(), entry.addresses.clone()))
+            .collect();
+        // All at once: a name nobody knows takes all the patience there is.
+        thread::scope(|scope| {
+            let asking: Vec<_> = kept
+                .iter()
+                .map(|(id, name, known)| {
+                    scope.spawn(move || {
+                        let mut ports: Vec<u16> = known.iter().map(|(_, port)| *port).collect();
+                        ports.sort_unstable();
+                        ports.dedup();
+                        let mut led = Vec::new();
+                        for address in discovery::by_name(name, patience) {
+                            let address = address.to_string();
+                            for &port in &ports {
+                                if !known.contains(&(address.clone(), port)) {
+                                    led.push((id.clone(), address.clone(), port));
+                                }
+                            }
+                        }
+                        led
+                    })
+                })
+                .collect();
+            asking.into_iter().flat_map(|asking| asking.join().unwrap_or_default()).collect()
+        })
+    }
+
+    /// Asks at the addresses the names of PCs led to, and keeps those where
+    /// the PC answers: for one that is paired, with the proof that it is.
+    fn ask_nearby(&self, named: &[(HostId, String, u16)]) {
+        if named.is_empty() {
+            return;
+        }
+        let answers = self.ask_every_way(
+            named.iter().map(|(_, address, port)| (address.clone(), *port)).collect(),
+        );
+        let deadline = Instant::now() + NEARBY_PATIENCE;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let answer = match answers.recv_timeout(left) {
+                Ok(Ok(answer)) => answer,
+                Ok(Err(_)) => continue,
+                Err(_) => break,
+            };
+            let id = answer.summary.id.clone();
+            let expected = named.iter().any(|(expected, address, port)| {
+                *expected == id
+                    && *address == answer.summary.address
+                    && *port == answer.summary.port
+            });
+            let paired = self.lock().get(&id).is_some_and(|entry| entry.certificate.is_some());
+            if !expected {
+                // Another PC has that name here: found, as one that
+                // announced itself.
+                self.record(answer);
+            } else if answer.summary.paired || !paired {
+                log::info!(
+                    "{} is also at {}, where its name leads on this network",
+                    answer.summary.name,
+                    join_address(&answer.summary.address, answer.summary.port)
+                );
+                self.record(answer);
+            } else {
+                log::debug!(
+                    "{} did not prove to be {}",
+                    join_address(&answer.summary.address, answer.summary.port),
+                    answer.summary.name
+                );
+            }
+        }
     }
 
     /// Asks every known host whether it is there, at every address it was

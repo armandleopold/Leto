@@ -739,7 +739,7 @@ fn respond(
              <GfeVersion>3.23.0.74</GfeVersion><uniqueid>{}</uniqueid>\
              <HttpsPort>{}</HttpsPort><ExternalPort>{}</ExternalPort>\
              <MaxLumaPixelsHEVC>1869449984</MaxLumaPixelsHEVC><mac>{card}</mac>\
-             <LocalIP>127.0.0.1</LocalIP><ServerCodecModeSupport>{}</ServerCodecModeSupport>\
+             <LocalIP>{local}</LocalIP><ServerCodecModeSupport>{}</ServerCodecModeSupport>\
              <PairStatus>{}</PairStatus><currentgame>{}</currentgame>\
              <state>{}</state>{permission}",
                 stream::APP_VERSION,

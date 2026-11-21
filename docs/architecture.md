@@ -667,6 +667,19 @@ gives itself. Sunshine and Apollo tell which of their addresses a question
 came in on, which, asked from beyond a forwarded port, is their address on
 their own network.
 
+A PC known only through a VPN tells its address there, and its address
+nearby has to come from somewhere else. One way is the announcement the PC
+makes on the local network, which a firewall can keep from Leto. The other
+is its name: a PC says the name of the computer it runs on, and this
+device's own system often knows where that name leads, from the router or
+by asking the network as Windows and macOS do for the names of computers.
+So while Leto listens for announcements it also asks the system, once a
+minute at most, for the name of each PC it keeps and for that name with
+`.local` (`discovery::by_name`). Only an address of a local network is
+asked at, since a name can mean something else on the internet, and only a
+name that can be a computer's. An address where the PC answers, and proves
+who it is when it is paired, joins the others.
+
 Each time it looks for a PC, it asks at every address at once and uses the
 first that answers: the nearest way there, the one with the shortest round
 trip. Moonlight prefers a PC's address on the local network for the same
