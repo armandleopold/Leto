@@ -10,7 +10,7 @@
 
 use std::{
     fs,
-    net::{Ipv4Addr, TcpListener},
+    net::{Ipv4Addr, TcpListener, UdpSocket},
     path::PathBuf,
     sync::{
         Arc,
@@ -111,6 +111,13 @@ struct Home {
 
 impl Home {
     fn new() -> Self {
+        // The PC is on this machine, at the ports of a real one, and so is
+        // the door that leads to it: each needs a local address of its own.
+        assert!(
+            UdpSocket::bind((Ipv4Addr::new(127, 77, 0, 1), 0)).is_ok(),
+            "this machine has no local address 127.77.0.1 for the tunnel's door: \
+             on macOS, add it with `sudo ifconfig lo0 alias 127.77.0.1`"
+        );
         let port = free_port();
         let host = FakeHost::start_with(Options { port, real_ports: true, ..Options::default() });
         let file = format!(

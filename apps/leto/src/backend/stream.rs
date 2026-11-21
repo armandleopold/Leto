@@ -36,6 +36,35 @@ const UNPLAYABLE: u64 = 200;
 /// them, should the decoder never catch up.
 const CATCH_UP: Duration = Duration::from_millis(100);
 
+/// What becomes of a picture that arrived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fate {
+    /// Decoded, and left for the window to show.
+    Shown,
+    /// Decoded for the pictures after it: a window that is only glanced at
+    /// showed one less than a second ago.
+    Unseen,
+    /// Decoded for the pictures after it and never shown: newer ones wait.
+    Skipped,
+}
+
+/// Says what becomes of a picture in a window that is in sight: `waiting`
+/// newer ones arrived behind it, and the last one shown was left
+/// `since_shown` ago.
+///
+/// A picture newer ones wait behind is old before it is seen, and showing it
+/// only keeps the window late. One is shown now and then all the same, so
+/// that a decoder that never catches up does not leave a still picture.
+fn fate(pace: Pace, waiting: usize, since_shown: Option<Duration>) -> Fate {
+    if waiting > 0 && since_shown.is_some_and(|since| since < CATCH_UP) {
+        Fate::Skipped
+    } else if pace == Pace::Full || since_shown.is_none_or(|since| since >= GLANCE) {
+        Fate::Shown
+    } else {
+        Fate::Unseen
+    }
+}
+
 /// What a stream leaves for the interface to pick up.
 #[derive(Default)]
 pub struct Outlet {
@@ -282,10 +311,8 @@ impl VideoSink for Screen {
         }
         // Without a decoder there is nothing to do, and nothing to ask for.
         let Some(decoder) = &mut self.decoder else { return Decoded::Ok };
-        let since_shown = self.left.map(|left| left.elapsed());
-        let behind = frame.waiting > 0 && since_shown.is_some_and(|since| since < CATCH_UP);
-        let seen =
-            !behind && (pace == Pace::Full || since_shown.is_none_or(|since| since >= GLANCE));
+        let fate = fate(pace, frame.waiting, self.left.map(|left| left.elapsed()));
+        let seen = fate == Fate::Shown;
         let start = Instant::now();
         let decoded = if seen {
             decoder.decode_planes(frame.data, &mut self.picture)
@@ -297,7 +324,7 @@ impl VideoSink for Screen {
             Ok(true) if !seen => {
                 self.outlet.count(|counts| {
                     counts.decoded(Some(took));
-                    counts.skipped += u64::from(behind);
+                    counts.skipped += u64::from(fate == Fate::Skipped);
                 });
                 Decoded::Ok
             }
@@ -620,7 +647,36 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_that_falls_behind_skips_pictures_and_still_shows_some() {
+    fn a_picture_newer_ones_wait_behind_is_skipped_and_one_is_shown_now_and_then() {
+        let ms = Duration::from_millis;
+        // Nothing waits: every picture is shown, however close together.
+        assert_eq!(fate(Pace::Full, 0, Some(ms(1))), Fate::Shown);
+        // Newer ones wait: skipped, until none was shown for a while.
+        assert_eq!(fate(Pace::Full, 1, Some(ms(1))), Fate::Skipped);
+        assert_eq!(fate(Pace::Full, 30, Some(CATCH_UP - ms(1))), Fate::Skipped);
+        assert_eq!(fate(Pace::Full, 30, Some(CATCH_UP)), Fate::Shown);
+        // The first picture of a stream is shown, whatever waits.
+        assert_eq!(fate(Pace::Full, 30, None), Fate::Shown);
+    }
+
+    #[test]
+    fn a_window_glanced_at_shows_a_picture_a_second_and_none_newer_ones_wait_behind() {
+        let ms = Duration::from_millis;
+        assert_eq!(fate(Pace::Glance, 0, None), Fate::Shown);
+        assert_eq!(fate(Pace::Glance, 0, Some(GLANCE - ms(1))), Fate::Unseen);
+        assert_eq!(fate(Pace::Glance, 0, Some(GLANCE)), Fate::Shown);
+        // Behind, the pictures are skipped and counted so; once the wait is
+        // over they go unseen like any other, until the second is up.
+        assert_eq!(fate(Pace::Glance, 2, Some(ms(50))), Fate::Skipped);
+        assert_eq!(fate(Pace::Glance, 2, Some(CATCH_UP)), Fate::Unseen);
+        assert_eq!(fate(Pace::Glance, 2, Some(GLANCE)), Fate::Shown);
+    }
+
+    // How many pictures a slow window skips depends on the machine: one that
+    // wakes late shows them all, and the rule is tested above with exact
+    // times. This checks what holds on any machine.
+    #[test]
+    fn a_screen_that_falls_behind_counts_what_it_skips_and_still_shows_pictures() {
         let folder = std::env::temp_dir().join(format!("leto-app-behind-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         let host = FakeHost::start();
@@ -645,16 +701,14 @@ mod tests {
         };
         let session = client.play(&paired.id, 1, settings, screen, sound.audio(), |_| {}).unwrap();
         assert!(next_picture(&outlet, Duration::from_secs(10)).is_some(), "no picture arrived");
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(Duration::from_secs(1));
         let counts = outlet.counts();
-        // Still shown now and then, while the pictures pile up.
-        let waited = next_picture(&outlet, Duration::from_secs(2)).expect("pictures still come");
+        // Still shown, while the pictures pile up.
+        let shown = next_picture(&outlet, Duration::from_secs(5));
         session.stop();
         let _ = std::fs::remove_dir_all(&folder);
 
-        assert!(counts.skipped > 5, "pictures newer ones waited behind were shown: {counts:?}");
-        assert!(counts.copied > 5, "too few pictures were shown: {counts:?}");
         assert_eq!(counts.decoded, counts.copied + counts.skipped, "all decoded: {counts:?}");
-        assert!(waited < Duration::from_millis(500), "a picture came after {waited:?}");
+        assert!(shown.is_some(), "no picture came any more: {counts:?}");
     }
 }
