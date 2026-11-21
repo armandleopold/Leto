@@ -359,6 +359,12 @@ impl FakeHost {
         *self.shared.typed_pin.lock().unwrap() = Some(pin);
     }
 
+    /// Whether a device waits for its PIN to be typed here.
+    pub fn awaits_pin(&self) -> bool {
+        let pairing = self.shared.pairing.lock().unwrap();
+        pairing.open && pairing.step == 0
+    }
+
     /// The host's owner changes what paired devices may do. See
     /// [`Options::permissions`].
     pub fn set_permissions(&self, permissions: Option<u32>) {
