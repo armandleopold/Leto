@@ -267,22 +267,42 @@ impl Straight {
         let shown = (u32::try_from(shown.0).unwrap_or(0), u32::try_from(shown.1).unwrap_or(0));
         // SAFETY: reading the sample the decoder just gave.
         let (source, slice, laid) = unsafe { texture_of(sample) }?;
+        let turns = self.turns.clone();
+        let _turn = Turn::take(turns.as_ref());
+        if self.draw(device, &source, slice, laid, shown)? {
+            // At once: the newest picture replaces one not shown yet.
+            // SAFETY: a plain call into the chain, which has its picture.
+            unsafe { self.chain.Present(0, self.present) }.ok()?;
+        }
+        Ok(())
+    }
+
+    /// Draws `shown` pixels of the picture in `slice` of `source`, textures
+    /// laid out as `laid` says, over the whole of the window, without
+    /// showing it yet. `false` when the window has nothing to draw on.
+    fn draw(
+        &mut self,
+        device: &ID3D11Device,
+        source: &ID3D11Texture2D,
+        slice: u32,
+        laid: (u32, u32, DXGI_FORMAT),
+        shown: (u32, u32),
+    ) -> windows::core::Result<bool> {
         if self.made.as_ref().is_none_or(|made| made.shown != shown || made.laid != laid) {
             self.made = Some(make(device, shown, laid)?);
         }
         let Some(made) = &self.made else {
             return Err(windows::core::Error::empty());
         };
-        let _turn = Turn::take(self.turns.as_ref());
         // SAFETY: the whole of one texture of the decoder's into one made
         // as large, of the same kind, by the same device. The decoder has
         // its texture back at once.
         unsafe {
-            self.commands.CopySubresourceRegion(&made.picture, 0, 0, 0, 0, &source, slice, None);
+            self.commands.CopySubresourceRegion(&made.picture, 0, 0, 0, 0, source, slice, None);
         }
 
-        // A window that is hidden, or has no size yet, shows nothing.
-        let Some(size) = inside(self.window) else { return Ok(()) };
+        // A window that is gone, or has no size, has nothing to draw on.
+        let Some(size) = inside(self.window) else { return Ok(false) };
         if self.target.as_ref().is_none_or(|(_, made_for)| *made_for != size) {
             // SAFETY: nothing of the chain is held while it changes size:
             // what was drawn into is let go of first.
@@ -331,9 +351,8 @@ impl Straight {
             commands.Draw(3, 0);
             // The next picture is copied into what was just read from.
             commands.PSSetShaderResources(0, Some(&[None, None]));
-            // At once: the newest picture replaces one not shown yet.
-            self.chain.Present(0, self.present).ok()
         }
+        Ok(true)
     }
 }
 
@@ -417,12 +436,15 @@ unsafe fn compile(source: &str, kind: PCSTR) -> windows::core::Result<ID3DBlob> 
         )
     };
     if let Err(error) = compiled {
-        if let Some(said) = said {
+        // What the compiler said goes with the error: it names the line.
+        return Err(match said {
             // SAFETY: what the compiler said, as long as it says it is.
-            let said = String::from_utf8_lossy(unsafe { bytes(&said) }).into_owned();
-            log::debug!("Windows did not make a program for the card: {}", said.trim());
-        }
-        return Err(error);
+            Some(said) => windows::core::Error::new(
+                error.code(),
+                String::from_utf8_lossy(unsafe { bytes(&said) }).trim(),
+            ),
+            None => error,
+        });
     }
     made.ok_or_else(windows::core::Error::empty)
 }
@@ -501,7 +523,227 @@ fn make(
 
 #[cfg(test)]
 mod tests {
+    use windows::{
+        Win32::{
+            Foundation::HMODULE,
+            Graphics::{
+                Direct3D::D3D_DRIVER_TYPE_WARP,
+                Direct3D11::{
+                    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG,
+                    D3D11_FORMAT_SUPPORT_TEXTURE2D, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+                    D3D11_SDK_VERSION, D3D11_USAGE_STAGING, D3D11CreateDevice,
+                },
+                Dxgi::IDXGIAdapter,
+            },
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+                SetWindowPos, WINDOW_EX_STYLE, WS_CHILD, WS_POPUP,
+            },
+        },
+        core::w,
+    };
+
     use super::*;
+
+    /// Windows' own card made of software, which every Windows has. `None`
+    /// where it makes no pictures of brightness and colours.
+    fn software_card() -> Option<ID3D11Device> {
+        let mut device = None;
+        // SAFETY: a device asked of Windows with room for it, and a plain
+        // question to it.
+        unsafe {
+            D3D11CreateDevice(
+                None::<&IDXGIAdapter>,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_FLAG(0),
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .expect("Windows makes a card of software");
+            let device = device.expect("the card of software");
+            let can = device.CheckFormatSupport(DXGI_FORMAT_NV12).unwrap_or(0);
+            (can & D3D11_FORMAT_SUPPORT_TEXTURE2D.0 as u32 != 0).then_some(device)
+        }
+    }
+
+    /// A picture as a decoder lays it out, 64 by 64 of which 64 by 48 show:
+    /// red on the left and blue on the right, with green in the padding
+    /// underneath, in BT.601's limited range.
+    fn picture(device: &ID3D11Device) -> ID3D11Texture2D {
+        const RED: [u8; 3] = [81, 90, 240];
+        const BLUE: [u8; 3] = [41, 240, 110];
+        const GREEN: [u8; 3] = [145, 54, 34];
+        let colour = |x: usize, y: usize| match (x < 32, y < 48) {
+            (_, false) => GREEN,
+            (true, true) => RED,
+            (false, true) => BLUE,
+        };
+        let mut planes = Vec::with_capacity(64 * 96);
+        for y in 0..64 {
+            planes.extend((0..64).map(|x| colour(x, y)[0]));
+        }
+        for y in (0..64).step_by(2) {
+            for x in (0..64).step_by(2) {
+                planes.extend(&colour(x, y)[1..]);
+            }
+        }
+        let wanted = D3D11_TEXTURE2D_DESC {
+            Width: 64,
+            Height: 64,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_NV12,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let first = D3D11_SUBRESOURCE_DATA {
+            pSysMem: planes.as_ptr().cast(),
+            SysMemPitch: 64,
+            SysMemSlicePitch: 0,
+        };
+        let mut texture = None;
+        // SAFETY: a texture described in full, with bytes for both of its
+        // planes that live until it has them.
+        unsafe { device.CreateTexture2D(&wanted, Some(&first), Some(&mut texture)) }
+            .expect("a texture with a picture in it");
+        texture.expect("the texture")
+    }
+
+    /// The pixel `at` of what `straight` drew last, before it is shown.
+    fn pixel(device: &ID3D11Device, straight: &Straight, at: (u32, u32)) -> [u8; 3] {
+        // SAFETY: what was drawn into is copied to a texture memory reads,
+        // and one pixel inside it is read while it is mapped.
+        unsafe {
+            let back: ID3D11Texture2D = straight.chain.GetBuffer(0).expect("what was drawn into");
+            let mut like = D3D11_TEXTURE2D_DESC::default();
+            back.GetDesc(&mut like);
+            assert!(at.0 < like.Width && at.1 < like.Height, "{at:?} in {like:?}");
+            like.Usage = D3D11_USAGE_STAGING;
+            like.BindFlags = 0;
+            like.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            like.MiscFlags = 0;
+            let mut read = None;
+            device.CreateTexture2D(&like, None, Some(&mut read)).expect("a texture to read");
+            let read = read.expect("the texture to read");
+            straight.commands.CopyResource(&read, &back);
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            straight
+                .commands
+                .Map(&read, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .expect("the pixels in memory");
+            let row = mapped.pData.cast::<u8>().add(at.1 as usize * mapped.RowPitch as usize);
+            let pixel = std::slice::from_raw_parts(row.add(at.0 as usize * 4), 3);
+            let pixel = [pixel[0], pixel[1], pixel[2]];
+            straight.commands.Unmap(&read, 0);
+            pixel
+        }
+    }
+
+    fn close_to(pixel: [u8; 3], wanted: [u8; 3]) -> bool {
+        pixel.iter().zip(wanted).all(|(got, wanted)| got.abs_diff(wanted) <= 6)
+    }
+
+    #[test]
+    fn windows_makes_both_programs_for_the_card() {
+        // SAFETY: the two kinds of program the compiler is asked for.
+        unsafe {
+            compile(CORNERS, s!("vs_4_0")).expect("the program that places the corners");
+            compile(COLOURS, s!("ps_4_0")).expect("the program that makes the colours");
+            let wrong = compile("float4 main() : SV_Target { return nothing; }", s!("ps_4_0"))
+                .expect_err("a program that means nothing");
+            assert!(wrong.message().contains("nothing"), "{}", wrong.message());
+        }
+    }
+
+    #[test]
+    fn a_card_draws_a_picture_in_its_colours_on_a_pane_and_shows_it() {
+        let Some(device) = software_card() else {
+            eprintln!("the card of software makes no pictures of brightness and colours here");
+            return;
+        };
+        // SAFETY: two windows of a kind Windows has, one inside the other
+        // as a pane is, neither shown, both closed below.
+        let (around, pane) = unsafe {
+            let around = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                None,
+                WS_POPUP,
+                0,
+                0,
+                200,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("a window");
+            let pane = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                None,
+                WS_CHILD,
+                0,
+                0,
+                64,
+                64,
+                Some(around),
+                None,
+                None,
+                None,
+            )
+            .expect("a pane inside it");
+            (around, pane)
+        };
+        let source = picture(&device);
+        let laid = (64, 64, DXGI_FORMAT_NV12);
+        let mut straight = Straight::new(&device, pane.0 as isize, true).expect("what draws");
+
+        // The 48 rows that show are drawn over the 64 of the pane: red on
+        // the left and blue on the right down to the last row, and nothing
+        // of the green padding.
+        assert!(straight.draw(&device, &source, 0, laid, (64, 48)).expect("a drawing"));
+        for y in [0, 31, 63] {
+            let (left, right) =
+                (pixel(&device, &straight, (8, y)), pixel(&device, &straight, (56, y)));
+            assert!(close_to(left, [255, 0, 0]), "row {y}, left: {left:?}");
+            assert!(close_to(right, [0, 0, 255]), "row {y}, right: {right:?}");
+        }
+        // SAFETY: a plain call into the chain, which has its picture.
+        unsafe { straight.chain.Present(0, straight.present) }.ok().expect("the picture shown");
+
+        // A pane of another size is drawn on at that size.
+        // SAFETY: the pane made above, made smaller.
+        unsafe {
+            SetWindowPos(pane, None, 0, 0, 32, 20, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)
+                .expect("a smaller pane");
+        }
+        assert!(straight.draw(&device, &source, 0, laid, (64, 48)).expect("a drawing"));
+        assert_eq!(straight.target.as_ref().map(|(_, size)| *size), Some((32, 20)));
+        assert!(close_to(pixel(&device, &straight, (4, 19)), [255, 0, 0]));
+        assert!(close_to(pixel(&device, &straight, (28, 0)), [0, 0, 255]));
+        // SAFETY: as above.
+        unsafe { straight.chain.Present(0, straight.present) }.ok().expect("the picture shown");
+
+        // Pictures of another layout than the card's programs read are
+        // turned down, and a pane that is gone has nothing drawn on it.
+        let other = (64, 64, DXGI_FORMAT_R8G8B8A8_UNORM);
+        assert!(straight.draw(&device, &source, 0, other, (64, 48)).is_err());
+        // SAFETY: the two windows made above, closed once.
+        unsafe {
+            DestroyWindow(pane).expect("the pane closed");
+            assert!(!straight.draw(&device, &source, 0, laid, (64, 48)).expect("no drawing"));
+            DestroyWindow(around).expect("the window closed");
+        }
+    }
 
     #[test]
     fn the_program_reads_the_picture_and_none_of_the_padding_around_it() {
