@@ -22,6 +22,28 @@ pub use native::Backend;
 #[cfg(target_arch = "wasm32")]
 pub use web::Backend;
 
+/// The cameras, microphones and sound outputs of this device, by the names
+/// the system gives them, for the person to choose from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceNames {
+    /// `None` until the cameras were looked at, which takes a moment.
+    pub cameras: Option<Vec<String>>,
+    pub microphones: Vec<String>,
+    pub speakers: Vec<String>,
+}
+
+/// The test sound of the sound output, as far as it got.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// A browser plays no test sound: the system chooses where its sound goes.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub enum Chime {
+    #[default]
+    Silent,
+    Playing,
+    /// It could not play, in words for the person.
+    Failed(String),
+}
+
 /// Covers are shown small: anything wider is scaled down to this.
 const COVER_WIDTH: u32 = 360;
 
@@ -60,8 +82,10 @@ pub struct Unavailable {
 // Each build has one way to show pictures, and never makes the other.
 #[allow(dead_code)]
 pub enum Picture {
-    /// Pixels for the window to draw.
-    Pixels(egui::ColorImage),
+    /// A picture as the decoder gave it, for the window to draw: the
+    /// graphics card makes it into pixels as it does.
+    #[cfg(not(target_arch = "wasm32"))]
+    Planes(leto_media::Planes),
     /// The backend shows the pictures itself, behind the window, and only
     /// says how large they are. The interface leaves a hole for them and
     /// says where it is with `Backend::place_picture`.

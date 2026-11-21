@@ -11,13 +11,17 @@
 //! Everything here runs on the processor, except pictures from a PC on
 //! Windows: Windows decodes them on the graphics card when it can, and that
 //! is the only way to H.265 and AV1. OpenH264 on the processor stays as the
-//! H.264 decoder that works everywhere.
+//! H.264 decoder that works everywhere. Decoded pictures stay as the
+//! decoders give them, in planes, and a [`Card`] turns them into pixels on
+//! the graphics card as the window draws them.
 
 mod camera;
-// Pictures from Windows' decoders come in NV12.
-#[cfg(any(windows, test))]
+// Drawing goes through OpenGL's C interface.
+#[allow(unsafe_code)]
+mod card;
 mod convert;
 mod encode;
+mod endpoints;
 mod feed;
 mod microphone;
 mod queue;
@@ -26,8 +30,11 @@ mod speaker;
 mod video;
 mod voice;
 
-pub use camera::Camera;
+pub use camera::{Camera, camera_names, look_for_cameras};
+pub use card::Card;
+pub use convert::Planes;
 pub use encode::{Encoded, PictureEncoder, Sending};
+pub use endpoints::{microphones, speakers};
 pub use feed::{CameraFeed, Carrier, Fed, Feeding, Limits};
 pub use microphone::Microphone;
 pub use sound::SoundDecoder;

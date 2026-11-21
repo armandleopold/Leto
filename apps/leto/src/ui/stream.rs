@@ -3,7 +3,7 @@
 
 use egui::{
     Align, Align2, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Margin, Order, Pos2, Rect,
-    RichText, Sense, Stroke, TextFormat, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2,
+    RichText, Sense, Stroke, TextFormat, TextureHandle, Ui, UiBuilder, Vec2,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use leto_core::{engine::Codec, input::Input};
 
-use super::{icons, widgets};
+use super::{card::OnCard, frame, icons, widgets};
 use crate::{
     backend::{Filming, Picture},
     input::{Controls, Shortcut},
@@ -62,8 +62,13 @@ enum KeyStroke {
 }
 
 /// What the pictures of the stream are shown on.
+// A browser shows them behind the window, and never draws them.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Surface {
-    /// The window draws them.
+    /// The graphics card turns them into pixels as the window draws them,
+    /// this large.
+    Card(OnCard, [usize; 2]),
+    /// The window draws them from pixels.
     Texture(TextureHandle),
     /// The backend shows them behind the window, this large: the window
     /// leaves a hole.
@@ -75,7 +80,7 @@ impl Surface {
     fn size(&self) -> [usize; 2] {
         match self {
             Self::Texture(texture) => texture.size(),
-            Self::Behind(size) => *size,
+            Self::Card(_, size) | Self::Behind(size) => *size,
         }
     }
 }
@@ -154,19 +159,36 @@ enum Told {
 }
 
 impl Player {
-    /// Shows `picture` from now on.
-    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture) {
-        match (picture, &mut self.surface) {
-            (Picture::Pixels(pixels), Some(Surface::Texture(texture))) => {
-                texture.set(pixels, TextureOptions::LINEAR);
+    /// Shows `picture` from now on, on `card` when the window has one that
+    /// works.
+    pub fn picture(&mut self, ctx: &egui::Context, picture: Picture, card: Option<&OnCard>) {
+        match picture {
+            #[cfg(not(target_arch = "wasm32"))]
+            Picture::Planes(planes) => {
+                let size = [planes.width, planes.height];
+                if let Some(card) = card.filter(|card| card.works()) {
+                    card.show(planes);
+                    self.surface = Some(Surface::Card(card.clone(), size));
+                } else {
+                    self.pixels(ctx, pixels(&planes));
+                }
                 self.shown += 1;
             }
-            (Picture::Pixels(pixels), _) => {
-                let texture = ctx.load_texture("stream", pixels, TextureOptions::LINEAR);
-                self.surface = Some(Surface::Texture(texture));
-                self.shown += 1;
-            }
-            (Picture::Behind(size), _) => self.surface = Some(Surface::Behind(size)),
+            Picture::Behind(size) => self.surface = Some(Surface::Behind(size)),
+        }
+        // A browser has no card, and draws nothing: the page shows the
+        // pictures.
+        let _ = (ctx, card);
+    }
+
+    /// Shows `pixels` from now on, drawn by the window.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pixels(&mut self, ctx: &egui::Context, pixels: egui::ColorImage) {
+        if let Some(Surface::Texture(texture)) = &mut self.surface {
+            texture.set(pixels, egui::TextureOptions::LINEAR);
+        } else {
+            let texture = ctx.load_texture("stream", pixels, egui::TextureOptions::LINEAR);
+            self.surface = Some(Surface::Texture(texture));
         }
     }
 
@@ -279,6 +301,10 @@ pub fn show(
         let size = surface.size();
         let place = fit(vec2(size[0] as f32, size[1] as f32), window);
         match surface {
+            Surface::Card(card, _) => {
+                ui.painter().rect_filled(window, 0, Color32::BLACK);
+                ui.painter().add(card.paint(place));
+            }
             Surface::Texture(texture) => {
                 ui.painter().rect_filled(window, 0, Color32::BLACK);
                 egui::Image::new((texture.id(), place.size())).paint_at(ui, place);
@@ -562,6 +588,8 @@ fn overlay(
             game_mouse: player.game_mouse && !player.released,
             voice: status.voice.map(meter),
             film: status.film,
+            windowed: frame::OWN && !window::fills_screen(ui.ctx()),
+            last: player.bar,
             note: bar_note(
                 view,
                 player.hands(),
@@ -703,6 +731,12 @@ fn statistics_lines(
             None => per_second(rates.decoded),
         },
     ));
+    if let Some(took) = rates.copying_ms {
+        lines.push(("Copied out", format!("{took:.1} ms of that for each picture shown")));
+    }
+    if rates.skipped > 0.0 {
+        lines.push(("Skipped", format!("{}, to keep up", per_second(rates.skipped))));
+    }
     lines.push(("Shown", per_second(rates.shown)));
     if let Some(took) = rates.host_ms {
         lines.push(("On the PC", format!("{took:.1} ms to capture and encode")));
@@ -788,6 +822,11 @@ struct Bar<'a> {
     voice: Option<f32>,
     /// How the camera is doing, while it captures.
     film: Option<Filming>,
+    /// The stream is in a window whose frame Leto draws: the bar moves it,
+    /// and has its buttons.
+    windowed: bool,
+    /// Where the bar was in the frame before, if it showed.
+    last: Option<Rect>,
     note: Option<Note>,
     opacity: f32,
 }
@@ -811,6 +850,11 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
         .interactable(usable)
         .show(ctx, |ui| {
             ui.set_opacity(content.opacity);
+            let windowed = usable && content.windowed;
+            if let Some(last) = content.last.filter(|_| windowed) {
+                // Under what the bar holds, which stays pressable.
+                frame::drag_by(ui, last, Id::unique("stream-bar-drag"));
+            }
             egui::Frame::new()
                 .fill(Color32::from_black_alpha(225))
                 .stroke(Stroke::new(1.0, theme::LINE))
@@ -826,7 +870,8 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                             // Room for the names once everything else has its own.
                             let has_camera = content.view.camera != Cam::Unknown;
                             let others = if narrow { 210.0 } else { 330.0 }
-                                + if has_camera { 44.0 } else { 0.0 };
+                                + if has_camera { 44.0 } else { 0.0 }
+                                + if windowed { 3.0 * 36.0 + 17.0 } else { 0.0 };
                             names(ui, content.view, (window.width() - others).clamp(80.0, 360.0));
                             if let Some([width, height]) = content.picture.filter(|_| !narrow) {
                                 let size = format!("{width} × {height}");
@@ -858,6 +903,10 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                                 };
                                 asked.fill |=
                                     widgets::icon_button(ui, icons::expand, &fill).clicked();
+                            }
+                            if windowed {
+                                ui.separator();
+                                frame::buttons(ui, Vec2::splat(36.0), theme::CONTROL_RADIUS);
                             }
                         })
                         .response
@@ -1076,6 +1125,19 @@ fn note(view: &StreamView, hands: Hands) -> Note {
     Note { text, problem: !(allowed.keyboard && allowed.mouse) }
 }
 
+/// `planes` made into pixels on the processor, for a window without a card
+/// that draws them.
+#[cfg(not(target_arch = "wasm32"))]
+fn pixels(planes: &leto_media::Planes) -> egui::ColorImage {
+    let mut picture = leto_media::Picture::default();
+    if !planes.to_rgba(&mut picture) {
+        // Planes the decoder made are never too small for their size.
+        log::debug!("a picture too small for its size was left out");
+    }
+    // Pictures are opaque, so plain and premultiplied are the same.
+    egui::ColorImage::from_rgba_premultiplied([picture.width, picture.height], &picture.rgba)
+}
+
 /// Where a picture of size `picture` goes in `window`: as large as fits,
 /// undistorted and centred, with black around it.
 fn fit(picture: Vec2, window: Rect) -> Rect {
@@ -1230,14 +1292,20 @@ mod tests {
         let lines = statistics_lines(&statistics, Some(counts), None);
         assert_eq!(lines.last(), Some(&("Arrived", "Counting…".to_owned())));
 
-        for _ in 0..144 {
+        for picture in 0..144 {
             counts.received(20_000, Some(0), Some(Duration::from_millis(5)));
             counts.decoded(Some(Duration::from_millis(9)));
+            // Every other one waits behind the next and is skipped.
+            if picture % 2 == 0 {
+                counts.copied(Duration::from_millis(7));
+            } else {
+                counts.skipped += 1;
+            }
         }
         // Not a second yet: nothing changes.
-        statistics.update(Some(counts), 140, 10.5);
+        statistics.update(Some(counts), 70, 10.5);
         assert_eq!(statistics.rates, None);
-        statistics.update(Some(counts), 144, 11.0);
+        statistics.update(Some(counts), 72, 11.0);
         let lines = statistics_lines(&statistics, Some(counts), Some(Duration::from_millis(3)));
         let said: Vec<_> = lines.iter().map(|(name, value)| format!("{name}: {value}")).collect();
         assert_eq!(
@@ -1248,7 +1316,9 @@ mod tests {
                 "Arrived: 144.0 per second, 23.0 Mbit/s".to_owned(),
                 "Lost on the way: 0 in all, 0.0 % lately".to_owned(),
                 "Decoded: 144.0 per second, 9.0 ms each".to_owned(),
-                "Shown: 144.0 per second".to_owned(),
+                "Copied out: 7.0 ms of that for each picture shown".to_owned(),
+                "Skipped: 72.0 per second, to keep up".to_owned(),
+                "Shown: 72.0 per second".to_owned(),
                 "On the PC: 5.0 ms to capture and encode".to_owned(),
                 "Network: 3 ms there and back".to_owned(),
             ]

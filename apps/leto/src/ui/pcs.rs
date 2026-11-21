@@ -20,8 +20,9 @@ enum Chosen {
     Add,
 }
 
-pub fn show(ui: &mut Ui, state: &mut State, now: f64) {
-    header(ui, state, now);
+/// Returns whether the person asked for the settings.
+pub fn show(ui: &mut Ui, state: &mut State, now: f64) -> bool {
+    let settings = header(ui, state, now);
     ui.add_space(14.0);
 
     if let Some(notice) = &state.notice {
@@ -31,7 +32,7 @@ pub fn show(ui: &mut Ui, state: &mut State, now: f64) {
 
     if state.hosts.is_empty() && !state.add.open {
         nothing_found(ui, state, now);
-        return;
+        return settings;
     }
 
     let chosen = cards(ui, &state.hosts, &state.waking, state.add.open);
@@ -45,9 +46,14 @@ pub fn show(ui: &mut Ui, state: &mut State, now: f64) {
         Some(Chosen::Add) => state.open_add_form(),
         None => {}
     }
+    settings
 }
 
-fn header(ui: &mut Ui, state: &mut State, now: f64) {
+/// The title, and on its right what is about this device and not one PC:
+/// the settings, the camera and the rest, and searching again. Returns
+/// whether the person asked for the settings.
+fn header(ui: &mut Ui, state: &mut State, now: f64) -> bool {
+    let mut settings = false;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
@@ -69,11 +75,13 @@ fn header(ui: &mut Ui, state: &mut State, now: f64) {
             if again.inner.clicked() {
                 state.search(now);
             }
-            if widgets::icon_button(ui, icons::camera, "Camera and microphone").clicked() {
+            if widgets::icon_button(ui, icons::camera, super::devices::NAME).clicked() {
                 state.check_devices();
             }
+            settings = widgets::icon_button(ui, icons::gear, "Settings").clicked();
         });
     });
+    settings
 }
 
 /// The grid of PCs, ending with the card that adds one.

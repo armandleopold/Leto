@@ -15,7 +15,7 @@ use std::{
 use leto_client::{
     AudioSetup, AudioSink, Decoded, VideoFrame, VideoSetup, VideoSink, service::sentence,
 };
-use leto_media::{Picture, SoundDecoder, Speaker, VideoDecoder};
+use leto_media::{Planes, SoundDecoder, Speaker, VideoDecoder};
 
 use super::Pace;
 use crate::stats::Counts;
@@ -32,11 +32,15 @@ const SILENCE: Duration = Duration::from_secs(5);
 /// about a second of sound.
 const UNPLAYABLE: u64 = 200;
 
+/// How long pictures may go unshown while newer ones keep waiting behind
+/// them, should the decoder never catch up.
+const CATCH_UP: Duration = Duration::from_millis(100);
+
 /// What a stream leaves for the interface to pick up.
 #[derive(Default)]
 pub struct Outlet {
     /// The latest picture nobody has shown yet.
-    picture: Mutex<Option<egui::ColorImage>>,
+    picture: Mutex<Option<Planes>>,
     /// Why there is no sound, when there is none.
     sound_problem: Mutex<Option<String>>,
     /// What happened to the pictures so far.
@@ -80,7 +84,7 @@ impl Heard {
 
 impl Outlet {
     /// The latest picture, once.
-    pub fn take_picture(&self) -> Option<egui::ColorImage> {
+    pub fn take_picture(&self) -> Option<Planes> {
         self.picture.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
@@ -177,10 +181,15 @@ impl Outlet {
 
 /// Decodes the pictures of a stream and leaves the latest in the outlet.
 ///
-/// Turning a picture into pixels, putting it on the graphics card and
-/// drawing the window cost more than decoding it. While the window is only
-/// glanced at, every picture is still decoded, since the next ones build on
-/// it, but only one a second goes further. While the window is out of sight
+/// Copying a picture out of the decoder, putting it on the graphics card
+/// and drawing the window cost about as much as decoding it, so pictures
+/// stay as the decoder gave them, in planes, and the card makes them into
+/// pixels as the window draws them. A picture that newer ones already wait
+/// behind would be replaced before anyone saw it: it is decoded, since the
+/// next ones build on it, and goes no further, so a decoder slower than the
+/// stream skips pictures instead of falling further and further behind.
+/// While the window is only glanced at, every picture is still decoded, but
+/// only one a second goes further. While the window is out of sight
 /// nothing is decoded at all, and the PC is asked for a keyframe once it is
 /// back. What the PC sends stays the same: nothing in the protocol slows a
 /// PC down during a stream.
@@ -191,7 +200,8 @@ pub struct Screen {
     decoder: Option<VideoDecoder>,
     /// The pictures may be decoded on the graphics card.
     hardware: bool,
-    picture: Picture,
+    /// The picture being decoded, in memory a picture nobody showed left.
+    picture: Planes,
     outlet: Arc<Outlet>,
     ctx: egui::Context,
     /// The number of the last picture that arrived.
@@ -207,7 +217,7 @@ impl Screen {
         Self {
             decoder: None,
             hardware,
-            picture: Picture::default(),
+            picture: Planes::default(),
             outlet: Arc::clone(outlet),
             ctx: ctx.clone(),
             last: None,
@@ -272,27 +282,42 @@ impl VideoSink for Screen {
         }
         // Without a decoder there is nothing to do, and nothing to ask for.
         let Some(decoder) = &mut self.decoder else { return Decoded::Ok };
-        let seen = pace == Pace::Full || self.left.is_none_or(|left| left.elapsed() >= GLANCE);
+        let since_shown = self.left.map(|left| left.elapsed());
+        let behind = frame.waiting > 0 && since_shown.is_some_and(|since| since < CATCH_UP);
+        let seen =
+            !behind && (pace == Pace::Full || since_shown.is_none_or(|since| since >= GLANCE));
         let start = Instant::now();
         let decoded = if seen {
-            decoder.decode(frame.data, &mut self.picture)
+            decoder.decode_planes(frame.data, &mut self.picture)
         } else {
             decoder.decode_unseen(frame.data)
         };
         let took = start.elapsed();
         match decoded {
             Ok(true) if !seen => {
-                self.outlet.count(|counts| counts.decoded(Some(took)));
+                self.outlet.count(|counts| {
+                    counts.decoded(Some(took));
+                    counts.skipped += u64::from(behind);
+                });
                 Decoded::Ok
             }
             Ok(true) => {
-                self.outlet.count(|counts| counts.decoded(Some(took)));
+                let copying = decoder.copying();
+                self.outlet.count(|counts| {
+                    counts.decoded(Some(took));
+                    counts.copied(copying);
+                });
                 self.left = Some(Instant::now());
-                let size = [self.picture.width, self.picture.height];
-                // Pictures are opaque, so plain and premultiplied are the same.
-                let image = egui::ColorImage::from_rgba_premultiplied(size, &self.picture.rgba);
-                // A picture nobody got to show is replaced: the newest wins.
-                *self.outlet.picture.lock().unwrap_or_else(PoisonError::into_inner) = Some(image);
+                let planes = std::mem::take(&mut self.picture);
+                // A picture nobody got to show is replaced: the newest wins,
+                // and the next one is decoded into its memory.
+                let unseen = self
+                    .outlet
+                    .picture
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .replace(planes);
+                self.picture = unseen.unwrap_or_default();
                 self.ctx.request_repaint();
                 Decoded::Ok
             }
@@ -309,14 +334,17 @@ impl VideoSink for Screen {
 /// Decodes the sound of a stream and plays it.
 pub struct Sound {
     outlet: Arc<Outlet>,
+    /// The sound output the person chose, by the name the system gives it;
+    /// `None` plays on the system's default.
+    speakers: Option<String>,
     playing: Option<(SoundDecoder, Speaker)>,
     /// Packets that did not decode.
     lost: u64,
 }
 
 impl Sound {
-    pub fn new(outlet: &Arc<Outlet>) -> Self {
-        Self { outlet: Arc::clone(outlet), playing: None, lost: 0 }
+    pub fn new(outlet: &Arc<Outlet>, speakers: Option<String>) -> Self {
+        Self { outlet: Arc::clone(outlet), speakers, playing: None, lost: 0 }
     }
 }
 
@@ -336,7 +364,9 @@ impl AudioSink for Sound {
             &setup.mapping,
         );
         // A stream without sound is still worth watching.
-        match decoder.and_then(|decoder| Ok((decoder, Speaker::open(setup.sample_rate)?))) {
+        match decoder.and_then(|decoder| {
+            Ok((decoder, Speaker::open(setup.sample_rate, self.speakers.as_deref())?))
+        }) {
             Ok(playing) => self.playing = Some(playing),
             Err(error) => self.outlet.set_sound_problem(sentence(&error.to_string())),
         }
@@ -437,7 +467,8 @@ mod tests {
 
     /// The whole way of a picture: drawn and encoded by the stand-in PC,
     /// encrypted, sent with recovery data, put together again, decoded and
-    /// converted. Colours that arrive right were right at every step.
+    /// converted as the graphics card does. Colours that arrive right were
+    /// right at every step.
     #[test]
     fn the_test_card_of_a_stand_in_pc_arrives_with_its_colours() {
         let folder = std::env::temp_dir().join(format!("leto-app-test-{}", std::process::id()));
@@ -476,7 +507,13 @@ mod tests {
         session.stop();
         let _ = std::fs::remove_dir_all(&folder);
 
-        assert_eq!(picture.size, [640, 360]);
+        assert_eq!((picture.width, picture.height), (640, 360));
+        let mut pixels = leto_media::Picture::default();
+        assert!(picture.to_rgba(&mut pixels));
+        let pixel = |column: usize, row: usize| {
+            let at = (row * pixels.width + column) * 4;
+            [pixels.rgba[at], pixels.rgba[at + 1], pixels.rgba[at + 2], pixels.rgba[at + 3]]
+        };
         // The colour bars along the bottom: white, yellow, cyan, green,
         // magenta, red, blue and black, at three quarters of full brightness.
         let bars = [
@@ -490,12 +527,12 @@ mod tests {
             [0, 0, 0],
         ];
         for (index, wanted) in bars.into_iter().enumerate() {
-            let found = picture[(index * 80 + 40, 342)].to_array();
+            let found = pixel(index * 80 + 40, 342);
             let near = found.iter().zip(wanted).all(|(found, wanted)| found.abs_diff(wanted) <= 6);
             assert!(near && found[3] == 255, "bar {index} is {found:?}, not {wanted:?}");
         }
         // The ground between the discs and the bars.
-        let ground = picture[(60, 290)].to_array();
+        let ground = pixel(60, 290);
         assert!(ground[..3].iter().zip([0x15, 0x13, 0x12]).all(|(f, w)| f.abs_diff(w) <= 6));
     }
 
@@ -565,5 +602,59 @@ mod tests {
 
         session.stop();
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// A window too slow for its stream: each picture reaches the screen
+    /// later than the PC makes the next.
+    struct Slow(Screen);
+
+    impl VideoSink for Slow {
+        fn setup(&mut self, setup: VideoSetup) {
+            self.0.setup(setup);
+        }
+
+        fn frame(&mut self, frame: VideoFrame<'_>) -> Decoded {
+            thread::sleep(Duration::from_millis(60));
+            self.0.frame(frame)
+        }
+    }
+
+    #[test]
+    fn a_screen_that_falls_behind_skips_pictures_and_still_shows_some() {
+        let folder = std::env::temp_dir().join(format!("leto-app-behind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let host = FakeHost::start();
+        let client = Client::open(&folder).unwrap();
+        let added = client.add(&host.address()).unwrap();
+        let pin = client.new_pin().unwrap();
+        host.type_pin(pin);
+        let paired = client.pair(&added.id, pin).unwrap();
+
+        let outlet = Arc::new(Outlet::default());
+        let screen = Slow(Screen::new(&outlet, &egui::Context::default(), true));
+        let sound = Counter::default();
+        let settings = StreamSettings {
+            width: 320,
+            height: 180,
+            fps: 30,
+            bitrate_kbps: 2000,
+            virtual_display: None,
+            optimize_games: true,
+            sound_on_pc: false,
+            codecs: Codecs::of(Codec::H264),
+        };
+        let session = client.play(&paired.id, 1, settings, screen, sound.audio(), |_| {}).unwrap();
+        assert!(next_picture(&outlet, Duration::from_secs(10)).is_some(), "no picture arrived");
+        thread::sleep(Duration::from_secs(2));
+        let counts = outlet.counts();
+        // Still shown now and then, while the pictures pile up.
+        let waited = next_picture(&outlet, Duration::from_secs(2)).expect("pictures still come");
+        session.stop();
+        let _ = std::fs::remove_dir_all(&folder);
+
+        assert!(counts.skipped > 5, "pictures newer ones waited behind were shown: {counts:?}");
+        assert!(counts.copied > 5, "too few pictures were shown: {counts:?}");
+        assert_eq!(counts.decoded, counts.copied + counts.skipped, "all decoded: {counts:?}");
+        assert!(waited < Duration::from_millis(500), "a picture came after {waited:?}");
     }
 }

@@ -86,6 +86,19 @@ It is made of three parts that do not reach into each other:
 - `ui/` draws the screens from the state and tells the state what the person
   did.
 
+On Windows the window has no title bar of the system's: Leto's own top bar
+takes its place (`ui/frame.rs`). Dragged, it moves the window, with the
+system's snapping to the sides; double-clicked, it maximizes the window or
+gives the screen back. Its top right corner holds the buttons that minimize,
+maximize and close it, as tall as the bar, and the window's edges resize it.
+egui gives such a window the system's shadow. A stream in a window, rather
+than full screen, has the same three buttons at the end of its bar, which
+moves the window too; its edges are the PC's, for the mouse. `leto.exe`
+carries the app's icon and name as Windows resources, made by
+`apps/leto/build.rs` from `assets/brand/windows/leto.ico`: Explorer, its
+search and the Task Manager show them before the app runs. Elsewhere the
+system draws the frame.
+
 ## A stream
 
 What a shell asks of the engine and what it hears back are the same for all
@@ -103,8 +116,15 @@ crates that know nothing of each other:
    that stream. What arrives is handed over still encoded, to a `VideoSink`
    and an `AudioSink`, on threads that belong to the stream.
 2. The app's backend gives it two sinks built on `leto-media`. The video sink
-   decodes each picture and keeps only the latest one for the window. The
-   audio sink decodes each packet and queues it for the speakers.
+   decodes each picture and keeps only the latest one for the window. A
+   picture that newer ones already wait behind is decoded, since they build
+   on it, but not copied out of the decoder: the engine tells the sink how
+   many wait (a `Leto:` change in the vendored `moonlight-common`, as
+   moonlight-common-c's `LiGetPendingVideoFrames`). A decoder slower than
+   the stream, as at 144 pictures a second in 3840 × 1080, then skips
+   pictures instead of falling further and further behind, which the mouse
+   pointer shows first; one still goes through every 100 ms. The audio sink
+   decodes each packet and queues it for the speakers.
 3. The window picks the latest picture up when it redraws and shows it as
    large as fits, undistorted.
 
@@ -125,7 +145,7 @@ wins. Sunshine ignores the question and shows its own screen. A browser says
 its screen's size but not its pace: it gets 60, lying down.
 
 Those are the defaults, and the settings change them, after Moonlight's
-(`settings.rs`, drawn by `ui/settings.rs` behind the cog at the top right).
+(`settings.rs`, drawn by `ui/settings.rs` behind the cog on the list of PCs).
 The person may choose the stream's size and pace instead of the screen's, its
 bit rate (from 0.5 to 150 Mbit/s, as in Moonlight), no screen of its own on
 the PC, the PC's speakers playing too, no optimized game settings, the app
@@ -145,14 +165,16 @@ shortcuts, which it does not let a page have.
 
 The window fills the screen as the stream connects, and gives it back when
 the stream is left. Ctrl+Alt+Shift+S shows statistics in a corner, as in
-Moonlight: what the PC sends, what arrives, what is lost, decoded and shown
-per second, how long a picture takes to decode and to make on the PC, and the
-time to the PC and back (`stats.rs`, counted by the backend).
+Moonlight: what the PC sends, what arrives, what is lost, decoded, skipped to
+keep up and shown per second, how long a picture takes to decode, how much of
+that goes to copying it out of the decoder (from the graphics card, waiting
+for the card included), how long the PC takes to make it, and the time to the
+PC and back (`stats.rs`, counted by the backend).
 
 The work follows the person's attention. While another window has the
 keyboard the video sink still decodes every picture, since the next ones
-build on it, but turns only one a second into pixels, which is most of the
-work; the window then draws once a second. While the window is out of sight
+build on it, but hands only one a second on to be drawn, which is most of
+the work; the window then draws once a second. While the window is out of sight
 nothing is decoded, and the PC is asked for a keyframe when it is back. What
 the PC sends stays the same: the protocol has no way to slow a PC down during
 a stream, and Moonlight does not either (it can mute the sound when it loses
@@ -180,8 +202,22 @@ What this first version does, and what it leaves for later:
   Store's video extensions bring H.265 and AV1. What this device decodes is
   found once, in the background as Leto starts: each decoder is started at
   1280 × 720, and the card has to name the codec among its decoder profiles to
-  count as decoding it. The decoded picture comes back from the card in NV12
-  and is turned into RGB on the processor (`convert.rs`).
+  count as decoding it. The decoded picture comes back from the card in NV12,
+  as planes of brightness and colour.
+- Decoded pictures stay in planes (`leto_media::Planes`), from Windows'
+  decoders and OpenH264 alike, and go back to the graphics card as they are
+  when the window draws: `leto_media::Card` puts them in two textures and a
+  small program on the card turns them into pixels, BT.601 in limited range
+  as `convert.rs` has it (`ui/card.rs`, through egui's paint callback). That
+  is less than half the bytes of the pixels, and the processor no longer
+  spends 6 ms a picture at 1920 × 1200 making pixels. It needs OpenGL 3.1 or
+  OpenGL ES 3: where the card offers less, or turns the program down, the
+  processor makes the pixels as before. With V-Sync on, each drawing first
+  waits until the card is done with the one before (`glFinish`), so that a
+  picture never waits behind others to reach the screen: the driver would
+  otherwise queue two or three, each a refresh later. The picture still goes
+  from the card to memory and back: drawing it from where the decoder left
+  it would need Direct3D and OpenGL to share it.
 - H.264 is decoded by OpenH264 on the processor where the graphics card does
   not decode it, on every other system, and from the moment Windows fails
   three pictures in a row. It works on every desktop with nothing to install.
@@ -344,11 +380,23 @@ of the device: capturing it, showing it to the person, and sending it to a PC
 that takes one. No Sunshine or Apollo does, and Leto's own host is not written
 yet, so the only PC that takes it today is the stand-in host of the tests.
 
-- **A screen of its own.** "Camera and microphone", reached from the list of
-  PCs, shows what the camera sees and how loud the microphone is, with no PC
-  involved. Both are off at every visit, each has its switch, and leaving the
-  screen lets go of both. While one captures, its icon is lit and a line
-  under it says so.
+- **A screen of its own.** "Camera, microphone and sound", reached from the
+  list of PCs, shows what the camera sees and how loud the microphone is,
+  with no PC involved. Both are off at every visit, each has its switch, and
+  leaving the screen lets go of both. While one captures, its icon is lit and
+  a line under it says so.
+- **Which camera, microphone and sound output.** On the desktop the same
+  screen has a list for each, for a device that has several: a laptop's own
+  camera and one on USB, a headset beside the loudspeakers. A device is
+  chosen by the name the system gives it, kept with the settings
+  (`DeviceChoices`), and "Restore the defaults" leaves it alone. The first
+  choice of each list leaves it to Leto (the first camera with colour) or to
+  the system (its default microphone and output), and so does a device that
+  is not there when it is wanted. The lists are made when the screen opens
+  and again when one is opened, the cameras on their own thread
+  (`leto_media::look_for_cameras`). A camera or microphone at work changes at
+  once, the sound output at the next stream, and a short test sound tells
+  where sound goes. A browser asks the person itself and has no lists.
 - **On the desktop**, `leto-media` reads the camera (`Camera`) through
   nokhwa: Media Foundation on Windows, V4L2 on Linux, nothing on macOS yet.
   It opens the first camera that has colour, because laptops that recognise a

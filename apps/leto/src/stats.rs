@@ -27,6 +27,13 @@ pub struct Counts {
     /// Pictures decoded, and how long that took them all, where measured.
     pub decoded: u64,
     pub decoding: Option<Duration>,
+    /// Of the decoded pictures, those copied out of the decoder to be shown,
+    /// and how long the copying took them all. Part of the decoding.
+    pub copied: u64,
+    pub copying: Duration,
+    /// Pictures decoded and not shown, because newer ones were waiting
+    /// behind them.
+    pub skipped: u64,
     /// Pictures the backend showed itself, where it does. Otherwise the
     /// window counts the pictures it shows.
     pub shown: Option<u64>,
@@ -58,6 +65,14 @@ impl Counts {
             *self.decoding.get_or_insert(Duration::ZERO) += took;
         }
     }
+
+    /// Of a picture decoded to be shown, `took` went to copying it out of
+    /// the decoder. The browser does that itself, unseen.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn copied(&mut self, took: Duration) {
+        self.copied += 1;
+        self.copying += took;
+    }
 }
 
 /// How a stream did over a stretch of time.
@@ -74,6 +89,11 @@ pub struct Rates {
     pub lost: Option<(f64, u64)>,
     /// Milliseconds a picture took to decode, on average.
     pub decoding_ms: Option<f64>,
+    /// Milliseconds a picture to be shown took to copy out of the decoder,
+    /// on average, where the backend copies them.
+    pub copying_ms: Option<f64>,
+    /// Pictures per second decoded and not shown, to keep up.
+    pub skipped: f64,
     /// Milliseconds the PC took to make a picture, on average.
     pub host_ms: Option<f64>,
 }
@@ -107,6 +127,7 @@ impl Rates {
             _ => None,
         };
         let timed = after.timed_by_host.saturating_sub(before.timed_by_host);
+        let copied = after.copied.saturating_sub(before.copied);
         Some(Self {
             received: per_second(received),
             decoded: per_second(decoded),
@@ -114,6 +135,8 @@ impl Rates {
             megabits: after.bytes.saturating_sub(before.bytes) as f64 * 8.0 / 1e6 / seconds,
             lost,
             decoding_ms,
+            copying_ms: average(after.copying.saturating_sub(before.copying), copied),
+            skipped: per_second(after.skipped.saturating_sub(before.skipped)),
             host_ms: average(after.host_time.saturating_sub(before.host_time), timed),
         })
     }
@@ -146,9 +169,31 @@ mod tests {
         assert!((rates.decoding_ms.expect("decoding is timed") - 6.0).abs() < 1e-9);
         assert!((rates.host_ms.expect("the PC said") - 4.0).abs() < 1e-9);
 
+        assert_eq!((rates.copying_ms, rates.skipped), (None, 0.0));
+
         // Over half a second, twice the rate.
         let rates = Rates::between(&before, &counts, 57, 0.5).expect("time went by");
         assert_eq!(rates.received, 118.0);
+    }
+
+    #[test]
+    fn pictures_copied_out_and_skipped_are_counted_apart() {
+        let mut counts = Counts::default();
+        let before = counts;
+        for shown in [true, false, true, false] {
+            counts.received(1000, Some(0), None);
+            if shown {
+                counts.decoded(Some(Duration::from_millis(9)));
+                counts.copied(Duration::from_millis(7));
+            } else {
+                counts.decoded(Some(Duration::from_millis(2)));
+                counts.skipped += 1;
+            }
+        }
+        let rates = Rates::between(&before, &counts, 2, 1.0).expect("a second went by");
+        assert!((rates.decoding_ms.expect("decoding is timed") - 5.5).abs() < 1e-9);
+        assert!((rates.copying_ms.expect("copying is timed") - 7.0).abs() < 1e-9);
+        assert_eq!(rates.skipped, 2.0);
     }
 
     #[test]
@@ -159,6 +204,7 @@ mod tests {
         counts.decoded(None);
         let rates = Rates::between(&before, &counts, 1, 1.0).expect("a second went by");
         assert_eq!((rates.lost, rates.decoding_ms, rates.host_ms), (None, None, None));
+        assert_eq!((rates.copying_ms, rates.skipped), (None, 0.0));
         // A backend that shows the pictures itself counts them.
         let shown = Counts { shown: Some(10), ..counts };
         let later = Counts { shown: Some(40), ..counts };

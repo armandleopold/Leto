@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use leto_client::{
@@ -17,14 +17,17 @@ use leto_client::{
     service::{explain, sentence},
 };
 use leto_media::{
-    Camera, CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Sending, VOICE_FRAME,
+    Camera, CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Sending, Speaker,
+    VOICE_FRAME,
 };
 
 use super::{
-    Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, gamepad, pads,
+    Chime, DeviceNames, Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, gamepad,
+    pads,
     stream::{Outlet, Screen, Sound},
 };
 use crate::{
+    settings::DeviceChoices,
     state::{Event, Request},
     stats::Counts,
 };
@@ -38,16 +41,92 @@ pub struct Backend {
     tried: RefCell<Tried>,
     /// The person has A and B change places on the gamepads, and X and Y.
     swapped: Arc<AtomicBool>,
+    /// The camera, microphone and speakers the person chose.
+    chosen: Arc<Mutex<DeviceChoices>>,
+    /// The microphones and sound outputs of this device, as last looked at.
+    names: Arc<Mutex<DeviceNames>>,
+    /// They are being looked at.
+    looking: Arc<AtomicBool>,
+    /// The test sound of the sound output.
+    chime: Arc<Mutex<Chime>>,
 }
 
 /// The camera and the microphone of this device, tried out with no PC
 /// involved: what they capture goes to the window and nowhere else.
 #[derive(Default)]
 struct Tried {
-    camera: Option<Camera>,
+    /// The camera, and the choice it was opened for.
+    camera: Option<(Camera, Option<String>)>,
     /// The picture the camera's pixels are taken into.
     picture: leto_media::Picture,
-    microphone: Option<Microphone>,
+    /// The microphone, and the choice it was opened for.
+    microphone: Option<(Microphone, Option<String>)>,
+}
+
+/// The rate the test sound is made at.
+const CHIME_RATE: u32 = 48_000;
+/// How far ahead of what is heard the test sound is handed to the output,
+/// which keeps little waiting and drops what is too far ahead.
+const CHIME_LEAD: Duration = Duration::from_millis(40);
+
+/// The test sound: two soft notes going up, in stereo.
+fn chime() -> Vec<f32> {
+    let rate = CHIME_RATE as f32;
+    let length = (rate * 0.7) as usize;
+    let mut samples = Vec::with_capacity(length * 2);
+    for at in 0..length {
+        let time = at as f32 / rate;
+        let (pitch, start) = if time < 0.25 { (660.0, 0.0) } else { (880.0, 0.25) };
+        // Each note fades in quickly and out slowly, so neither clicks.
+        let since = time - start;
+        let envelope = (since / 0.01).min(1.0) * (-since * 6.0).exp() * 0.25;
+        let value = (std::f32::consts::TAU * pitch * time).sin() * envelope;
+        samples.extend([value, value]);
+    }
+    samples
+}
+
+/// A lock that a thread which panicked holding it does not spoil.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Plays the test sound on the sound output named `speakers`, or the
+/// default one, at the pace it is heard. Says why it cannot, in words for
+/// the person.
+fn play_chime(speakers: Option<&str>) -> Result<(), String> {
+    // An output that stops as it opens is opened again: PulseAudio's does
+    // every other time, through ALSA, and plays the time after.
+    for _ in 0..3 {
+        let mut speaker =
+            Speaker::open(CHIME_RATE, speakers).map_err(|error| sentence(&error.to_string()))?;
+        if chimed(&mut speaker) {
+            return Ok(());
+        }
+        log::info!("the sound output stopped during the test sound");
+    }
+    Err("The sound output stopped while the test sound played.".to_owned())
+}
+
+/// Hands the test sound to `speaker` at the pace it is heard. `false` when
+/// the output stopped before the end: the person did not hear it all.
+fn chimed(speaker: &mut Speaker) -> bool {
+    let start = Instant::now();
+    // 10 ms at a time, in stereo.
+    let piece = CHIME_RATE as usize / 100 * 2;
+    for (index, samples) in chime().chunks(piece).enumerate() {
+        let due = start + Duration::from_millis(10 * index as u64);
+        if let Some(early) = due.checked_duration_since(Instant::now() + CHIME_LEAD) {
+            std::thread::sleep(early);
+        }
+        if speaker.is_lost() {
+            return false;
+        }
+        speaker.play(samples);
+    }
+    // What still waits plays out before the output closes.
+    std::thread::sleep(CHIME_LEAD + Duration::from_millis(200));
+    !speaker.is_lost()
 }
 
 /// Set to `card` in the environment, the camera is a test card: for trying
@@ -69,6 +148,8 @@ struct Desk {
     film: Mutex<Film>,
     /// The person lets the graphics card decode the pictures.
     hardware: AtomicBool,
+    /// The camera, microphone and speakers the person chose.
+    chosen: Arc<Mutex<DeviceChoices>>,
 }
 
 /// The microphone of this device, which only ever captures for a stream
@@ -77,8 +158,9 @@ struct Desk {
 struct Voice {
     /// The stream whose PC takes a microphone, while it is connected.
     stream: Option<u64>,
-    /// The microphone, while the person has it on.
-    microphone: Option<Microphone>,
+    /// The microphone, while the person has it on, and the choice it was
+    /// opened for.
+    microphone: Option<(Microphone, Option<String>)>,
 }
 
 /// The camera of this device, which only ever captures for a stream that is
@@ -90,8 +172,9 @@ struct Film {
     /// How much of a camera the PC of that stream takes, once it said that
     /// it takes one.
     limits: Option<Limits>,
-    /// The camera on its way there, while the person has it on.
-    feed: Option<CameraFeed>,
+    /// The camera on its way there, while the person has it on, and the
+    /// choice it was opened for.
+    feed: Option<(CameraFeed, Option<String>)>,
 }
 
 /// Carries the pictures of the camera to the PC being watched.
@@ -131,18 +214,23 @@ impl Drop for ToPc {
 
 impl Desk {
     fn outlet(&self) -> Arc<Outlet> {
-        Arc::clone(&self.outlet.lock().unwrap_or_else(PoisonError::into_inner))
+        Arc::clone(&lock(&self.outlet))
     }
 
     fn voice(&self) -> MutexGuard<'_, Voice> {
         // Whether a microphone captures stays true even if a thread
         // panicked meanwhile.
-        self.voice.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.voice)
     }
 
     fn film(&self) -> MutexGuard<'_, Film> {
         // The same goes for a camera.
-        self.film.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.film)
+    }
+
+    /// The camera, microphone and speakers the person chose.
+    fn chosen(&self) -> DeviceChoices {
+        lock(&self.chosen).clone()
     }
 }
 
@@ -193,7 +281,7 @@ impl Shell for Desk {
     fn sinks(&self) -> Result<(Screen, Sound), String> {
         let outlet = self.outlet();
         let screen = Screen::new(&outlet, &self.ctx, self.hardware.load(Ordering::Relaxed));
-        Ok((screen, Sound::new(&outlet)))
+        Ok((screen, Sound::new(&outlet, self.chosen().speakers)))
     }
 
     fn sends_camera(&self) -> bool {
@@ -205,6 +293,7 @@ impl Backend {
     pub fn new(ctx: &egui::Context) -> Self {
         crate::window::watch(ctx);
         let (sender, events) = mpsc::channel();
+        let chosen = Arc::new(Mutex::new(DeviceChoices::default()));
         let desk = Desk {
             events: sender,
             ctx: ctx.clone(),
@@ -212,6 +301,7 @@ impl Backend {
             voice: Mutex::default(),
             film: Mutex::default(),
             hardware: AtomicBool::new(true),
+            chosen: Arc::clone(&chosen),
         };
         // Finding out what this device decodes takes a moment on Windows,
         // better spent now than when the person asks for a stream.
@@ -236,7 +326,17 @@ impl Backend {
             }
             Err(error) => log::error!("the client engine did not start: {error}"),
         }
-        Self { service, events, ctx: ctx.clone(), tried: RefCell::default(), swapped }
+        Self {
+            service,
+            events,
+            ctx: ctx.clone(),
+            tried: RefCell::default(),
+            swapped,
+            chosen,
+            names: Arc::default(),
+            looking: Arc::default(),
+            chime: Arc::default(),
+        }
     }
 
     /// Open when the engine started, closed for good when it did not.
@@ -261,7 +361,7 @@ impl Backend {
     /// The latest picture of the stream that nobody has shown yet.
     pub fn take_picture(&self) -> Option<Picture> {
         let outlet = self.service.as_ref().ok()?.shell().outlet();
-        outlet.take_picture().map(Picture::Pixels)
+        outlet.take_picture().map(Picture::Planes)
     }
 
     /// The window draws the pictures itself: nothing to place.
@@ -334,24 +434,30 @@ impl Backend {
             voice.microphone = None;
             return Ok(None);
         }
-        if voice.microphone.as_ref().is_some_and(Microphone::is_lost) {
+        if voice.microphone.as_ref().is_some_and(|(microphone, _)| microphone.is_lost()) {
             voice.microphone = None;
             return Err("The microphone stopped. It may have been unplugged.".to_owned());
+        }
+        // Another microphone chosen meanwhile is the one heard from now on.
+        let chosen = self.chosen().microphone;
+        if voice.microphone.as_ref().is_some_and(|(_, opened_for)| *opened_for != chosen) {
+            voice.microphone = None;
         }
         if voice.microphone.is_none() {
             // The engine outlives no microphone: it must not be kept alive
             // by one.
             let listener = Arc::downgrade(service);
             let mut frames = 0u32;
-            let opened = Microphone::open(move |frame| {
+            let opened = Microphone::open(chosen.as_deref(), move |frame| {
                 if let Some(service) = listener.upgrade() {
                     service.microphone(VOICE_FRAME * frames, frame);
                 }
                 frames = frames.wrapping_add(1);
             });
-            voice.microphone = Some(opened.map_err(|error| sentence(&error.to_string()))?);
+            let opened = opened.map_err(|error| sentence(&error.to_string()))?;
+            voice.microphone = Some((opened, chosen));
         }
-        Ok(voice.microphone.as_ref().map(Microphone::level))
+        Ok(voice.microphone.as_ref().map(|(microphone, _)| microphone.level()))
     }
 
     /// Sends the camera of this device to the PC being watched while `on`,
@@ -367,15 +473,21 @@ impl Backend {
             film.feed = None;
             return Ok(None);
         };
-        let feed = film.feed.get_or_insert_with(|| {
+        // Another camera chosen meanwhile is the one sent from now on.
+        let chosen = self.chosen().camera;
+        if film.feed.as_ref().is_some_and(|(_, opened_for)| *opened_for != chosen) {
+            film.feed = None;
+        }
+        let (feed, _) = film.feed.get_or_insert_with(|| {
             let carrier = ToPc { service: Arc::downgrade(service), camera: None };
             let ctx = self.ctx.clone();
             let news = move || ctx.request_repaint();
-            if is_card() {
+            let feed = if is_card() {
                 CameraFeed::test_card(limits, carrier, news)
             } else {
-                CameraFeed::open(limits, carrier, news)
-            }
+                CameraFeed::open(chosen.clone(), limits, carrier, news)
+            };
+            (feed, chosen)
         });
         let problem = match feed.state() {
             Feeding::Starting => return Ok(Some(Filming::Opening)),
@@ -403,10 +515,19 @@ impl Backend {
             *camera = None;
             return Ok(None);
         }
-        let capturing = camera.get_or_insert_with(|| {
+        let chosen = self.chosen().camera;
+        if camera.as_ref().is_some_and(|(_, opened_for)| *opened_for != chosen) {
+            *camera = None;
+        }
+        let (capturing, _) = camera.get_or_insert_with(|| {
             let ctx = self.ctx.clone();
             let news = move || ctx.request_repaint();
-            if is_card() { Camera::test_card(news) } else { Camera::open(news) }
+            let capturing = if is_card() {
+                Camera::test_card(news)
+            } else {
+                Camera::open_named(chosen.clone(), news)
+            };
+            (capturing, chosen)
         });
         match capturing.take(picture) {
             Ok(true) => {
@@ -433,15 +554,98 @@ impl Backend {
             tried.microphone = None;
             return Ok(None);
         }
-        if tried.microphone.as_ref().is_some_and(Microphone::is_lost) {
+        if tried.microphone.as_ref().is_some_and(|(microphone, _)| microphone.is_lost()) {
             tried.microphone = None;
             return Err("The microphone stopped. It may have been unplugged.".to_owned());
         }
-        if tried.microphone.is_none() {
-            let opened = Microphone::open(|_| {});
-            tried.microphone = Some(opened.map_err(|error| sentence(&error.to_string()))?);
+        let chosen = self.chosen().microphone;
+        if tried.microphone.as_ref().is_some_and(|(_, opened_for)| *opened_for != chosen) {
+            tried.microphone = None;
         }
-        Ok(tried.microphone.as_ref().map(Microphone::level))
+        if tried.microphone.is_none() {
+            let opened = Microphone::open(chosen.as_deref(), |_| {});
+            let opened = opened.map_err(|error| sentence(&error.to_string()))?;
+            tried.microphone = Some((opened, chosen));
+        }
+        Ok(tried.microphone.as_ref().map(|(microphone, _)| microphone.level()))
+    }
+
+    /// Plays a short sound on the sound output the person chose, for them
+    /// to hear where sound goes. [`Backend::chime`] says how it went.
+    pub fn test_sound(&self) {
+        {
+            let mut chime = lock(&self.chime);
+            if *chime == Chime::Playing {
+                return;
+            }
+            *chime = Chime::Playing;
+        }
+        let (chime, ctx, speakers) =
+            (Arc::clone(&self.chime), self.ctx.clone(), self.chosen().speakers);
+        let play = move || {
+            let ended = match play_chime(speakers.as_deref()) {
+                Ok(()) => Chime::Silent,
+                Err(why) => Chime::Failed(why),
+            };
+            *lock(&chime) = ended;
+            ctx.request_repaint();
+        };
+        if std::thread::Builder::new().name("leto-chime".into()).spawn(play).is_err() {
+            *lock(&self.chime) = Chime::Failed("Leto could not play the test sound.".to_owned());
+        }
+    }
+
+    /// How the test sound went.
+    pub fn chime(&self) -> Chime {
+        lock(&self.chime).clone()
+    }
+
+    /// Uses the camera, microphone and speakers in `chosen` from now on: at
+    /// once for those that are on, for the speakers from the next stream.
+    pub fn choose_devices(&self, chosen: &DeviceChoices) {
+        let mut kept = lock(&self.chosen);
+        if *kept != *chosen {
+            log::info!("the devices chosen are now {chosen:?}");
+            *kept = chosen.clone();
+        }
+    }
+
+    fn chosen(&self) -> DeviceChoices {
+        lock(&self.chosen).clone()
+    }
+
+    /// The cameras, microphones and sound outputs of this device, as last
+    /// looked at.
+    pub fn device_names(&self) -> Option<DeviceNames> {
+        let mut names = lock(&self.names).clone();
+        names.cameras = leto_media::camera_names();
+        Some(names)
+    }
+
+    /// Looks again at which cameras, microphones and sound outputs this
+    /// device has. Takes a moment: [`Backend::device_names`] knows once the
+    /// window is drawn again.
+    pub fn look_for_devices(&self) {
+        let ctx = self.ctx.clone();
+        leto_media::look_for_cameras(move || ctx.request_repaint());
+        if self.looking.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (names, looking, ctx) =
+            (Arc::clone(&self.names), Arc::clone(&self.looking), self.ctx.clone());
+        let look = move || {
+            let found = DeviceNames {
+                cameras: None,
+                microphones: leto_media::microphones(),
+                speakers: leto_media::speakers(),
+            };
+            *lock(&names) = found;
+            looking.store(false, Ordering::SeqCst);
+            ctx.request_repaint();
+        };
+        if std::thread::Builder::new().name("leto-devices".into()).spawn(look).is_err() {
+            self.looking.store(false, Ordering::SeqCst);
+        }
     }
 
     /// Passes what the person did on to the PC being watched, in order.

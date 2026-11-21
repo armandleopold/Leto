@@ -26,18 +26,29 @@ pub(super) struct Device {
 }
 
 impl Device {
-    /// Opens the first camera of the system that has colour, or the first
-    /// one when none has: laptops that recognise a face list a second
-    /// camera for it, which sees in grey.
-    pub(super) fn open() -> Result<Self, Error> {
-        let system = native_api_backend()
-            .ok_or_else(|| Error::Camera("this system has none that Leto can use".to_owned()))?;
-        let listed = query(system).map_err(|error| not_opened(&error))?;
+    /// Opens the camera called `name`, or the first camera of the system
+    /// that has colour, or the first one when none has: laptops that
+    /// recognise a face list a second camera for it, which sees in grey.
+    pub(super) fn open(name: Option<&str>) -> Result<Self, Error> {
+        let listed = list()?;
+        super::remember(named(&listed));
 
+        let wanted = name.and_then(|name| {
+            let found = listed.iter().find(|info| info.human_name() == name);
+            if found.is_none() {
+                log::info!("the camera \"{name}\" is not there: Leto takes another");
+            }
+            found
+        });
         let mut grey = None;
         let mut failure = None;
         let mut chosen = None;
-        for info in &listed {
+        if let Some(info) = wanted {
+            // The one the person chose, even in grey: what goes wrong with
+            // it is said, not hidden behind another camera.
+            chosen = Some(Self::prepare(info)?);
+        }
+        for info in listed.iter().filter(|_| chosen.is_none()) {
             match Self::prepare(info) {
                 Ok(device) if device.layout != Layout::Gray => {
                     chosen = Some(device);
@@ -130,6 +141,29 @@ impl Source for Device {
         })?;
         Ok(Raw { layout: self.layout, width: self.width, height: self.height, data })
     }
+}
+
+/// The names of the system's cameras.
+pub(super) fn names() -> Result<Vec<String>, Error> {
+    Ok(named(&list()?))
+}
+
+/// The names of `listed`, each once: a camera is picked by its name, so of
+/// two that share one, the first is used.
+fn named(listed: &[CameraInfo]) -> Vec<String> {
+    let mut names = Vec::new();
+    for name in listed.iter().map(CameraInfo::human_name) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn list() -> Result<Vec<CameraInfo>, Error> {
+    let system = native_api_backend()
+        .ok_or_else(|| Error::Camera("this system has none that Leto can use".to_owned()))?;
+    query(system).map_err(|error| not_opened(&error))
 }
 
 fn layout(format: FrameFormat) -> Option<Layout> {

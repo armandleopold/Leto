@@ -238,6 +238,10 @@ pub struct VideoFrame<'a> {
     pub data: &'a [u8],
     /// How long the host took to capture and encode it, when it says.
     pub host_latency: Option<Duration>,
+    /// How many more pictures have arrived behind this one and wait their
+    /// turn. A sink that falls behind can skip showing this one: a newer
+    /// one would replace it before anyone saw it.
+    pub waiting: usize,
 }
 
 /// What a [`VideoSink`] made of a picture.
@@ -353,6 +357,7 @@ impl Session {
                 waiting_for_keyframe: None,
                 scratch: Vec::new(),
                 formats,
+                waiting: 0,
             },
             AudioAdapter { sink: audio },
             Listener { ended: Some(Box::new(ended)), leaving: Arc::clone(&leaving) },
@@ -603,6 +608,8 @@ struct VideoAdapter<S> {
     scratch: Vec<u8>,
     /// What the protocol was told this device decodes.
     formats: VideoFormats,
+    /// Pictures waiting behind the next one.
+    waiting: usize,
 }
 
 impl<S: VideoSink> VideoDecoder for VideoAdapter<S> {
@@ -617,6 +624,10 @@ impl<S: VideoSink> VideoDecoder for VideoAdapter<S> {
     }
 
     fn start(&mut self) {}
+
+    fn frames_waiting(&mut self, count: usize) {
+        self.waiting = count;
+    }
 
     fn submit_decode_unit(&mut self, unit: VideoDecodeUnit<&[u8]>) -> DecodeResult {
         let keyframe = unit.frame_type == FrameType::Idr;
@@ -643,6 +654,7 @@ impl<S: VideoSink> VideoDecoder for VideoAdapter<S> {
             keyframe,
             data: &self.scratch,
             host_latency: unit.frame_processing_latency,
+            waiting: self.waiting,
         };
         match self.sink.frame(frame) {
             Decoded::Ok => DecodeResult::Ok,
@@ -727,6 +739,8 @@ pub struct Tally {
     pub video_bytes: u64,
     /// Pictures the host made that never arrived.
     pub frames_missing: u64,
+    /// The most pictures that were ever waiting behind one.
+    pub most_waiting: usize,
     last_number: Option<u32>,
     pub audio_setup: Option<AudioSetup>,
     pub audio_packets: u64,
@@ -769,6 +783,7 @@ impl VideoSink for CountingSink {
             tally.frames += 1;
             tally.keyframes += u64::from(frame.keyframe);
             tally.video_bytes += frame.data.len() as u64;
+            tally.most_waiting = tally.most_waiting.max(frame.waiting);
             if let Some(last) = tally.last_number {
                 tally.frames_missing += u64::from(frame.number.saturating_sub(last + 1));
             }
