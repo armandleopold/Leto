@@ -80,8 +80,9 @@ Progress:
   [architecture.md](architecture.md#waking-a-pc).
 - Done: a WireGuard tunnel inside Leto. Given a WireGuard file, in the
   settings or with `leto-cli tunnel use`, Leto reaches a PC at home through
-  it by itself, with no WireGuard app and no administrator rights. Never
-  tried against a real WireGuard server. See
+  it by itself, with no WireGuard app and no administrator rights. Tried
+  once against a real WireGuard server, on a Raspberry Pi, from the Windows
+  app. See
   [architecture.md](architecture.md#through-a-wireguard-tunnel).
 - Later in this step: HDR, surround sound, decoding on the graphics card on
   macOS and Linux, and H.265 and AV1 in the browser.
