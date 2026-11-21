@@ -199,7 +199,7 @@ those notes, builds Windows, Linux, macOS, the web client and the Android APK
 - `xtask/`: automation. Add a command there instead of a shell script.
 - `docs/`: decisions and designs. Update them in the same pull request as the
   code they describe.
-- `site/`: the presentation site for leto.re, in French, published by
+- `site/`: the presentation site for leto.re, in English, published by
   GitHub Pages. See `site/README.md`.
 - `assets/brand/`: logo and colours. The colours also live in
   `crates/leto-core/src/brand.rs`. Change both together.

@@ -1,7 +1,7 @@
 name: Pages
 
 # Publishes site/ with GitHub Pages, together with the files of the latest
-# release in site/telechargements, which the download section of the page
+# release in downloads/, which the download section of the page
 # lists.
 on:
   push:
@@ -23,11 +23,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Building and deploying are two jobs, as in GitHub's own Pages workflows:
+  # a deploy in the same job as the upload once found no artifact yet
+  # ("No artifacts named github-pages were found").
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -47,14 +47,22 @@ jobs:
             echo "No release yet: nothing to download."
             exit 0
           fi
-          mkdir -p _site/telechargements
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir _site/telechargements
+          mkdir -p _site/downloads
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir _site/downloads
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '{
             version: (.tag_name | ltrimstr("v")),
             date: (.published_at[0:10]),
             files: [.assets[] | {name, size}]
-          }' > _site/telechargements/version.json
-          cat _site/telechargements/version.json
+          }' > _site/downloads/version.json
+          cat _site/downloads/version.json
       - uses: actions/upload-pages-artifact@v5
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
