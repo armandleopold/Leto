@@ -3,19 +3,34 @@
 //! Windows calls the hook for every key of every program, on the thread that
 //! set it, which must be waiting for messages meanwhile. Windows waits for
 //! its answer only so long: past that, it hands the key on as if the hook
-//! had let it go, so that the PC and this device would both act on it. Leto
-//! therefore gives the hook a thread of its own, at a high priority, that
-//! does nothing else, and the hook only decides: telling the window that a
-//! key came is the work of another thread.
+//! had let it go, so that the PC and this device would both act on it, and
+//! it removes the hook without a word, so that every key after it reaches
+//! this device too. Leto therefore gives the hook a thread of its own, at a
+//! high priority, that does nothing else, and the hook only decides: it
+//! waits for no other thread, and telling the window that a key came is the
+//! work of another one.
 //!
 //! The hook is set while a stream has the keyboard and Leto's window is in
 //! front, and set again each time the window comes back in front: Windows
 //! asks the hook set last first, and another program may have set one
-//! since. It is set again too when a key gets past it to the window.
+//! since. It is set again too when a key gets past it to the window, when a
+//! key reached it late, and every second besides, since Windows says
+//! nothing of a hook it removed. The new one is set before the old one goes,
+//! and the old one goes half a second later, so that no key gets through in
+//! between, not even one Windows was handing to the old one.
+//!
+//! Where Windows never calls the hook all the same, the keys that reach
+//! Leto's window are taken there, and Alt+Tab, which never reaches a
+//! window, is registered as Leto's own shortcut (`windows/window.rs`).
 
 use std::{
+    cell::{Cell, RefCell},
     ptr,
-    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc},
+    sync::{
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -36,14 +51,16 @@ use windows_sys::Win32::{
         },
         WindowsAndMessaging::{
             CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HC_ACTION,
-            HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP, MSG, PM_NOREMOVE, PeekMessageW,
-            PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP,
-            WM_USER,
+            HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_EXTENDED, LLKHF_UP, MSG, PM_NOREMOVE,
+            PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx,
+            WH_KEYBOARD_LL, WM_APP, WM_TIMER, WM_USER,
         },
     },
 };
 
 use super::{Gate, Raw, Stroke, Verdict};
+
+mod window;
 
 /// What the hook's thread is asked to do.
 const ARM: u32 = WM_APP + 1;
@@ -54,41 +71,49 @@ const REARM: u32 = WM_APP + 3;
 /// How often a key getting past the hook has it set again, at most.
 const REARM_EVERY: Duration = Duration::from_secs(1);
 
+/// How often the hook is set again anyway while it is set.
+const RENEW_EVERY_MS: u32 = 1000;
+
+/// How long a key may wait for the hook before Windows may have given up on
+/// it: the hook is then set again at once.
+const LATE: Duration = Duration::from_millis(100);
+
+/// How long a hook stays set once another replaced it: Windows may be
+/// handing it a key at that very moment, which would otherwise go past both.
+const RETIRED_FOR: Duration = Duration::from_millis(500);
+
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// What the hook and the window share.
-struct Shared {
-    gate: Gate,
-    /// Taken, and not yet handed to the window.
-    strokes: Vec<Stroke>,
-    /// Whether the window asked for the keyboard last.
-    wanted: bool,
-    /// The longest a key waited for the hook's answer since it was set,
-    /// from the moment it was pressed.
-    slowest: Duration,
-    /// Keys that got past the hook to the window since it was set, and when
-    /// that last had the hook set again.
-    slips: u32,
-    rearmed: Option<Instant>,
-    /// How many times the hook was set, again included.
-    sets: u32,
-    /// Takes keys whatever window is in front. For the tests, which have
-    /// none.
-    #[cfg(test)]
-    anywhere: bool,
-}
+/// Whether the window asked for the keyboard last.
+static WANTED: AtomicBool = AtomicBool::new(false);
 
-static SHARED: Mutex<Shared> = Mutex::new(Shared {
-    gate: Gate::new(),
-    strokes: Vec::new(),
-    wanted: false,
-    slowest: Duration::ZERO,
-    slips: 0,
-    rearmed: None,
-    sets: 0,
-    #[cfg(test)]
-    anywhere: false,
-});
+/// Whether the hook is set and keeps keys from Windows. Only the hook's
+/// thread changes it.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+
+/// Keys that got past the hook to the window since it was set.
+static SLIPS: AtomicU32 = AtomicU32::new(0);
+
+/// How many times the hook was set since the stream took the keyboard,
+/// again included.
+static SETS: AtomicU32 = AtomicU32::new(0);
+
+/// Keys that waited so long for the hook since it was set that Windows may
+/// have handed them on.
+static LATE_KEYS: AtomicU32 = AtomicU32::new(0);
+
+/// When a key getting past the hook last had it set again. Only the
+/// window's thread uses it.
+static REARMED: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// The keys taken, for the window. Only the window's thread locks it: the
+/// hook only ever sends, which waits for nobody.
+static TAKEN: OnceLock<Mutex<mpsc::Receiver<Stroke>>> = OnceLock::new();
+static TO_TAKE: OnceLock<mpsc::Sender<Stroke>> = OnceLock::new();
+
+/// Takes keys whatever window is in front. For the tests, which have none.
+#[cfg(test)]
+static ANYWHERE: AtomicBool = AtomicBool::new(false);
 
 /// Who to tell that a key was taken. Only the thread that tells takes it.
 static WAKE: Mutex<Option<Wake>> = Mutex::new(None);
@@ -100,64 +125,104 @@ static NUDGE: OnceLock<mpsc::SyncSender<()>> = OnceLock::new();
 /// The hook's thread, once started, or `None` if it could not be.
 static THREAD: OnceLock<Option<u32>> = OnceLock::new();
 
-fn shared() -> MutexGuard<'static, Shared> {
+/// What the hook knows, which only its thread ever touches.
+struct Hook {
+    gate: Gate,
+    /// The longest a key waited for the hook's answer since it was set,
+    /// from the moment it was pressed.
+    slowest: Duration,
+    /// The hook asked to be set again for a late key, and is not yet.
+    renewing: bool,
+}
+
+thread_local! {
+    static HOOK: RefCell<Hook> = const {
+        RefCell::new(Hook {
+            gate: Gate::new(),
+            slowest: Duration::ZERO,
+            renewing: false,
+        })
+    };
+    /// The hook passed a key on, and hears of it again: Leto's hook is in
+    /// the chain twice, for as long as it takes to set one and remove the
+    /// other. A key is decided once.
+    static PASSING_ON: Cell<bool> = const { Cell::new(false) };
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // What is shared stays usable even if a thread panicked holding it.
-    SHARED.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub fn capture(on: bool) -> bool {
     let Some(thread) = hook_thread() else { return false };
-    let mut shared = shared();
-    if shared.wanted != on {
-        shared.wanted = on;
+    if WANTED.swap(on, Ordering::SeqCst) != on {
+        if on {
+            *lock(&REARMED) = None;
+            window::arm();
+        } else {
+            window::disarm();
+        }
         ask(thread, if on { ARM } else { DISARM });
     }
     true
 }
 
+/// Hands a key taken to the window, and has it told.
+fn taken(stroke: Stroke) {
+    if let Some(to_take) = TO_TAKE.get() {
+        to_take.send(stroke).ok();
+    }
+    if let Some(nudge) = NUDGE.get() {
+        // Full: the window is already to be told.
+        nudge.try_send(()).ok();
+    }
+}
+
 pub fn slipped() {
     let Some(thread) = hook_thread() else { return };
-    let mut shared = shared();
     // Before the hook is set, a key may still reach the window.
-    if !shared.wanted || !shared.gate.capturing {
+    if !WANTED.load(Ordering::SeqCst) || !CAPTURING.load(Ordering::SeqCst) {
         return;
     }
-    shared.slips = shared.slips.saturating_add(1);
+    let slips = SLIPS.fetch_add(1, Ordering::SeqCst).saturating_add(1);
     let now = Instant::now();
-    if shared.rearmed.is_some_and(|at| now.duration_since(at) < REARM_EVERY) {
-        return;
+    {
+        let mut rearmed = lock(&REARMED);
+        if rearmed.is_some_and(|at| now.duration_since(at) < REARM_EVERY) {
+            return;
+        }
+        *rearmed = Some(now);
     }
-    shared.rearmed = Some(now);
-    if shared.slips == 1 {
-        log::warn!(
-            "a key got past the hook to Leto's window, so the hook is set again ({})",
-            report(&shared)
-        );
+    if slips == 1 {
+        log::warn!("a key got past the hook to Leto's window, so the hook is set again");
     } else {
-        log::debug!("the hook is set again ({})", report(&shared));
+        log::debug!("{slips} keys got past the hook, which is set again");
     }
     ask(thread, REARM);
 }
 
 pub fn take() -> Vec<Stroke> {
-    std::mem::take(&mut shared().strokes)
+    TAKEN.get().map(|taken| lock(taken).try_iter().collect()).unwrap_or_default()
 }
 
 pub fn set_wake(wake: impl Fn() + Send + Sync + 'static) {
-    *WAKE.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(wake));
+    *lock(&WAKE) = Some(Arc::new(wake));
 }
 
 /// What became of the keys since the hook was set, for the logs: how many,
 /// never which.
-fn report(shared: &Shared) -> String {
+fn report(hook: &Hook) -> String {
     format!(
         "{} keys for the stream, {} for another window in front, {} past the hook set {} \
-         times; a key waited {} ms at most for the hook",
-        shared.gate.tally.taken,
-        shared.gate.tally.elsewhere,
-        shared.slips,
-        shared.sets,
-        shared.slowest.as_millis()
+         times; a key waited {} ms at most for the hook, {} past {} ms",
+        hook.gate.tally.taken,
+        hook.gate.tally.elsewhere,
+        SLIPS.load(Ordering::SeqCst),
+        SETS.load(Ordering::SeqCst),
+        hook.slowest.as_millis(),
+        LATE_KEYS.load(Ordering::SeqCst),
+        LATE.as_millis()
     )
 }
 
@@ -175,7 +240,7 @@ fn hook_thread() -> Option<u32> {
         let (nudge, nudged) = mpsc::sync_channel(1);
         let telling = thread::Builder::new().name("leto: keys taken".to_owned()).spawn(move || {
             for () in nudged {
-                let wake = WAKE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                let wake = lock(&WAKE).clone();
                 if let Some(wake) = wake {
                     wake();
                 }
@@ -187,6 +252,9 @@ fn hook_thread() -> Option<u32> {
         }
         NUDGE.set(nudge).ok();
 
+        let (to_take, taken) = mpsc::channel();
+        TAKEN.set(Mutex::new(taken)).ok();
+        TO_TAKE.set(to_take).ok();
         let (ready, started) = mpsc::channel();
         let spawned =
             thread::Builder::new().name("leto: keyboard".to_owned()).spawn(move || listen(&ready));
@@ -214,6 +282,9 @@ fn listen(ready: &mpsc::Sender<u32>) {
         return;
     }
     let mut hook: HHOOK = ptr::null_mut();
+    // Hooks replaced by a newer one, and since when.
+    let mut retired: Vec<(HHOOK, Instant)> = Vec::new();
+    let mut timer = 0;
     // SAFETY: `message` is a valid MSG to write to. Zero is the end, and a
     // negative answer a failure.
     while unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) } > 0 {
@@ -221,39 +292,66 @@ fn listen(ready: &mpsc::Sender<u32>) {
             ARM if hook.is_null() => {
                 hook = set_hook();
                 if hook.is_null() {
+                    log::warn!("Windows does not let Leto have the keyboard");
                     continue;
                 }
-                let mut shared = shared();
-                // What is down now came down before the hook heard of it.
-                // SAFETY: `GetAsyncKeyState` takes any number.
-                shared.gate.arm(|code| unsafe { GetAsyncKeyState(i32::from(code)) } < 0);
-                shared.slowest = Duration::ZERO;
-                shared.slips = 0;
-                shared.rearmed = None;
-                shared.sets = 1;
-                drop(shared);
+                HOOK.with_borrow_mut(|state| {
+                    // What is down now came down before the hook heard of it.
+                    // SAFETY: `GetAsyncKeyState` takes any number.
+                    state.gate.arm(|code| unsafe { GetAsyncKeyState(i32::from(code)) } < 0);
+                    state.slowest = Duration::ZERO;
+                    state.renewing = false;
+                });
+                SLIPS.store(0, Ordering::SeqCst);
+                LATE_KEYS.store(0, Ordering::SeqCst);
+                SETS.store(1, Ordering::SeqCst);
+                CAPTURING.store(true, Ordering::SeqCst);
+                // SAFETY: a timer of this thread, with no window and no
+                // procedure: Windows posts WM_TIMER to the thread.
+                timer = unsafe { SetTimer(ptr::null_mut(), 0, RENEW_EVERY_MS, None) };
                 log::debug!("the stream has the keyboard");
             }
-            REARM if !hook.is_null() => {
-                unset_hook(hook);
-                hook = set_hook();
-                let mut shared = shared();
-                if hook.is_null() {
-                    shared.gate.disarm();
-                } else {
-                    shared.sets = shared.sets.saturating_add(1);
+            REARM | WM_TIMER if !hook.is_null() => {
+                // The new one first: the old one still answers meanwhile.
+                let renewed = set_hook();
+                HOOK.with_borrow_mut(|state| state.renewing = false);
+                if renewed.is_null() {
+                    log::debug!("Windows did not let the hook be set again");
+                    continue;
                 }
+                retired.push((hook, Instant::now()));
+                hook = renewed;
+                SETS.fetch_add(1, Ordering::SeqCst);
+                retired.retain(|&(old, since)| {
+                    let kept = since.elapsed() < RETIRED_FOR;
+                    if !kept {
+                        unset_hook(old);
+                    }
+                    kept
+                });
             }
             DISARM if !hook.is_null() => {
                 unset_hook(hook);
                 hook = ptr::null_mut();
-                let mut shared = shared();
-                let report = report(&shared);
-                let slow = shared.slowest > Duration::from_millis(100);
-                shared.gate.disarm();
-                drop(shared);
+                for (old, _) in retired.drain(..) {
+                    unset_hook(old);
+                }
+                if timer != 0 {
+                    // SAFETY: the timer set when the hook was.
+                    unsafe { KillTimer(ptr::null_mut(), timer) };
+                    timer = 0;
+                }
+                CAPTURING.store(false, Ordering::SeqCst);
+                let (report, slow) = HOOK.with_borrow_mut(|state| {
+                    let said = (report(state), LATE_KEYS.load(Ordering::SeqCst) > 0);
+                    state.gate.disarm();
+                    said
+                });
                 if slow {
-                    log::warn!("the keyboard is the system's again, Windows waited long: {report}");
+                    log::warn!(
+                        "the keyboard is the system's again; keys waited so long for the hook \
+                         that Windows may have handed them on: {report}"
+                    );
                 } else {
                     log::debug!("the keyboard is the system's again: {report}");
                 }
@@ -263,16 +361,11 @@ fn listen(ready: &mpsc::Sender<u32>) {
     }
 }
 
-/// Sets the hook, ahead of every other, or says why not.
+/// Sets the hook, ahead of every other, or says `null`.
 fn set_hook() -> HHOOK {
     // SAFETY: a hook procedure that matches HOOKPROC, of this program, for
     // every thread of the desktop.
-    let hook =
-        unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hear), GetModuleHandleW(ptr::null()), 0) };
-    if hook.is_null() {
-        log::warn!("Windows does not let Leto have the keyboard");
-    }
-    hook
+    unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hear), GetModuleHandleW(ptr::null()), 0) }
 }
 
 fn unset_hook(hook: HHOOK) {
@@ -283,9 +376,9 @@ fn unset_hook(hook: HHOOK) {
 /// The hook: called by Windows for each key, before anyone else hears of it.
 /// Returning a number other than zero keeps the key from going further.
 ///
-/// It only decides, and as fast as it can.
+/// It only decides, as fast as it can, and waits for no other thread.
 unsafe extern "system" fn hear(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code == HC_ACTION as i32 {
+    if code == HC_ACTION as i32 && !PASSING_ON.get() {
         // SAFETY: for HC_ACTION, `lparam` points to the key's description.
         let event = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
         // SAFETY: no arguments.
@@ -296,32 +389,58 @@ unsafe extern "system" fn hear(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
             extended: event.flags & LLKHF_EXTENDED != 0,
             down: event.flags & LLKHF_UP == 0,
         };
-        let mut shared = shared();
-        // A key the tick count wrapped around on, or one Windows stamped
-        // late, says nothing.
-        if waited < 60_000 {
-            shared.slowest = shared.slowest.max(Duration::from_millis(u64::from(waited)));
-        }
         #[cfg(test)]
-        let in_front = shared.anywhere || in_front();
+        let in_front = ANYWHERE.load(Ordering::Relaxed) || in_front();
         #[cfg(not(test))]
         let in_front = in_front();
-        match shared.gate.decide(raw, in_front) {
-            Verdict::Take(stroke) => {
-                shared.strokes.push(stroke);
-                drop(shared);
-                if let Some(nudge) = NUDGE.get() {
-                    // Full: the window is already to be told.
-                    nudge.try_send(()).ok();
-                }
+        // Only this thread ever borrows it; a key that comes while it does
+        // is not Windows' to keep waiting.
+        let verdict = HOOK.with(|state| {
+            let mut state = state.try_borrow_mut().ok()?;
+            state.heard(waited);
+            Some(state.gate.decide(raw, in_front))
+        });
+        match verdict {
+            Some(Verdict::Take(stroke)) => {
+                taken(stroke);
                 return 1;
             }
-            Verdict::Drop => return 1,
-            Verdict::PassOn => {}
+            Some(Verdict::Drop) => return 1,
+            Some(Verdict::PassOn) | None => {}
         }
+        PASSING_ON.set(true);
+        // SAFETY: passing on what Windows gave, as it asks of every hook.
+        let answer = unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) };
+        PASSING_ON.set(false);
+        return answer;
     }
     // SAFETY: passing on what Windows gave, as it asks of every hook.
     unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) }
+}
+
+impl Hook {
+    /// A key reached the hook `waited` milliseconds after it was pressed.
+    fn heard(&mut self, waited: u32) {
+        // A key the tick count wrapped around on, or one Windows stamped
+        // late, says nothing.
+        if waited >= 60_000 {
+            return;
+        }
+        let waited = Duration::from_millis(u64::from(waited));
+        self.slowest = self.slowest.max(waited);
+        if waited < LATE || !CAPTURING.load(Ordering::Relaxed) {
+            return;
+        }
+        LATE_KEYS.fetch_add(1, Ordering::SeqCst);
+        if !self.renewing {
+            // Windows may have removed the hook meanwhile: it is set again
+            // at once, and not only within a second.
+            self.renewing = true;
+            // SAFETY: no arguments, and a message with no pointers in it
+            // posted to this very thread.
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), REARM, 0, 0) };
+        }
+    }
 }
 
 pub fn letter_at(scan: u16) -> Option<char> {
@@ -350,18 +469,22 @@ fn in_front() -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
 
     use leto_core::input::Key;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
-        KEYEVENTF_SCANCODE, SendInput,
+    use windows_sys::Win32::UI::{
+        Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+            KEYEVENTF_SCANCODE, SendInput,
+        },
+        WindowsAndMessaging::{PM_REMOVE, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_NULL},
     };
 
     use super::*;
 
-    /// A key pressed or let go of as a keyboard would, by its scan code.
-    fn key(scan: u16, extended: bool, down: bool) -> INPUT {
+    /// A key pressed or let go of as a keyboard would, by its scan code, at
+    /// `time` on Windows' tick count, or now for zero.
+    fn key_at_time(scan: u16, extended: bool, down: bool, time: u32) -> INPUT {
         let mut flags = KEYEVENTF_SCANCODE;
         if extended {
             flags |= KEYEVENTF_EXTENDEDKEY;
@@ -372,9 +495,13 @@ mod tests {
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
-                ki: KEYBDINPUT { wVk: 0, wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+                ki: KEYBDINPUT { wVk: 0, wScan: scan, dwFlags: flags, time, dwExtraInfo: 0 },
             },
         }
+    }
+
+    fn key(scan: u16, extended: bool, down: bool) -> INPUT {
+        key_at_time(scan, extended, down, 0)
     }
 
     fn send(presses: &[INPUT]) {
@@ -403,6 +530,49 @@ mod tests {
         }
     }
 
+    fn sets() -> u32 {
+        SETS.load(Ordering::SeqCst)
+    }
+
+    /// A key reaching a window of this thread, as Windows would post it,
+    /// and the message the thread then takes.
+    fn at_window(virtual_key: u16, scan: u16, extended: bool, down: bool) -> u32 {
+        let mut flags = 1 | u32::from(scan) << 16;
+        if extended {
+            flags |= 1 << 24;
+        }
+        if !down {
+            flags |= 1 << 30 | 1 << 31;
+        }
+        let message = if down { WM_KEYDOWN } else { WM_KEYUP };
+        // SAFETY: a message with no pointers in it, to this very thread.
+        let posted = unsafe {
+            PostThreadMessageW(GetCurrentThreadId(), message, virtual_key.into(), flags as isize)
+        };
+        assert_ne!(posted, 0, "the key was not posted");
+        let mut taken = MSG::default();
+        // SAFETY: `taken` is a valid MSG to write to.
+        let got = unsafe { PeekMessageW(&mut taken, ptr::null_mut(), 0, 0, PM_REMOVE) };
+        assert_ne!(got, 0, "the key never came");
+        taken.message
+    }
+
+    /// One of the shortcuts Windows keeps for itself, `id`, ended by
+    /// `virtual_key`, as Windows tells this thread of it once registered,
+    /// and the message the thread then takes.
+    fn switch(id: i32, virtual_key: u16) -> u32 {
+        let held = (virtual_key as isize) << 16 | 1;
+        // SAFETY: a message with no pointers in it, to this very thread.
+        let posted =
+            unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_HOTKEY, id as usize, held) };
+        assert_ne!(posted, 0, "the shortcut was not posted");
+        let mut taken = MSG::default();
+        // SAFETY: `taken` is a valid MSG to write to.
+        let got = unsafe { PeekMessageW(&mut taken, ptr::null_mut(), 0, 0, PM_REMOVE) };
+        assert_ne!(got, 0, "the shortcut never came");
+        taken.message
+    }
+
     #[test]
     fn windows_says_what_its_layout_prints_on_a_key() {
         // The runners type in English: the key next to Tab prints Q.
@@ -412,16 +582,17 @@ mod tests {
         assert_eq!(letter_at(0x02), None);
     }
 
+    /// One test, since there is one keyboard and one hook.
     #[test]
     fn the_windows_key_goes_to_the_stream_and_not_to_windows() {
         static WOKEN: AtomicUsize = AtomicUsize::new(0);
         set_wake(|| {
             WOKEN.fetch_add(1, Ordering::SeqCst);
         });
-        shared().anywhere = true;
+        ANYWHERE.store(true, Ordering::SeqCst);
         assert!(capture(true));
         // The hook is set by its thread, in a moment.
-        until("the hook being set", || shared().gate.capturing);
+        until("the hook being set", || CAPTURING.load(Ordering::SeqCst));
 
         // Windows+A, which would open the quick settings.
         send(&[
@@ -439,15 +610,61 @@ mod tests {
         until("the window being told", || WOKEN.load(Ordering::SeqCst) > 0);
 
         // A key that got past the hook has it set again, and keys are taken
-        // as before.
+        // as before, once each although the hook was in the chain twice for
+        // a moment.
+        let before = sets();
         slipped();
-        until("the hook being set again", || shared().sets == 2);
-        assert_eq!(shared().slips, 1);
+        until("the hook being set again", || sets() > before);
+        assert_eq!(SLIPS.load(Ordering::SeqCst), 1);
         send(&[key(0x1E, false, true), key(0x1E, false, false)]);
         assert_eq!(heard(2), [(a, true), (a, false)]);
 
+        // It is set again every second besides, since Windows says nothing
+        // of a hook it removed.
+        let before = sets();
+        until("the hook being set again in time", || sets() > before);
+        send(&[key(0x5B, true, true), key(0x5B, true, false)]);
+        assert_eq!(heard(2), [(Key::LEFT_SUPER, true), (Key::LEFT_SUPER, false)]);
+
+        // A key that waited long for the hook has it set again at once, and
+        // the log says so.
+        // SAFETY: no arguments.
+        let long_ago = unsafe { GetTickCount() }.wrapping_sub(500);
+        send(&[key_at_time(0x1E, false, true, long_ago), key_at_time(0x1E, false, false, 0)]);
+        assert_eq!(heard(2), [(a, true), (a, false)]);
+        assert_eq!(LATE_KEYS.load(Ordering::SeqCst), 1);
+
+        // Where Windows never calls the hook, a key reaches the window: it
+        // is taken there, before the window acts on it, and the hook is set
+        // again.
+        let before = sets();
+        assert_eq!(at_window(0x5B, 0x5B, true, true), WM_NULL);
+        assert_eq!(at_window(0x5B, 0x5B, true, false), WM_NULL);
+        assert_eq!(heard(2), [(Key::LEFT_SUPER, true), (Key::LEFT_SUPER, false)]);
+        until("the hook being set again for a key that got past", || sets() > before);
+        assert_eq!(SLIPS.load(Ordering::SeqCst), 2);
+
+        // Alt+Tab, where Windows never calls the hook: Alt reaches the
+        // window, Windows tells of the shortcut it keeps for itself instead
+        // of the Tab going down, and the Tab comes up at the window. All of
+        // it goes to the stream, in order.
+        assert_eq!(at_window(0x12, 0x38, false, true), WM_NULL);
+        assert_eq!(switch(window::FIRST_SWITCH, 0x09), WM_NULL);
+        assert_eq!(at_window(0x09, 0x0F, false, false), WM_NULL);
+        assert_eq!(at_window(0x12, 0x38, false, false), WM_NULL);
+        assert_eq!(
+            heard(4),
+            [(Key::LEFT_ALT, true), (Key::TAB, true), (Key::TAB, false), (Key::LEFT_ALT, false)]
+        );
+        // A shortcut that is not Leto's is left alone.
+        assert_eq!(switch(window::FIRST_SWITCH - 1, 0x09), WM_HOTKEY);
+
         capture(false);
-        until("the hook being removed", || !shared().gate.capturing);
-        shared().anywhere = false;
+        until("the hook being removed", || !CAPTURING.load(Ordering::SeqCst));
+        ANYWHERE.store(false, Ordering::SeqCst);
+        // The window hears of its keys again.
+        assert_eq!(at_window(0x5B, 0x5B, true, true), WM_KEYDOWN);
+        assert_eq!(at_window(0x5B, 0x5B, true, false), WM_KEYUP);
+        assert!(take().is_empty());
     }
 }

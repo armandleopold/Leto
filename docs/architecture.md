@@ -245,16 +245,32 @@ passes them on.
   so while a stream has the keyboard `leto-system` listens to the keyboard
   ahead of Windows with a low-level hook, and keeps every key from going
   further while Leto's window is in front. Windows waits for the hook's
-  answer only so long, then hands the key on anyway, so the hook has a
-  thread of its own at a high priority and only decides: another thread
-  tells the window. Windows asks the hook set last first, so Leto sets it
-  each time its window comes in front, and again when a key gets past it to
-  the window; the log then counts the keys and how long they waited, never
-  which. Keys are
-  named by their scan code, the numeric keypad included. A key goes back to
-  whoever got it go down, so nothing stays held on either side, and the Ctrl
-  that AltGr makes up is dropped: the PC makes up its own. Ctrl+Alt+Del and
-  Windows+L stay with Windows, which no program can take. Leto's own
+  answer only so long, then hands the key on anyway and removes the hook
+  without a word, so the hook has a thread of its own at a high priority,
+  only decides and waits for no other thread: another thread tells the
+  window. Windows asks the hook set last first, so Leto sets it each time
+  its window comes in front, again when a key gets past it to the window or
+  reaches it late, and every second besides. The new one is set first, and
+  the old one goes half a second later, since Windows may be handing it a
+  key at that moment. On some computers Windows never calls the hook at all, security
+  software perhaps seeing to it: the keys then reach Leto's window, which
+  takes each from its messages for the stream before acting on it, so that
+  Alt+F4 does not close Leto, and Windows is asked to leave aside the
+  shortcuts programs registered (`RIDEV_NOHOTKEYS`), which it does for a
+  program that reads the keyboard itself: the Start menu is Explorer's, as
+  are Windows+E, Windows+D and the rest. Alt+Tab and Alt+Esc never reach a
+  window: Leto registers them as its own shortcuts while the stream has the
+  keyboard (`RegisterHotKey`), which a program in front may do, and Windows
+  then tells the window's thread of them instead of switching windows; the
+  Tab or Esc goes to the PC between the Alt the window heard go down and the
+  Tab coming up. The log says when Windows did not let Leto have them,
+  another program having them already. The log counts the keys, how
+  long they waited, how many came late and how many reached the window,
+  never which. Keys are named by their scan code, the numeric keypad
+  included. A key goes back to whoever got it go down, so nothing stays held
+  on either side, and the Ctrl that AltGr makes up is dropped: the PC makes
+  up its own. Ctrl+Alt+Del and Windows+L stay with Windows, which no program
+  can take. Leto's own
   shortcuts are found by the letter the layout prints on the key, which
   Windows tells even when Ctrl and Alt held together, AltGr on a French
   layout, change what the key types. The person can keep the system's
