@@ -303,7 +303,7 @@ fn add_form(ui: &mut Ui, state: &mut State) {
             ui.add_space(8.0);
 
             let mut submit = false;
-            let mut cancel = ui.input(|input| input.key_pressed(Key::Escape));
+            let mut cancel = widgets::back_asked(ui);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
                 let field = ui.add_enabled(

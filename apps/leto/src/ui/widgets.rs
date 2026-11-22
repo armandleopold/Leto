@@ -1,8 +1,9 @@
 //! Buttons, text and layout helpers shared by the screens.
 
 use egui::{
-    Align, Button, Color32, CursorIcon, FontId, Layout, Painter, Pos2, Rect, Response, RichText,
-    Role, Sense, Stroke, Ui, UiBuilder, Vec2, WidgetInfo,
+    Align, Button, Color32, CursorIcon, Event, FontId, Id, Key, Layout, Modifiers, Painter,
+    PointerButton, Pos2, Rect, Response, RichText, Role, Sense, Stroke, Ui, UiBuilder, Vec2,
+    WidgetInfo,
     text::{LayoutJob, TextWrapping},
     vec2,
 };
@@ -138,6 +139,39 @@ pub fn switch(ui: &mut Ui, on: &mut bool, name: &str) -> Response {
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// Whether the person asks to go back in this frame, as a back button
+/// would: with Escape, the back button of a mouse or of a keyboard, Android's
+/// back gesture or button, Alt+Left, or Backspace away from text fields.
+/// Only the first to ask in a frame hears yes: one press goes back one
+/// step, never two.
+pub fn back_asked(ui: &Ui) -> bool {
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    let asked = ui.input(|input| {
+        // The keys held with each key as it was pressed.
+        let pressed = |wanted: Key, held: Modifiers| {
+            input.events.iter().any(|event| {
+                matches!(event, Event::Key { key, pressed: true, modifiers, .. }
+                    if *key == wanted && modifiers.matches_exact(held))
+            })
+        };
+        input.key_pressed(Key::Escape)
+            || input.key_pressed(Key::BrowserBack)
+            || input.pointer.button_pressed(PointerButton::Extra1)
+            || (!typing && pressed(Key::Backspace, Modifiers::NONE))
+            || (!typing && pressed(Key::ArrowLeft, Modifiers::ALT))
+    });
+    if !asked {
+        return false;
+    }
+    let pass = ui.ctx().cumulative_pass_nr();
+    let id = Id::unique("leto-went-back");
+    ui.ctx().data_mut(|data| {
+        let first = data.get_temp::<u64>(id) != Some(pass);
+        data.insert_temp(id, pass);
+        first
+    })
+}
+
 /// A button with the back arrow and the name of where it leads.
 pub fn back_button(ui: &mut Ui, to: &str) -> Response {
     let font = FontId::proportional(theme::BODY);
@@ -205,4 +239,70 @@ pub fn waiting(ui: &mut Ui, text: &str) {
         ui.add(egui::Spinner::new().size(16.0).color(theme::sun()));
         ui.label(dim(text));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{RawInput, pos2};
+
+    use super::*;
+
+    /// Runs one frame with `events`, a text field focused or not, and
+    /// returns how many of two screens asking heard yes.
+    fn asked(ctx: &egui::Context, events: Vec<Event>, typing: bool) -> usize {
+        let input = RawInput { events, ..Default::default() };
+        let mut yes = 0;
+        let mut output = ctx.run_ui(input, |ui| {
+            let mut text = String::new();
+            let field = ui.text_edit_singleline(&mut text);
+            if typing {
+                field.request_focus();
+            } else {
+                field.surrender_focus();
+            }
+            yes += usize::from(back_asked(ui)) + usize::from(back_asked(ui));
+        });
+        output.textures_delta.clear();
+        yes
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    #[test]
+    fn back_is_asked_in_every_usual_way_and_heard_once() {
+        let ctx = egui::Context::default();
+        // A frame first, for the text field to be focused in the next.
+        asked(&ctx, Vec::new(), false);
+        let none = Modifiers::NONE;
+        let mouse_back = |pressed| Event::PointerButton {
+            pos: pos2(10.0, 10.0),
+            button: PointerButton::Extra1,
+            pressed,
+            modifiers: none,
+        };
+        let ways = [
+            vec![key(Key::Escape, none)],
+            vec![key(Key::BrowserBack, none)],
+            vec![key(Key::ArrowLeft, Modifiers::ALT)],
+            vec![key(Key::Backspace, none)],
+            vec![Event::PointerMoved(pos2(10.0, 10.0)), mouse_back(true), mouse_back(false)],
+        ];
+        for events in ways {
+            assert_eq!(asked(&ctx, events.clone(), false), 1, "{events:?}");
+        }
+        assert_eq!(asked(&ctx, Vec::new(), false), 0);
+        assert_eq!(asked(&ctx, vec![key(Key::ArrowLeft, none)], false), 0);
+    }
+
+    #[test]
+    fn backspace_and_alt_left_are_the_text_fields_while_one_is_typed_in() {
+        let ctx = egui::Context::default();
+        asked(&ctx, Vec::new(), true);
+        assert_eq!(asked(&ctx, vec![key(Key::Backspace, Modifiers::NONE)], true), 0);
+        assert_eq!(asked(&ctx, vec![key(Key::ArrowLeft, Modifiers::ALT)], true), 0);
+        // Escape still goes back, as it did.
+        assert_eq!(asked(&ctx, vec![key(Key::Escape, Modifiers::NONE)], true), 1);
+    }
 }

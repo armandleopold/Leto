@@ -26,6 +26,7 @@ pub mod keyboard;
 pub mod orientation;
 pub mod pane;
 pub mod permission;
+pub mod task;
 
 #[cfg(target_os = "android")]
 mod java;

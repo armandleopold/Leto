@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use egui::{
-    Align, Align2, Color32, CursorIcon, FontId, Key, Layout, Rect, RichText, Sense, Stroke,
-    StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
+    Align, Align2, Color32, CursorIcon, FontId, Layout, Rect, RichText, Sense, Stroke, StrokeKind,
+    TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
 };
 use leto_core::{
     engine::Decodable,
@@ -74,7 +74,7 @@ pub fn show(
     now: f64,
 ) {
     let host = &view.host;
-    let mut leave = ui.input(|input| input.key_pressed(Key::Escape));
+    let mut leave = widgets::back_asked(ui);
     let mut forget = false;
 
     ui.horizontal(|ui| {

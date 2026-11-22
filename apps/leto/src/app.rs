@@ -388,9 +388,9 @@ impl eframe::App for LetoApp {
                 });
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
-                    // Escape closes the settings, as their back button does.
-                    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
-                    if self.settings_open && escape {
+                    // Going back closes the settings, as their back button
+                    // does, and only them: the screen under them stays.
+                    if self.settings_open && widgets::back_asked(ui) {
                         self.settings_open = false;
                     }
                     let scroll = egui::ScrollArea::vertical().auto_shrink(false);
@@ -483,6 +483,13 @@ impl eframe::App for LetoApp {
                             (Door::Open, Screen::Stream(_)) => {}
                         });
                     });
+                    // A back that no screen took was asked on the first
+                    // one, where Android's back puts the app behind the
+                    // others, as it does any app's first screen.
+                    let system = ui.input(|input| input.key_pressed(egui::Key::BrowserBack));
+                    if system && widgets::back_asked(ui) {
+                        leto_system::task::go_behind();
+                    }
                 });
             }
         }
