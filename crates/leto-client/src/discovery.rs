@@ -161,6 +161,14 @@ pub fn networks() -> Vec<Around> {
     found.into_iter().collect()
 }
 
+/// Whether `address` is on one of the local networks this device is on, as
+/// the PCs at home are while this device is at home too. Only private IPv4
+/// addresses are looked at: see [`networks`].
+pub fn on_this_network(address: &str) -> bool {
+    let Ok(IpAddr::V4(address)) = address.parse::<IpAddr>() else { return false };
+    address.is_private() && networks().iter().any(|network| network.holds(address))
+}
+
 /// Of `addresses`, those where something takes a connection on `port`
 /// within `patience`. All are tried at once, so it takes `patience` and no
 /// longer. Nothing is sent: the connection is closed as soon as it is made.

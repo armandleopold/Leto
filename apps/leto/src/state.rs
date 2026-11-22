@@ -743,6 +743,8 @@ mod tests {
             running_app: None,
             wakeable: false,
             tunnel: false,
+            tunnel_address: None,
+            lan: false,
         }
     }
 

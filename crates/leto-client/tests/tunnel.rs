@@ -184,7 +184,9 @@ fn a_pc_behind_wireguard_is_found_paired_and_streamed_through_leto_s_tunnel() {
     // tunnel.
     let added = client.add(&home.address()).unwrap();
     assert_eq!(added.address, PC.to_string());
-    assert!(added.tunnel);
+    assert!(added.tunnel && !added.lan);
+    // It is one of the tunnel's peers: its address there is shown.
+    assert_eq!(added.tunnel_address.as_deref(), Some(PC.to_string().as_str()));
     let pin = client.new_pin().unwrap();
     home.host.type_pin(pin);
     let paired = client.pair(&added.id, pin).unwrap();

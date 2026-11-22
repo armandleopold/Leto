@@ -1620,6 +1620,8 @@ mod tests {
                 running_app: Some(1),
                 wakeable: false,
                 tunnel: false,
+                tunnel_address: None,
+                lan: false,
             },
             app: AppSummary { id: 1, title: "Desktop".into(), hdr: false },
             attempt: 1,
