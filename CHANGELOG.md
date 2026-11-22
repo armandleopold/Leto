@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.0.3](https://github.com/armandleopold/Leto/compare/v0.0.2...v0.0.3) (2026-11-22)
+
+
+### Features
+
+* **android:** run on Fire TV and Android TV ([#59](https://github.com/armandleopold/Leto/issues/59)) ([415778c](https://github.com/armandleopold/Leto/commit/415778c0d19e3247e86b71743af4671463d276a4))
+* **android:** stream to the monitor a phone is plugged into, in full screen, with its mouse ([#60](https://github.com/armandleopold/Leto/issues/60)) ([306e757](https://github.com/armandleopold/Leto/commit/306e757f4127704db02dad8c602b38e048c13fdd))
+* **host:** a device's camera and microphone for the apps of the shared PC ([#65](https://github.com/armandleopold/Leto/issues/65)) ([ced22fe](https://github.com/armandleopold/Leto/commit/ced22fe1c238d6b437a3d561dcce0a5463aa015a))
+* **host:** share this PC from the Leto app, beside Apollo, for a client's camera ([#58](https://github.com/armandleopold/Leto/issues/58)) ([25c9ea2](https://github.com/armandleopold/Leto/commit/25c9ea2d8bbfeed25113cccd01930cb0f423a172))
+* navigate the app with a gamepad, the mouse's back button and Android's back gesture ([#57](https://github.com/armandleopold/Leto/issues/57)) ([adff700](https://github.com/armandleopold/Leto/commit/adff700ad6229faf87d56cb00c2ef98ba8779fd1))
+* show WireGuard or LAN beside a PC in the list ([#68](https://github.com/armandleopold/Leto/issues/68)) ([228f8d7](https://github.com/armandleopold/Leto/commit/228f8d729a18a714ce0374aa3297f6fe328788cb))
+* **tunnel:** say why the WireGuard server does not answer ([#67](https://github.com/armandleopold/Leto/issues/67)) ([1d927d6](https://github.com/armandleopold/Leto/commit/1d927d66ee50da13d680d9e8bb4e90c169d118ae))
+
+
+### Bug fixes
+
+* always draw decoded pictures from the graphics card on Windows ([#61](https://github.com/armandleopold/Leto/issues/61)) ([9a32be8](https://github.com/armandleopold/Leto/commit/9a32be8d62bbf991f8a7a74e0d4158dbff84a794))
+* **android:** navigate the settings with a remote or gamepad, and no AV1 by default on a TV ([#66](https://github.com/armandleopold/Leto/issues/66)) ([d969b9a](https://github.com/armandleopold/Leto/commit/d969b9abf6f8f3efd40ab4734db9da09bfa294bc))
+* **android:** send the PC where a key sits, whatever layout Android was told ([#69](https://github.com/armandleopold/Leto/issues/69)) ([d7f4260](https://github.com/armandleopold/Leto/commit/d7f4260a00611af5962be141941d1fab7e4ea066))
+* stop showing HDR on apps, as Leto never streams in HDR ([#64](https://github.com/armandleopold/Leto/issues/64)) ([2a2d5da](https://github.com/armandleopold/Leto/commit/2a2d5da54c109641a69f90eda7501e18e7d7f5b8))
+
 ## [0.0.2](https://github.com/armandleopold/Leto/compare/v0.0.1...v0.0.2) (2026-11-21)
 
 
