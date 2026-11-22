@@ -489,7 +489,7 @@ impl Image {
     /// A decoder's buffer is often taller than the picture: 1088 lines for
     /// 1080, the last 8 green. The picture's own width and height say the
     /// picture's, not the buffer's, so the buffer is asked.
-    pub fn place(&self) -> [f32; 4] {
+    pub fn place(&self) -> Place {
         let (mut width, mut height) = (0, 0);
         let mut crop = sys::AImageCropRect { left: 0, top: 0, right: 0, bottom: 0 };
         // SAFETY: a live picture; each is written.
@@ -498,7 +498,7 @@ impl Image {
                 && sys::AImage_getHeight(self.image, &mut height) == sys::media_status_t::AMEDIA_OK
         };
         if !said {
-            return [0.0, 0.0, 1.0, 1.0];
+            return Place::WHOLE;
         }
         // SAFETY: as above.
         let cropped = unsafe {
@@ -526,25 +526,49 @@ impl Image {
     }
 }
 
+/// Where a picture is in its buffer, as parts of the buffer's width and
+/// height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Place {
+    /// Left, top, width, height.
+    pub part: [f32; 4],
+    /// The least and the most, across then down, to read the buffer at:
+    /// left, top, right, bottom.
+    ///
+    /// Half a pixel in at the left and the top, where a pixel's middle is.
+    /// A whole pixel in at the right and the bottom, where the buffer may
+    /// go on in green: a colour serves two pixels across and two down, and
+    /// read any further, the last one is mixed with the green after it.
+    pub within: [f32; 4],
+}
+
+impl Place {
+    /// The whole buffer, read anywhere.
+    pub const WHOLE: Self = Self { part: [0.0, 0.0, 1.0, 1.0], within: [0.0, 0.0, 1.0, 1.0] };
+}
+
 /// Where a picture of `picture` pixels, cut at `crop` (left, top, right,
-/// bottom; none when empty), is in a buffer of `whole` pixels, as parts of
-/// the buffer: left, top, width, height.
-fn place_in(crop: [i32; 4], picture: (i32, i32), whole: (i32, i32)) -> [f32; 4] {
+/// bottom; none when empty), is in a buffer of `whole` pixels.
+fn place_in(crop: [i32; 4], picture: (i32, i32), whole: (i32, i32)) -> Place {
     let [mut left, mut top, mut right, mut bottom] = crop;
     if right <= left || bottom <= top || left < 0 || top < 0 {
         [left, top, right, bottom] = [0, 0, picture.0, picture.1];
     }
     let (across, down) = (whole.0.max(right), whole.1.max(bottom));
-    if across <= 0 || down <= 0 || right <= left || bottom <= top {
-        return [0.0, 0.0, 1.0, 1.0];
+    if across <= 0 || down <= 0 || right - left < 2 || bottom - top < 2 {
+        return Place::WHOLE;
     }
     let (across, down) = (across as f32, down as f32);
-    [
-        left as f32 / across,
-        top as f32 / down,
-        (right - left) as f32 / across,
-        (bottom - top) as f32 / down,
-    ]
+    let (left, top, right, bottom) = (left as f32, top as f32, right as f32, bottom as f32);
+    Place {
+        part: [left / across, top / down, (right - left) / across, (bottom - top) / down],
+        within: [
+            (left + 0.5) / across,
+            (top + 0.5) / down,
+            (right - 1.0) / across,
+            (bottom - 1.0) / down,
+        ],
+    }
 }
 
 impl Drop for Image {
@@ -637,13 +661,12 @@ mod place_tests {
     fn a_picture_in_a_taller_buffer_is_drawn_without_the_lines_under_it() {
         let place = place_in([0, 0, 1920, 1080], (1920, 1080), (1920, 1088));
         // Each line of the picture is read from one line of the buffer.
-        assert_eq!(place, [0.0, 0.0, 1.0, 1080.0 / 1088.0]);
+        assert_eq!(place.part, [0.0, 0.0, 1.0, 1080.0 / 1088.0]);
+        // And none from where the last colours meet the green under them.
+        assert_eq!(place.within[3], 1079.0 / 1088.0);
         // No cut told: the picture's own size is the cut.
-        assert_eq!(
-            place_in([0; 4], (1920, 1080), (1920, 1088)),
-            place_in([0, 0, 1920, 1080], (1920, 1080), (1920, 1088))
-        );
+        assert_eq!(place_in([0; 4], (1920, 1080), (1920, 1088)), place);
         // A buffer said smaller than the cut is not believed.
-        assert_eq!(place_in([0, 0, 1920, 1080], (1920, 1080), (0, 0)), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(place_in([0, 0, 1920, 1080], (1920, 1080), (0, 0)).part, [0.0, 0.0, 1.0, 1.0]);
     }
 }

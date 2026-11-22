@@ -72,19 +72,13 @@ void main() {
 const FRAGMENT_OF_PIXELS: &str = r"#extension GL_OES_EGL_image_external_essl3 : require
 uniform samplerExternalOES picture;
 uniform vec4 crop;
+uniform vec4 within;
 in vec2 place;
 out vec4 colour;
 void main() {
     // The buffer may be larger than the picture, with green around it:
-    // nothing is read from further than the middle of the picture's last
-    // pixels, where a pixel drawn between two would take some of it.
-    ivec2 size = textureSize(picture, 0);
-    vec2 half_a_pixel = size.x > 0 && size.y > 0 ? 0.5 / vec2(size) : vec2(0.0);
-    vec2 at = clamp(
-        crop.xy + place * crop.zw,
-        crop.xy + half_a_pixel,
-        crop.xy + crop.zw - half_a_pixel
-    );
+    // nothing is read from where some of it would be taken in.
+    vec2 at = clamp(crop.xy + place * crop.zw, within.xy, within.zw);
     colour = vec4(texture(picture, at).rgb, 1.0);
 }
 ";
@@ -363,7 +357,7 @@ impl Card {
         }
         #[cfg(target_os = "android")]
         if self.stays {
-            let (Some(program), Some((texture, crop))) =
+            let (Some(program), Some((texture, place))) =
                 (self.of_pixels, self.seen.as_ref().and_then(Seen::drawn))
             else {
                 return Ok(());
@@ -374,10 +368,17 @@ impl Card {
                 gl.use_program(Some(program));
                 gl.uniform_4_f32(
                     gl.get_uniform_location(program, "crop").as_ref(),
-                    crop[0],
-                    crop[1],
-                    crop[2],
-                    crop[3],
+                    place.part[0],
+                    place.part[1],
+                    place.part[2],
+                    place.part[3],
+                );
+                gl.uniform_4_f32(
+                    gl.get_uniform_location(program, "within").as_ref(),
+                    place.within[0],
+                    place.within[1],
+                    place.within[2],
+                    place.within[3],
                 );
                 gl.active_texture(glow::TEXTURE0);
                 gl.bind_texture(crate::kept::android::TEXTURE_EXTERNAL, Some(texture));
