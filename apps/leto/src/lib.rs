@@ -9,6 +9,8 @@ mod app;
 mod backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod clipboard;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+mod host;
 mod input;
 mod settings;
 mod state;

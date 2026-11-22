@@ -293,6 +293,28 @@ two virtual devices.
   identity as Apollo and accept exactly the devices Apollo has paired.
 - When the Leto host is complete, the companion's code is simply part of it.
 
+The companion exists for the camera: the crate `leto-host`, which the Leto
+app runs from its "This PC" screen, and `leto-cli companion` without a
+window. Where it had to choose:
+
+- **Which Apollo.** The `config` folder beside the program under
+  `Program Files\Apollo` or `Program Files\Sunshine` on Windows,
+  `~/.config/apollo` or `~/.config/sunshine` on Linux, or the one named with
+  `--apollo`. `sunshine.conf` there says the port and may move the three
+  files, as Apollo's own `config.cpp` reads it.
+- **Who is paired** is read from `sunshine_state.json` again at every
+  request, so a device paired or removed on Apollo's page is let in or kept
+  out at once, with no restart.
+- **Who may send a camera.** Apollo has no permission for it. The companion
+  takes the camera of a device that Apollo lets use both the keyboard and
+  the mouse, which is how its owner says a device is trusted with the PC:
+  the first device paired has both, and the others once ticked on Apollo's
+  page. The others are answered 403. A Sunshine keeps no permissions, and
+  every device it is paired with may. Leto's own permission for the camera
+  comes with Leto's own list of devices.
+- **The private key** is read into the TLS setup and nowhere else: not
+  logged, not copied.
+
 ## What works with what
 
 | Client | Sunshine, stock Apollo | Apollo with the microphone patch | Apollo + Leto companion | Leto host |

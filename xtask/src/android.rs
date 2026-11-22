@@ -16,10 +16,40 @@ use std::{
 
 use crate::{cargo_with, workspace_root};
 
-/// Phones the app is built for. Nearly every Android phone sold since 2017.
-pub const TARGET: &str = "aarch64-linux-android";
-/// Where the target's libraries go inside an APK.
-const ABI: &str = "arm64-v8a";
+/// What the app is built for, each in the APK: Android takes the first its
+/// processor runs.
+const TARGETS: [Target; 2] = [
+    // Nearly every Android phone sold since 2017.
+    Target { triple: "aarch64-linux-android", abi: "arm64-v8a", clang: "aarch64-linux-android" },
+    // Televisions and their sticks, as most Fire TVs: 64-bit processors
+    // running a 32-bit Android.
+    Target {
+        triple: "armv7-linux-androideabi",
+        abi: "armeabi-v7a",
+        clang: "armv7a-linux-androideabi",
+    },
+];
+
+/// The target the Android code is linted for.
+const LINTED: &Target = &TARGETS[0];
+
+/// One processor the app is built for.
+struct Target {
+    /// Rust's name for it.
+    triple: &'static str,
+    /// Where its libraries go inside an APK.
+    abi: &'static str,
+    /// The start of the NDK's compilers for it, before the Android version.
+    clang: &'static str,
+}
+
+impl Target {
+    /// The NDK's folder of libraries for it, which differs from Rust's name
+    /// on 32-bit ARM.
+    fn sysroot(&self) -> &'static str {
+        if self.abi == "armeabi-v7a" { "arm-linux-androideabi" } else { self.triple }
+    }
+}
 /// The oldest Android the app runs on: 8.0, the first with AAudio, which
 /// the sound plays through.
 const MIN_SDK: u32 = 26;
@@ -53,17 +83,14 @@ impl Sdk {
         Ok(Self { home, ndk })
     }
 
-    /// The NDK's compilers for [`TARGET`], as the environment variables the
+    /// The NDK's compilers for `target`, as the environment variables the
     /// `cc` crate and Cargo read.
-    pub fn compilers(&self) -> Vec<(String, PathBuf)> {
-        let clang = self.tool(&format!("aarch64-linux-android{MIN_SDK}-clang"));
-        let suffix = TARGET.replace('-', "_");
+    fn compilers(&self, target: &Target) -> Vec<(String, PathBuf)> {
+        let clang = self.tool(&format!("{}{MIN_SDK}-clang", target.clang));
+        let suffix = target.triple.replace('-', "_");
         vec![
             (format!("CC_{suffix}"), clang.clone()),
-            (
-                format!("CXX_{suffix}"),
-                self.tool(&format!("aarch64-linux-android{MIN_SDK}-clang++")),
-            ),
+            (format!("CXX_{suffix}"), self.tool(&format!("{}{MIN_SDK}-clang++", target.clang))),
             (format!("AR_{suffix}"), self.tool("llvm-ar")),
             (format!("CARGO_TARGET_{}_LINKER", suffix.to_uppercase()), clang),
         ]
@@ -75,11 +102,13 @@ impl Sdk {
     }
 
     /// The C++ library the H.264 codec needs beside the app.
-    fn cpp_library(&self) -> PathBuf {
+    fn cpp_library(&self, target: &Target) -> PathBuf {
         self.ndk
             .join("toolchains/llvm/prebuilt")
             .join(host_tag())
-            .join("sysroot/usr/lib/aarch64-linux-android/libc++_shared.so")
+            .join("sysroot/usr/lib")
+            .join(target.sysroot())
+            .join("libc++_shared.so")
     }
 
     fn build_tool(&self, name: &str) -> Result<PathBuf, String> {
@@ -112,31 +141,46 @@ pub fn apk() -> Result<(), String> {
 
     // The pipeline's lints, for the code only Android compiles.
     cargo_with(
-        &["clippy", "--locked", "--release", "--target", TARGET, "--package", "leto-android"]
-            .into_iter()
-            .chain(["--package", "leto", "--package", "leto-system", "--package", "leto-media"])
-            .chain(["--", "-D", "warnings"])
-            .collect::<Vec<_>>(),
-        &sdk.compilers(),
+        &[
+            "clippy",
+            "--locked",
+            "--release",
+            "--target",
+            LINTED.triple,
+            "--package",
+            "leto-android",
+        ]
+        .into_iter()
+        .chain(["--package", "leto", "--package", "leto-system", "--package", "leto-media"])
+        .chain(["--", "-D", "warnings"])
+        .collect::<Vec<_>>(),
+        &sdk.compilers(LINTED),
     )?;
-    cargo_with(
-        &["build", "--locked", "--release", "--target", TARGET, "--package", "leto-android"],
-        &sdk.compilers(),
-    )?;
+    for target in &TARGETS {
+        cargo_with(
+            &["build", "--locked", "--release", "--target", target.triple]
+                .into_iter()
+                .chain(["--package", "leto-android"])
+                .collect::<Vec<_>>(),
+            &sdk.compilers(target),
+        )?;
 
-    // The libraries, where Android looks for them.
-    let libraries = staging.join("lib").join(ABI);
-    fs::create_dir_all(&libraries).map_err(|e| format!("creating {}: {e}", libraries.display()))?;
-    let built = root.join("target").join(TARGET).join("release/libleto_android.so");
-    for library in [built, sdk.cpp_library()] {
-        let name = library.file_name().ok_or("a library without a name")?;
-        let copy = libraries.join(name);
-        fs::copy(&library, &copy).map_err(|e| format!("copying {}: {e}", library.display()))?;
-        // The NDK's C++ library comes with its symbols: half its size.
-        // Leto's keeps the names of its functions, which a panic's
-        // backtrace in the log is read with.
-        let keep = if name == "libleto_android.so" { "--strip-debug" } else { "--strip-unneeded" };
-        run(Command::new(sdk.tool("llvm-strip")).arg(keep).arg(&copy))?;
+        // The libraries, where Android looks for them.
+        let libraries = staging.join("lib").join(target.abi);
+        fs::create_dir_all(&libraries)
+            .map_err(|e| format!("creating {}: {e}", libraries.display()))?;
+        let built = root.join("target").join(target.triple).join("release/libleto_android.so");
+        for library in [built, sdk.cpp_library(target)] {
+            let name = library.file_name().ok_or("a library without a name")?;
+            let copy = libraries.join(name);
+            fs::copy(&library, &copy).map_err(|e| format!("copying {}: {e}", library.display()))?;
+            // The NDK's C++ library comes with its symbols: half its size.
+            // Leto's keeps the names of its functions, which a panic's
+            // backtrace in the log is read with.
+            let keep =
+                if name == "libleto_android.so" { "--strip-debug" } else { "--strip-unneeded" };
+            run(Command::new(sdk.tool("llvm-strip")).arg(keep).arg(&copy))?;
+        }
     }
 
     // The manifest and the icon.
