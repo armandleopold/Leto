@@ -9,7 +9,7 @@
 //! on beside the clock, on Windows, where an icon brings it back.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::{IpAddr, UdpSocket},
     time::{Duration, Instant},
 };
@@ -22,8 +22,12 @@ use leto_host::{
 };
 
 use crate::{
+    settings::ClientIcon,
     theme,
-    ui::{pcs::THIS_PC, widgets},
+    ui::{
+        pcs::{Client, Opened, THIS_PC},
+        widgets,
+    },
 };
 
 mod registered;
@@ -176,6 +180,71 @@ impl Sharing {
         }
     }
 
+    /// The devices that reach this PC, for their cards on the first screen:
+    /// the ones Apollo is paired with. `None` while this PC is not shared,
+    /// when nothing is read of Apollo.
+    pub fn clients(&mut self, icons: &BTreeMap<String, ClientIcon>) -> Option<Vec<Client>> {
+        if self.devices_read.elapsed() >= DEVICES_EVERY {
+            self.read_devices();
+        }
+        let State::Beside(companion, ..) = &self.state else { return None };
+        let (sender, speaker) = (companion.sender(), companion.speaker());
+        let listed = self.registered.listed(&self.devices);
+        Some(
+            listed
+                .iter()
+                .map(|known| Client {
+                    key: known.key().to_owned(),
+                    name: known.name.clone(),
+                    icon: icons
+                        .get(known.key())
+                        .copied()
+                        .unwrap_or_else(|| ClientIcon::guessed(&known.name)),
+                    doing: doing(known, sender.as_deref(), speaker.as_deref()),
+                    may: known.may(),
+                })
+                .collect(),
+        )
+    }
+
+    /// The page of one device that reaches this PC, or the one that pairs
+    /// one more. Returns whether to go back to `back_to`: the person asked,
+    /// or there is nothing left to show.
+    pub fn show_client(
+        &mut self,
+        ui: &mut Ui,
+        opened: &Opened,
+        icons: &mut BTreeMap<String, ClientIcon>,
+        back_to: &str,
+    ) -> bool {
+        if self.devices_read.elapsed() >= DEVICES_EVERY {
+            self.read_devices();
+        }
+        let State::Beside(companion, ..) = &self.state else { return true };
+        let back = widgets::back_button(ui, back_to).clicked();
+        ui.add_space(4.0);
+        ui.ctx().request_repaint_after(GLANCE);
+        match opened {
+            Opened::Pairing => {
+                self.registered.pairing(ui, companion.apollo());
+                back
+            }
+            Opened::Client(key) => {
+                let (sender, speaker) = (companion.sender(), companion.speaker());
+                let doing = self
+                    .registered
+                    .listed(&self.devices)
+                    .iter()
+                    .find(|known| known.key() == key)
+                    .and_then(|known| doing(known, sender.as_deref(), speaker.as_deref()));
+                let apollo = companion.apollo();
+                let gone =
+                    self.registered.page(ui, apollo, &self.devices, key, doing.as_deref(), icons);
+                back || gone
+            }
+        }
+    }
+
     /// The screen. `share` is the setting. Returns whether the person asked
     /// to go back to `back_to`.
     pub fn show(&mut self, ui: &mut Ui, share: &mut bool, back_to: &str) -> bool {
@@ -256,14 +325,21 @@ impl Sharing {
                     );
                 });
                 let sender = companion.sender();
-                let speaker = companion.speaker();
-                self.registered.show(
-                    ui,
-                    companion.apollo(),
-                    &self.devices,
-                    sender.as_deref(),
-                    speaker.as_deref(),
-                );
+                card(ui, "Registered clients", |ui| {
+                    let line = match self.devices.len() {
+                        0 => "Apollo is paired with no device yet.".to_owned(),
+                        1 => "Apollo is paired with 1 device.".to_owned(),
+                        count => format!("Apollo is paired with {count} devices."),
+                    };
+                    ui.label(line);
+                    ui.add(
+                        egui::Label::new(widgets::dim(
+                            "Each has its card on the first screen, under your PCs: its icon, \
+                             what it may do, and the way to rename or unpair it.",
+                        ))
+                        .wrap(),
+                    );
+                });
                 camera(ui, companion, sender.as_deref(), handing.given(), &mut self.camera);
                 microphone(ui, companion, voicing);
                 if cfg!(windows) {
@@ -304,6 +380,31 @@ fn is_here(address: &str) -> bool {
     address
         .parse::<IpAddr>()
         .is_ok_and(|address| !address.is_loopback() && UdpSocket::bind((address, 0)).is_ok())
+}
+
+/// What a device is doing at this moment, when it does anything: `sender`
+/// and `speaker` are the names of the devices that send a camera and a
+/// microphone.
+fn doing(known: &registered::Known, sender: Option<&str>, speaker: Option<&str>) -> Option<String> {
+    let name = Some(known.name.as_str());
+    let sends = match (sender == name, speaker == name) {
+        (true, true) => Some("sending its camera and its microphone"),
+        (true, false) => Some("sending its camera"),
+        (false, true) => Some("sending its microphone"),
+        (false, false) => None,
+    };
+    match (known.streaming, sends) {
+        (true, Some(sends)) => Some(format!("Streaming, {sends}")),
+        (true, None) => Some("Streaming".to_owned()),
+        (false, Some(sends)) => {
+            let mut said = sends.to_owned();
+            if let Some(first) = said.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            Some(said)
+        }
+        (false, None) => None,
+    }
 }
 
 /// What the camera that is being sent sees.

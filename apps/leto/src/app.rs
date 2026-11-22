@@ -62,6 +62,9 @@ pub struct LetoApp {
     settings_open: bool,
     /// The screen where this PC is shared is on screen, in the same way.
     host_open: bool,
+    /// The page of a device that reaches this PC is on screen, or the one
+    /// that pairs one more, in the same way.
+    client_open: Option<ui::pcs::Opened>,
     /// This PC as a host.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     sharing: crate::host::Sharing,
@@ -134,6 +137,7 @@ impl LetoApp {
             settings,
             settings_open: false,
             host_open: false,
+            client_open: None,
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             sharing: crate::host::Sharing::default(),
             closes_at: None,
@@ -521,6 +525,8 @@ impl eframe::App for LetoApp {
                         self.settings_open = false;
                     } else if self.host_open && widgets::back_asked(ui) {
                         self.host_open = false;
+                    } else if self.client_open.is_some() && widgets::back_asked(ui) {
+                        self.client_open = None;
                     }
                     let scroll = egui::ScrollArea::vertical().auto_shrink(false);
                     // The settings and the screens scroll on their own.
@@ -528,6 +534,8 @@ impl eframe::App for LetoApp {
                         "settings"
                     } else if self.host_open {
                         "this-pc"
+                    } else if self.client_open.is_some() {
+                        "client"
                     } else {
                         "screen"
                     });
@@ -569,6 +577,16 @@ impl eframe::App for LetoApp {
                                     self.host_open = false;
                                 }
                             }
+                            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+                            _ if self.client_open.is_some() => {
+                                let back_to = back_to(&self.state.screen).to_owned();
+                                let icons = &mut self.settings.client_icons;
+                                if let Some(opened) = &self.client_open
+                                    && self.sharing.show_client(ui, opened, icons, &back_to)
+                                {
+                                    self.client_open = None;
+                                }
+                            }
                             (Door::Closed(problem), _) => out_of_order(ui, problem),
                             (Door::Opening { failed }, _) => gate::reaching(ui, *failed),
                             (Door::Code { refused, checking }, _) => {
@@ -579,14 +597,25 @@ impl eframe::App for LetoApp {
                             }
                             (Door::Open, Screen::Pcs) => {
                                 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-                                let (own, shared) =
-                                    (self.sharing.own(&self.state.hosts), self.sharing.shared());
+                                let (own, shared, clients) = (
+                                    self.sharing.own(&self.state.hosts),
+                                    self.sharing.shared(),
+                                    self.sharing.clients(&self.settings.client_icons),
+                                );
                                 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-                                let (own, shared) = (Vec::new(), false);
-                                let this_pc = ui::pcs::ThisPc { hosts: HOSTS, own: &own, shared };
+                                let (own, shared, clients) = (Vec::new(), false, None::<Vec<_>>);
+                                let this_pc = ui::pcs::ThisPc {
+                                    hosts: HOSTS,
+                                    own: &own,
+                                    shared,
+                                    clients: clients.as_deref(),
+                                };
                                 match ui::pcs::show(ui, &mut self.state, this_pc, now) {
                                     Some(ui::pcs::Asked::Settings) => self.settings_open = true,
                                     Some(ui::pcs::Asked::ThisPc) => self.host_open = true,
+                                    Some(ui::pcs::Asked::Client(opened)) => {
+                                        self.client_open = Some(opened);
+                                    }
                                     None => {}
                                 }
                                 ui.add_space(24.0);

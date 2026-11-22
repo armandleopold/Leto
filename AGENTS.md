@@ -72,7 +72,11 @@ app finds one at `$XDG_CONFIG_HOME/apollo`. The app shows a PC at an
 address of the computer it runs on as "This PC", which is shared and not
 streamed: reach a stand-in host on the same computer at `127.0.0.1`. Never log what `apollo.rs` reads from `credentials`.
 
-"This PC" also lists the devices Apollo is paired with and what each may do
+While this PC is shared, the first screen shows a card for each device
+Apollo is paired with, under the PCs, with an icon its owner picks (kept in
+the settings by what Apollo knows the device by, guessed from its name until
+then). A card opens the device's page: its icon, its name, what it may do,
+its stream and unpairing; a last card pairs one more by its PIN
 (`apps/leto/src/host/registered.rs`). What the owner changes there, Apollo
 changes itself: Leto asks Apollo's own pages (`leto_host::pages`), on the
 port after Apollo's, once the owner signed in with the name and the password

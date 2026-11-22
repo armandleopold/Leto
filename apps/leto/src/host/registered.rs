@@ -1,8 +1,9 @@
-//! The devices Apollo is paired with, and what each may do: the card
-//! "Registered clients" of "This PC".
+//! The devices Apollo is paired with, and what each may do: the page of
+//! one device, behind its card on the first screen, and the page that
+//! pairs one more.
 //!
-//! What it shows is read from Apollo's folder, as the rest of this screen
-//! is. What the owner of the PC changes here, Apollo changes itself: Leto
+//! What they show is read from Apollo's folder, as "This PC" is. What the
+//! owner of the PC changes here, Apollo changes itself: Leto
 //! asks its own pages (`leto_host::pages`), once the owner has signed in
 //! with their name and their password. The password is given to Apollo and
 //! kept nowhere.
@@ -16,14 +17,22 @@ use std::{
     time::Duration,
 };
 
-use egui::{Align, Button, Color32, CursorIcon, Layout, RichText, Sense, Stroke, Ui, vec2};
+use std::collections::BTreeMap;
+
+use egui::{
+    Button, Color32, CursorIcon, RichText, Role, Sense, Stroke, Ui, Vec2, WidgetInfo, vec2,
+};
 use leto_host::{
     apollo::{Apollo, Device, RIGHTS, Right},
     pages::{Client, Error, Pages},
 };
 
-use super::{card, dot};
-use crate::{theme, ui::widgets};
+use super::card;
+use crate::{
+    settings::ClientIcon,
+    theme,
+    ui::{icons, widgets},
+};
 
 /// How often Apollo is asked for its devices while nothing is changed.
 const LOOKED_EVERY: Duration = Duration::from_secs(2);
@@ -40,6 +49,8 @@ enum Ask {
 #[derive(Default)]
 struct Told {
     clients: Vec<Client>,
+    /// Apollo listed its devices at least once.
+    heard: bool,
     /// Why the last thing asked was not done.
     problem: Option<String>,
     /// Apollo wants the owner to sign in again.
@@ -105,6 +116,7 @@ impl Session {
                                 ctx.request_repaint();
                             }
                             told.clients = clients;
+                            told.heard = true;
                             told.problem = None;
                         }
                     }
@@ -123,7 +135,54 @@ impl Session {
     }
 }
 
-/// The card, for as long as this PC is shared beside an Apollo.
+/// A device Apollo is paired with, as its pages or its file tell of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Known {
+    /// What Apollo knows it by. Empty for a device of an old Sunshine.
+    pub id: String,
+    pub name: String,
+    /// What it may do: see [`RIGHTS`].
+    pub permissions: u32,
+    /// It is streaming at this moment, which only Apollo's pages say.
+    pub streaming: bool,
+}
+
+impl Known {
+    /// What tells this device from the others: what Apollo knows it by,
+    /// or its name where a Sunshine keeps nothing else.
+    pub fn key(&self) -> &str {
+        if self.id.is_empty() { &self.name } else { &self.id }
+    }
+
+    /// What it may do, in a few words, for its card.
+    pub fn may(&self) -> String {
+        let every = RIGHTS.iter().flat_map(|(_, rights)| rights.iter());
+        if every.clone().all(|right| right.held_by(self.permissions)) {
+            return "May do everything".to_owned();
+        }
+        let [(_, apps), _, (_, input)] = RIGHTS;
+        // The last of the apps' rights it holds says the most.
+        let apps = match apps.iter().rposition(|right| right.held_by(self.permissions)) {
+            Some(2) => "Starts apps",
+            Some(1) => "Watches",
+            Some(_) => "Lists the apps",
+            None => "No stream",
+        };
+        let held: Vec<String> = input
+            .iter()
+            .filter(|right| right.held_by(self.permissions))
+            .map(|right| right.name.to_lowercase())
+            .collect();
+        let input = match held.len() {
+            0 => "no input".to_owned(),
+            count if count == input.len() => "every input".to_owned(),
+            _ => held.join(", "),
+        };
+        format!("{apps} \u{b7} {input}")
+    }
+}
+
+/// The devices of Apollo, for as long as this PC is shared beside it.
 #[derive(Default)]
 pub struct Registered {
     /// The name and the password of Apollo's pages, as they are typed.
@@ -132,10 +191,8 @@ pub struct Registered {
     /// Why signing in did not work.
     refused: Option<String>,
     session: Option<Session>,
-    /// The device being given another name, and the name as it is typed.
-    renaming: Option<(String, String)>,
-    /// The field for that name has just appeared: it is typed in at once.
-    renaming_new: bool,
+    /// The device whose page is open, and its name as it is typed there.
+    naming: Option<(String, String)>,
     /// The device the owner is asked again about before it is forgotten.
     unpairing: Option<String>,
     /// The PIN a new device shows, and a name for it, as they are typed.
@@ -143,38 +200,126 @@ pub struct Registered {
     pin_name: String,
 }
 
-/// What the owner asked for on the row of one device.
-enum Asked {
-    Nothing,
-    Update(Client),
-    Unpair(String),
-    Disconnect(String),
-}
-
 impl Registered {
-    /// The card. `devices` is what Apollo's file says, `sender` and
-    /// `speaker` the names of the devices that send a camera and a
-    /// microphone at this moment.
-    pub fn show(
-        &mut self,
-        ui: &mut Ui,
-        apollo: &Apollo,
-        devices: &[Device],
-        sender: Option<&str>,
-        speaker: Option<&str>,
-    ) {
-        // A sign-in Apollo no longer takes is over.
+    /// A sign-in Apollo no longer takes is over.
+    fn tend(&mut self) {
         if self.session.as_ref().is_some_and(|session| lock(&session.told).signed_out) {
             self.session = None;
             self.refused = Some("Apollo asks to sign in again.".to_owned());
         }
-        card(ui, "Registered clients", |ui| {
-            match &self.session {
-                Some(_) => self.signed_in(ui, sender, speaker),
-                None => {
-                    listed_from_file(ui, devices, sender, speaker);
-                    self.sign_in(ui, apollo);
+    }
+
+    /// The devices Apollo is paired with: as its pages list them once the
+    /// owner signed in, and until then as `devices`, its file, names them.
+    pub fn listed(&mut self, devices: &[Device]) -> Vec<Known> {
+        self.tend();
+        if let Some(session) = &self.session {
+            let told = lock(&session.told);
+            if told.heard {
+                return told
+                    .clients
+                    .iter()
+                    .map(|client| Known {
+                        id: client.id.clone(),
+                        name: client.name.clone(),
+                        permissions: client.permissions,
+                        streaming: client.connected,
+                    })
+                    .collect();
+            }
+        }
+        devices
+            .iter()
+            .map(|device| Known {
+                id: device.id.clone(),
+                name: device.name.clone(),
+                permissions: device.permissions,
+                streaming: false,
+            })
+            .collect()
+    }
+
+    /// The page of the device known as `key`. `doing` is what it is doing
+    /// at this moment. Returns whether there is nothing left to show: the
+    /// device was unpaired, here or elsewhere.
+    pub fn page(
+        &mut self,
+        ui: &mut Ui,
+        apollo: &Apollo,
+        devices: &[Device],
+        key: &str,
+        doing: Option<&str>,
+        icons: &mut BTreeMap<String, ClientIcon>,
+    ) -> bool {
+        let Some(known) = self.listed(devices).into_iter().find(|known| known.key() == key) else {
+            return true;
+        };
+        let name = if known.name.is_empty() { "A device" } else { &known.name };
+        let icon = icons.get(key).copied().unwrap_or_else(|| ClientIcon::guessed(&known.name));
+
+        ui.horizontal(|ui| {
+            let (tile, _) = ui.allocate_exact_size(Vec2::splat(46.0), Sense::hover());
+            ui.painter().rect_filled(tile, theme::CONTROL_RADIUS, theme::surface());
+            icons::client(icon)(ui.painter(), tile.shrink(11.0), theme::sun());
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                widgets::title(ui, name);
+                match doing {
+                    Some(doing) => ui.label(RichText::new(doing).color(theme::ready())),
+                    None => ui.label(widgets::dim("Paired with this PC")),
+                };
+            });
+        });
+        ui.add_space(8.0);
+
+        card(ui, "Icon", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
+                for choice in ClientIcon::ALL {
+                    if icon_choice(ui, choice, choice == icon) {
+                        icons.insert(key.to_owned(), choice);
+                    }
                 }
+            });
+        });
+
+        // Its page of Apollo, once signed in: what can be changed.
+        let client = self.session.as_ref().and_then(|session| {
+            lock(&session.told).clients.iter().find(|client| client.id == known.id).cloned()
+        });
+        let mut ask = None;
+        let mut gone = false;
+
+        if let Some(client) = &client {
+            card(ui, "Name", |ui| {
+                if self.naming.as_ref().is_none_or(|(id, _)| *id != client.id) {
+                    self.naming = Some((client.id.clone(), client.name.clone()));
+                }
+                let Some((_, typed)) = &mut self.naming else { return };
+                ui.horizontal(|ui| {
+                    let field = ui.add(field(typed, "Name of the device", 280.0));
+                    let entered =
+                        field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    let new = typed.trim();
+                    let changed = !new.is_empty() && new != client.name;
+                    let save = ui.add_enabled(changed, small_button("Save", true)).clicked();
+                    if changed && (save || entered) {
+                        let mut named = client.clone();
+                        named.name = new.to_owned();
+                        ask = Some(Ask::Update(named));
+                    }
+                });
+            });
+        }
+
+        card(ui, "What it may do", |ui| {
+            if let Some(permissions) = rights(ui, known.permissions, client.is_some())
+                && let Some(client) = &client
+            {
+                let mut allowed = client.clone();
+                allowed.permissions = permissions;
+                ask = Some(Ask::Update(allowed));
             }
             ui.add_space(2.0);
             ui.add(
@@ -188,76 +333,107 @@ impl Registered {
                 .wrap(),
             );
         });
+
+        match &client {
+            Some(client) => card(ui, "This device", |ui| {
+                ui.horizontal(|ui| {
+                    if self.unpairing.as_deref() == Some(client.id.as_str()) {
+                        if ui.add(small_button("Unpair", true)).clicked() {
+                            ask = Some(Ask::Unpair(client.id.clone()));
+                            self.unpairing = None;
+                            gone = true;
+                        }
+                        if ui.add(small_button("Keep", false)).clicked() {
+                            self.unpairing = None;
+                        }
+                        ui.label(widgets::dim("It will have to be paired again."));
+                        return;
+                    }
+                    if client.connected && ui.add(small_button("End its stream", false)).clicked() {
+                        ask = Some(Ask::Disconnect(client.id.clone()));
+                    }
+                    if ui.add(small_button("Unpair", false)).clicked() {
+                        self.unpairing = Some(client.id.clone());
+                    }
+                });
+            }),
+            // A Sunshine keeps nothing to change for each device.
+            None if known.id.is_empty() => {}
+            None => card(ui, "Change it", |ui| {
+                self.sign_in(
+                    ui,
+                    apollo,
+                    "To change what this device may do, to rename it, to end its stream or to \
+                     unpair it, sign in with the name and the password of Apollo's own page.",
+                );
+            }),
+        }
+
+        if let (Some(ask), Some(session)) = (ask, &self.session) {
+            // Shown at once, and put right by what Apollo says next.
+            let mut told = lock(&session.told);
+            match &ask {
+                Ask::Update(client) => {
+                    if let Some(known) = told.clients.iter_mut().find(|known| known.id == client.id)
+                    {
+                        *known = client.clone();
+                    }
+                }
+                Ask::Unpair(id) => told.clients.retain(|client| client.id != *id),
+                Ask::Disconnect(_) | Ask::Pair { .. } => {}
+            }
+            drop(told);
+            let _ = session.ask.send(ask);
+        }
+        self.problem(ui);
+        gone
     }
 
-    /// The devices as Apollo's pages list them, each with what can be
-    /// changed about it, and the place to pair one more.
-    fn signed_in(&mut self, ui: &mut Ui, sender: Option<&str>, speaker: Option<&str>) {
-        // Taken for the time of the frame: the rows change the card too.
-        let Some(session) = self.session.take() else { return };
-        let (clients, problem, paired) = {
-            let told = lock(&session.told);
-            (told.clients.clone(), told.problem.clone(), told.paired)
-        };
-        if clients.is_empty() {
-            ui.label(widgets::dim("Apollo is paired with no device yet."));
-        }
-        let mut asked = Asked::Nothing;
-        for (number, client) in clients.iter().enumerate() {
-            if number > 0 {
-                ui.separator();
-            }
-            let row = self.row(ui, client, sender, speaker);
-            if !matches!(row, Asked::Nothing) {
-                asked = row;
-            }
-        }
-        match asked {
-            Asked::Nothing => {}
-            Asked::Update(client) => {
-                // Shown at once, and put right by what Apollo says next.
-                let mut told = lock(&session.told);
-                if let Some(known) = told.clients.iter_mut().find(|known| known.id == client.id) {
-                    *known = client.clone();
+    /// The page that pairs one more device with Apollo, by the PIN the
+    /// device shows.
+    pub fn pairing(&mut self, ui: &mut Ui, apollo: &Apollo) {
+        self.tend();
+        widgets::title(ui, "Pair a device");
+        ui.add_space(8.0);
+        card(ui, "Its PIN", |ui| {
+            ui.add(
+                egui::Label::new(widgets::dim(
+                    "On the device, in Leto, add this PC and ask to pair: it shows a PIN of four \
+                     digits. Type it here, with a name to know the device by.",
+                ))
+                .wrap(),
+            );
+            ui.add_space(4.0);
+            let Some(session) = &self.session else {
+                self.sign_in(
+                    ui,
+                    apollo,
+                    "Apollo takes the PIN on its own page: sign in with the name and the \
+                     password of that page.",
+                );
+                return;
+            };
+            let paired = lock(&session.told).paired;
+            ui.horizontal(|ui| {
+                self.pin.retain(|digit| digit.is_ascii_digit());
+                self.pin.truncate(4);
+                ui.add(field(&mut self.pin, "PIN", 80.0));
+                ui.add(field(&mut self.pin_name, "Name of the device", 240.0));
+                let ready = self.pin.len() == 4 && !self.pin_name.trim().is_empty();
+                if ui.add_enabled(ready, small_button("Pair", true)).clicked() {
+                    lock(&session.told).paired = None;
+                    let _ = session.ask.send(Ask::Pair {
+                        pin: std::mem::take(&mut self.pin),
+                        name: std::mem::take(&mut self.pin_name).trim().to_owned(),
+                    });
                 }
-                let _ = session.ask.send(Ask::Update(client));
-            }
-            Asked::Unpair(id) => {
-                let _ = session.ask.send(Ask::Unpair(id));
-            }
-            Asked::Disconnect(id) => {
-                let _ = session.ask.send(Ask::Disconnect(id));
-            }
-        }
-        if let Some(problem) = problem {
-            ui.add(egui::Label::new(RichText::new(problem).color(theme::problem())).wrap());
-        }
-
-        ui.separator();
-        ui.label("Pair a device");
-        ui.add(
-            egui::Label::new(
-                widgets::dim("Type the PIN the device shows, and a name to know it by.")
-                    .size(theme::SMALL),
-            )
-            .wrap(),
-        );
-        ui.horizontal(|ui| {
-            self.pin.retain(|digit| digit.is_ascii_digit());
-            self.pin.truncate(4);
-            ui.add(field(&mut self.pin, "PIN", 80.0));
-            ui.add(field(&mut self.pin_name, "Name of the device", 220.0));
-            let ready = self.pin.len() == 4 && !self.pin_name.trim().is_empty();
-            if ui.add_enabled(ready, small_button("Pair", true)).clicked() {
-                lock(&session.told).paired = None;
-                let _ = session.ask.send(Ask::Pair {
-                    pin: std::mem::take(&mut self.pin),
-                    name: std::mem::take(&mut self.pin_name).trim().to_owned(),
-                });
-            }
+            });
             match paired {
                 Some(true) => {
-                    ui.label(RichText::new("Paired.").color(theme::ready()));
+                    ui.label(
+                        RichText::new("Paired. Its card is on the first screen.")
+                            .color(theme::ready()),
+                    );
                 }
                 Some(false) => {
                     ui.label(
@@ -268,86 +444,24 @@ impl Registered {
                 None => {}
             }
         });
-        self.session = Some(session);
+        self.problem(ui);
     }
 
-    /// One device: its name, what it is doing, what it may do, and the
-    /// buttons that change it.
-    fn row(
-        &mut self,
-        ui: &mut Ui,
-        client: &Client,
-        sender: Option<&str>,
-        speaker: Option<&str>,
-    ) -> Asked {
-        let mut asked = Asked::Nothing;
-        let renamed = self.renaming.as_ref().is_some_and(|(id, _)| *id == client.id);
-        let doubted = self.unpairing.as_deref() == Some(client.id.as_str());
-        ui.horizontal(|ui| {
-            if let (true, Some((_, name))) = (renamed, &mut self.renaming) {
-                let typed = ui.add(field(name, "Name of the device", 240.0));
-                if std::mem::take(&mut self.renaming_new) {
-                    typed.request_focus();
-                }
-                let entered =
-                    typed.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if ui.add(small_button("Save", true)).clicked() || entered {
-                    let name = name.trim().to_owned();
-                    if !name.is_empty() && name != client.name {
-                        let mut named = client.clone();
-                        named.name = name;
-                        asked = Asked::Update(named);
-                    }
-                    self.renaming = None;
-                } else if ui.add(small_button("Cancel", false)).clicked() {
-                    self.renaming = None;
-                }
-                return;
-            }
-            let name = if client.name.is_empty() { "A device" } else { &client.name };
-            ui.label(RichText::new(name).strong());
-            doing(ui, client.connected, &client.name, sender, speaker);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if doubted {
-                    if ui.add(small_button("Keep", false)).clicked() {
-                        self.unpairing = None;
-                    }
-                    if ui.add(small_button("Unpair", true)).clicked() {
-                        asked = Asked::Unpair(client.id.clone());
-                        self.unpairing = None;
-                    }
-                    ui.label(widgets::dim("It will have to be paired again."));
-                    return;
-                }
-                if ui.add(small_button("Unpair", false)).clicked() {
-                    self.unpairing = Some(client.id.clone());
-                }
-                if client.connected && ui.add(small_button("End its stream", false)).clicked() {
-                    asked = Asked::Disconnect(client.id.clone());
-                }
-                if ui.add(small_button("Rename", false)).clicked() {
-                    self.renaming = Some((client.id.clone(), client.name.clone()));
-                    self.renaming_new = true;
-                }
-            });
-        });
-        if let Some(permissions) = rights(ui, client.permissions, true) {
-            let mut allowed = client.clone();
-            allowed.permissions = permissions;
-            asked = Asked::Update(allowed);
+    /// Why the last thing asked of Apollo was not done, when it was not.
+    fn problem(&self, ui: &mut Ui) {
+        let problem = self.session.as_ref().and_then(|session| lock(&session.told).problem.clone());
+        if let Some(problem) = problem {
+            ui.add(egui::Label::new(RichText::new(problem).color(theme::problem())).wrap());
         }
-        asked
     }
 
     /// Where the owner signs in to Apollo's pages, to change anything.
-    fn sign_in(&mut self, ui: &mut Ui, apollo: &Apollo) {
-        ui.separator();
+    fn sign_in(&mut self, ui: &mut Ui, apollo: &Apollo, why: &str) {
         ui.add(
-            egui::Label::new(widgets::dim(
-                "To change what a device may do, to rename it or to unpair it, sign in with the \
-                 name and the password of Apollo's own page. Apollo makes the change itself, \
-                 and a browser that was signed in to its page is signed out.",
-            ))
+            egui::Label::new(widgets::dim(format!(
+                "{why} Apollo makes the change itself, and a browser that was signed in to its \
+                 page is signed out."
+            )))
             .wrap(),
         );
         ui.add_space(4.0);
@@ -382,46 +496,31 @@ impl Registered {
     }
 }
 
-/// The devices as Apollo's file names them: what each may do, to look at.
-fn listed_from_file(ui: &mut Ui, devices: &[Device], sender: Option<&str>, speaker: Option<&str>) {
-    if devices.is_empty() {
-        ui.label(widgets::dim("Apollo is paired with no device yet. Pair one from Leto."));
-    }
-    for (number, device) in devices.iter().enumerate() {
-        if number > 0 {
-            ui.separator();
-        }
-        ui.horizontal(|ui| {
-            let name = if device.name.is_empty() { "A device" } else { &device.name };
-            ui.label(RichText::new(name).strong());
-            doing(ui, false, &device.name, sender, speaker);
-        });
-        rights(ui, device.permissions, false);
-    }
-}
-
-/// What a device is doing at this moment, after its name.
-fn doing(ui: &mut Ui, streaming: bool, name: &str, sender: Option<&str>, speaker: Option<&str>) {
-    let sends = match (sender == Some(name), speaker == Some(name)) {
-        (true, true) => Some("sending its camera and its microphone"),
-        (true, false) => Some("sending its camera"),
-        (false, true) => Some("sending its microphone"),
-        (false, false) => None,
+/// One icon a device can be given: lit when it is the one it has. Returns
+/// whether it was chosen.
+fn icon_choice(ui: &mut Ui, icon: ClientIcon, chosen: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(92.0, 78.0), Sense::click());
+    response.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, chosen, icon.name()));
+    let lit = response.hovered() || response.has_focus();
+    let (fill, ink, border) = if chosen {
+        (theme::sun(), theme::on_sun(), Stroke::NONE)
+    } else if lit {
+        (theme::surface_hover(), theme::text(), Stroke::new(1.0, theme::sun().gamma_multiply(0.7)))
+    } else {
+        (theme::ground(), theme::dim(), Stroke::new(1.0, theme::line()))
     };
-    let said = match (streaming, sends) {
-        (true, Some(sends)) => format!("Streaming, {sends}"),
-        (true, None) => "Streaming".to_owned(),
-        (false, Some(sends)) => {
-            let mut said = sends.to_owned();
-            if let Some(first) = said.get_mut(..1) {
-                first.make_ascii_uppercase();
-            }
-            said
-        }
-        (false, None) => return,
-    };
-    dot(ui, theme::ready());
-    ui.label(RichText::new(said).color(theme::ready()).size(theme::SMALL));
+    let painter = ui.painter();
+    painter.rect(rect, theme::CONTROL_RADIUS, fill, border, egui::StrokeKind::Inside);
+    let drawn = egui::Rect::from_center_size(rect.center() - vec2(0.0, 10.0), Vec2::splat(26.0));
+    icons::client(icon)(painter, drawn, ink);
+    painter.text(
+        rect.center() + vec2(0.0, 24.0),
+        egui::Align2::CENTER_CENTER,
+        icon.name(),
+        egui::FontId::proportional(theme::SMALL - 0.5),
+        ink,
+    );
+    response.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }
 
 /// What a device may do, a group to a line. With `changes`, a press on one

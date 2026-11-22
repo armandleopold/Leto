@@ -7,7 +7,7 @@ use egui::{
 use leto_core::model::{HostId, HostSummary, Reachability, Way, join_address};
 
 use super::{icons, widgets};
-use crate::{state::State, theme};
+use crate::{settings::ClientIcon, state::State, theme};
 
 const CARD_HEIGHT: f32 = 150.0;
 const CARD_MIN_WIDTH: f32 = 236.0;
@@ -20,17 +20,44 @@ enum Chosen {
     ThisPc,
     Forget(HostId),
     Add,
+    /// The card of a device that reaches this PC, or the one that pairs
+    /// one more.
+    Client(Opened),
 }
 
 /// The name of the screen where this PC is shared, and of its button.
 pub const THIS_PC: &str = "This PC";
 
-/// Another screen the person asked for, from the header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Another screen the person asked for, from the header or from a card.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Asked {
     Settings,
     /// The screen where this PC is shared.
     ThisPc,
+    /// A page about the devices that reach this PC.
+    Client(Opened),
+}
+
+/// A page about the devices that reach this PC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opened {
+    /// The page of one device, by what the PC knows it by.
+    Client(String),
+    /// The page that pairs one more.
+    Pairing,
+}
+
+/// A device that reaches this PC, as its card shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Client {
+    /// What the PC knows it by.
+    pub key: String,
+    pub name: String,
+    pub icon: ClientIcon,
+    /// What it is doing at this moment, when it does anything.
+    pub doing: Option<String>,
+    /// What it may do, in a few words.
+    pub may: String,
 }
 
 /// What the list knows of the device Leto runs on.
@@ -43,6 +70,9 @@ pub struct ThisPc<'a> {
     pub own: &'a [HostId],
     /// It is shared at this moment.
     pub shared: bool,
+    /// The devices that reach it, each with a card under the PCs. `None`
+    /// while it is not shared: nothing is known of them then.
+    pub clients: Option<&'a [Client]>,
 }
 
 /// Returns the screen the person asked for, if any.
@@ -56,21 +86,27 @@ pub fn show(ui: &mut Ui, state: &mut State, this_pc: ThisPc<'_>, now: f64) -> Op
         ui.add_space(6.0);
     }
 
-    if state.hosts.is_empty() && !state.add.open {
+    let chosen = if state.hosts.is_empty() && !state.add.open {
         nothing_found(ui, state, now);
-        return settings;
-    }
-
-    let chosen = cards(ui, &state.hosts, &state.waking, state.add.open, this_pc);
-    if state.add.open {
-        add_form(ui, state);
-    }
+        None
+    } else {
+        let chosen = cards(ui, &state.hosts, &state.waking, state.add.open, this_pc);
+        if state.add.open {
+            add_form(ui, state);
+        }
+        chosen
+    };
+    let chosen = match this_pc.clients {
+        Some(clients) => chosen.or(registered(ui, clients)),
+        None => chosen,
+    };
 
     match chosen {
         Some(Chosen::Open(id)) => state.open(&id, now),
         Some(Chosen::Forget(id)) => state.forget(&id),
         Some(Chosen::Add) => state.open_add_form(),
         Some(Chosen::ThisPc) => settings = settings.or(Some(Asked::ThisPc)),
+        Some(Chosen::Client(opened)) => settings = settings.or(Some(Asked::Client(opened))),
         None => {}
     }
     settings
@@ -153,10 +189,7 @@ fn cards(
     adding: bool,
     this_pc: ThisPc<'_>,
 ) -> Option<Chosen> {
-    let available = ui.available_width();
-    let columns = (((available + GAP) / (CARD_MIN_WIDTH + GAP)).floor() as usize).clamp(1, 4);
-    let width = (available - GAP * (columns as f32 - 1.0)) / columns as f32;
-    let size = vec2(width, CARD_HEIGHT);
+    let (columns, size) = grid(ui);
 
     let mut chosen = None;
     let mut slots: Vec<Option<&HostSummary>> = hosts.iter().map(Some).collect();
@@ -174,7 +207,8 @@ fn cards(
                         own_card(ui, host, this_pc.shared, size, first).then_some(Chosen::ThisPc)
                     }
                     Some(host) => host_card(ui, host, waking.contains(&host.id), size, first),
-                    None => add_card(ui, size, first).then_some(Chosen::Add),
+                    None => add_card(ui, size, first, "Add a PC", "by its address")
+                        .then_some(Chosen::Add),
                 };
                 chosen = chosen.take().or(clicked);
             }
@@ -324,10 +358,95 @@ fn own_card(ui: &mut Ui, host: &HostSummary, shared: bool, size: Vec2, first: bo
     response.on_hover_cursor(CursorIcon::PointingHand).clicked() || started
 }
 
-fn add_card(ui: &mut Ui, size: Vec2, first: bool) -> bool {
+/// The devices that reach this PC, each with its card, ending with the
+/// card that pairs one more.
+fn registered(ui: &mut Ui, clients: &[Client]) -> Option<Chosen> {
+    ui.add_space(12.0);
+    ui.label(RichText::new("Registered clients").size(21.0).color(theme::text()));
+    let line = match clients.len() {
+        0 => "The devices paired with this PC show up here.".to_owned(),
+        1 => "1 device reaches this PC".to_owned(),
+        count => format!("{count} devices reach this PC"),
+    };
+    ui.add(egui::Label::new(widgets::dim(line)).wrap());
+    ui.add_space(8.0);
+
+    let (columns, size) = grid(ui);
+    let mut chosen = None;
+    let mut slots: Vec<Option<&Client>> = clients.iter().map(Some).collect();
+    slots.push(None);
+    for row in slots.chunks(columns) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for slot in row {
+                let opened = match slot {
+                    Some(client) => {
+                        client_card(ui, client, size).then(|| Opened::Client(client.key.clone()))
+                    }
+                    None => add_card(ui, size, false, "Pair a device", "by its PIN")
+                        .then_some(Opened::Pairing),
+                };
+                chosen = chosen.take().or(opened.map(Chosen::Client));
+            }
+        });
+        ui.add_space(GAP - ui.spacing().item_spacing.y);
+    }
+    chosen
+}
+
+/// The card of a device that reaches this PC. Returns whether it was
+/// clicked.
+fn client_card(ui: &mut Ui, client: &Client, size: Vec2) -> bool {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let name = if client.name.is_empty() { "A device" } else { &client.name };
+    let state_text = client.doing.as_deref().unwrap_or("Paired");
+    response.widget_info(|| {
+        let said = format!("{name}, {}, {state_text}", client.icon.name());
+        WidgetInfo::labeled(Role::Button, true, said)
+    });
+    let lit = response.hovered() || response.has_focus();
+
+    let painter = ui.painter();
+    let fill = if lit { theme::surface_hover() } else { theme::surface() };
+    let border = if lit { theme::sun().gamma_multiply(0.7) } else { theme::line() };
+    painter.rect(rect, theme::CARD_RADIUS, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+
+    let tile = Rect::from_min_size(rect.min + vec2(16.0, 16.0), Vec2::splat(42.0));
+    painter.rect_filled(tile, theme::CONTROL_RADIUS, theme::ground());
+    icons::client(client.icon)(painter, tile.shrink(10.0), theme::sun());
+
+    let text_width = size.x - 32.0;
+    widgets::line(painter, rect.min + vec2(16.0, 70.0), name, 19.0, theme::text(), text_width);
+
+    let dot_center = rect.min + vec2(21.0, 109.0);
+    if client.doing.is_some() {
+        painter.circle_filled(dot_center, 4.0, theme::ready());
+    } else {
+        painter.circle_stroke(dot_center, 3.5, Stroke::new(1.5, theme::dim()));
+    }
+    let state_pos = rect.min + vec2(33.0, 100.0);
+    let state_size = theme::SMALL + 0.5;
+    widgets::line(painter, state_pos, state_text, state_size, theme::text(), text_width - 17.0);
+
+    let detail_pos = rect.min + vec2(16.0, 122.0);
+    widgets::line(painter, detail_pos, &client.may, theme::SMALL - 0.5, theme::dim(), text_width);
+
+    response.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
+/// How many cards fit a row, and the size of each.
+fn grid(ui: &Ui) -> (usize, Vec2) {
+    let available = ui.available_width();
+    let columns = (((available + GAP) / (CARD_MIN_WIDTH + GAP)).floor() as usize).clamp(1, 4);
+    let width = (available - GAP * (columns as f32 - 1.0)) / columns as f32;
+    (columns, vec2(width, CARD_HEIGHT))
+}
+
+/// A card that adds something: `name` is what, `hint` how.
+fn add_card(ui: &mut Ui, size: Vec2, first: bool, name: &str, hint: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let started = first && widgets::first_choice(ui, &response);
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a PC"));
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, name));
     let lit = response.hovered() || response.has_focus();
     let painter = ui.painter();
     let border = if lit { theme::sun().gamma_multiply(0.7) } else { theme::line() };
@@ -338,15 +457,8 @@ fn add_card(ui: &mut Ui, size: Vec2, first: bool) -> bool {
     let icon = Rect::from_center_size(center - vec2(0.0, 22.0), Vec2::splat(22.0));
     icons::plus(painter, icon, if lit { theme::sun() } else { theme::dim() });
     let font = egui::FontId::proportional(theme::BODY);
-    painter.text(
-        center + vec2(0.0, 12.0),
-        egui::Align2::CENTER_CENTER,
-        "Add a PC",
-        font,
-        theme::text(),
-    );
+    painter.text(center + vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, name, font, theme::text());
     let font = egui::FontId::proportional(theme::SMALL - 0.5);
-    let hint = "by its address";
     painter.text(center + vec2(0.0, 33.0), egui::Align2::CENTER_CENTER, hint, font, theme::dim());
 
     response.on_hover_cursor(CursorIcon::PointingHand).clicked() || started

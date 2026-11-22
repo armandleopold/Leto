@@ -235,8 +235,10 @@ Progress:
   folder written the way Apollo's source writes it. Never run beside a real
   Apollo: whether Windows lets an ordinary program read Apollo's folder,
   and what its firewall does with the new port, are not known.
-- Done: "This PC" lists the devices Apollo is paired with and what each
-  may do, the way Apollo's own page does: list the apps, watch, start apps,
+- Done: while this PC is shared, the first screen has a card for each
+  device Apollo is paired with, under the PCs, with an icon its owner picks
+  (computer, laptop, phone, tablet, television, console). The card opens
+  the device's page, with what it may do, the way Apollo's own page does: list the apps, watch, start apps,
   the clipboard, commands, gamepad, touch, pen, mouse, keyboard. Read from
   Apollo's folder, it is there to look at. Once the owner signs in with the
   name and the password of Apollo's page, a press gives or takes a right,
