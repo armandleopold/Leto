@@ -15,7 +15,7 @@ use std::{
 };
 
 use leto_client::{
-    Client, Counter, Decoded, Ended, Error, HostKind, HostSummary, Permission, Session,
+    Client, Counter, Decoded, Encrypted, Ended, Error, HostKind, HostSummary, Permission, Session,
     StreamSettings, Tally, VideoFrame, VideoSetup, VideoSink,
     engine::{Codec, Codecs},
 };
@@ -140,6 +140,8 @@ fn a_stream_delivers_pictures_and_sound() {
     assert!(report.connected);
     assert_eq!((report.width, report.height, report.fps), (320, 180, 30));
     assert!(report.video_encrypted && report.audio_encrypted && report.control_encrypted);
+    // And the session says the same of itself.
+    assert_eq!(session.encrypted(), Encrypted::ALL);
     assert_eq!(host.running_app(), Some(1));
     assert_eq!(client.host(&paired.id).unwrap().running_app, Some(1));
 
@@ -228,6 +230,25 @@ fn a_host_that_never_encrypts_the_handshake_streams_too() {
     let session =
         client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
     wait_for_stream(&counter);
+    session.stop();
+}
+
+#[test]
+fn a_host_that_keeps_its_pictures_in_clear_streams_and_the_session_says_so() {
+    // Apollo and Sunshine on a local network, as they are installed: Leto
+    // asks for encrypted pictures and the host does not offer them.
+    let settings = Settings::new();
+    let host = FakeHost::start_with(Options { encrypt_video: false, ..Options::default() });
+    let client = settings.open();
+    let paired = pair(&client, &host);
+    let counter = Counter::default();
+
+    let session =
+        client.play(&paired.id, 1, SMALL, counter.video(), counter.audio(), |_| {}).unwrap();
+    wait_for_stream(&counter);
+    assert_eq!(session.encrypted(), Encrypted { picture: false, sound: true, input: true });
+    let report = host.stream_report().expect("the host started a stream");
+    assert!(!report.video_encrypted && report.audio_encrypted && report.control_encrypted);
     session.stop();
 }
 

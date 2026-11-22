@@ -78,6 +78,9 @@ pub struct ControlStream {
     batcher: InputBatcher,
     host: ControlHost,
     events: VecDeque<ControlStreamEvent>,
+    /// Leto: whether the host and this client agreed to encrypt the control
+    /// stream, which carries the input.
+    encrypted: bool,
 }
 
 impl ControlStream {
@@ -108,7 +111,8 @@ impl ControlStream {
         )
         .unwrap();
 
-        let packets = ControlPacketConfig::new(config.server_version, config.encryption.is_some())
+        let encrypted = config.encryption.is_some();
+        let packets = ControlPacketConfig::new(config.server_version, encrypted)
             .ok_or(Error::ServerVersionNotSupported(config.server_version))?;
 
         // All values that could lead to an error are controlled by us and won't cause errors
@@ -142,7 +146,13 @@ impl ControlStream {
             batcher: InputBatcher::default(),
             host,
             events: Default::default(),
+            encrypted,
         })
+    }
+
+    /// Leto: whether the control stream travels encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     pub fn estimated_rtt(&self) -> Result<EstimatedRttInfo, Error> {

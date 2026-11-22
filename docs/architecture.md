@@ -134,7 +134,12 @@ crates that know nothing of each other:
 1. `leto-client` asks the PC to start the app, or to go back to it when it is
    already running, and connects the stream (`Client::play`). The video,
    the sound and the control messages are encrypted with a key made for
-   that stream. What arrives is handed over still encoded, to a `VideoSink`
+   that stream, as far as the PC offers: Leto asks for all three, and a
+   Sunshine or an Apollo on a local network keeps its pictures in clear
+   unless its LAN encryption mode says otherwise. `Session::encrypted`
+   says what was agreed on, the log notes it at every connection, the bar
+   over the picture shows a padlock, closed or open, and the statistics
+   and `leto-cli play` say the same. What arrives is handed over still encoded, to a `VideoSink`
    and an `AudioSink`, on threads that belong to the stream.
 2. The app's backend gives it two sinks built on `leto-media`. The video sink
    decodes each picture and keeps only the latest one for the window. A

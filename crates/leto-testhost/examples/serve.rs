@@ -24,6 +24,9 @@
 //! picture it saw, `camera off` to refuse cameras as the owner of a host
 //! could, and `camera on` to take them again. With `--no-camera` it takes
 //! none, like every Sunshine and Apollo.
+//!
+//! With `--clear-pictures` it does not offer to encrypt its pictures, like a
+//! Sunshine or an Apollo on a local network as they are installed.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -52,7 +55,7 @@ const CAMERA_FILE: &str = "leto-camera.png";
 
 const USAGE: &str = "\
 Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
-             [--no-microphone] [--no-camera] [--camera WxH]
+             [--no-microphone] [--no-camera] [--camera WxH] [--clear-pictures]
 
   --name NAME   The name the host gives itself (default: Salon)
   --id ID       The unique id it reports (default: a fixed one)
@@ -72,6 +75,9 @@ Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
   --camera WxH  Take pictures of a camera no larger than this, for example
                 640x360 (default: 1920x1080). A client halves a larger
                 camera until it fits
+  --clear-pictures
+                Do not offer to encrypt the pictures, like a Sunshine or an
+                Apollo on a local network as they are installed
 ";
 
 /// A width and a height, written like `640x360`.
@@ -120,6 +126,10 @@ fn main() -> ExitCode {
             }
             "--no-microphone" => {
                 options.microphone = false;
+                Ok(())
+            }
+            "--clear-pictures" => {
+                options.encrypt_video = false;
                 Ok(())
             }
             "--no-camera" => {

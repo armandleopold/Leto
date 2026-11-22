@@ -44,6 +44,12 @@ Each is marked with a comment that starts with `Leto:`.
   the threads stop, as moonlight-common-c does (`enet_peer_disconnect_now`).
   The commit said nothing, so the host went on streaming to nobody until it
   gave up on the silence, seconds to a minute later.
+- `src/stream/proto/video/stream.rs`, `src/stream/proto/audio/stream.rs`,
+  `src/stream/proto/control/stream.rs` (`is_encrypted`) and
+  `src/stream/std/mod.rs` (`encrypted`): each stream says whether the host
+  and the client agreed to encrypt it. The commit kept that to itself, and
+  a host that does not offer to encrypt its video gets it asked in clear
+  without a word.
 - `src/stream/proto/video/stream.rs` (`VideoArrivals`, `arrivals`) and
   `src/stream/std/mod.rs` (`video_arrivals`): the video stream counts the
   packets that came from the host, the whole pictures it handed on, and the

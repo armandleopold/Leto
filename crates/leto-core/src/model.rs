@@ -91,6 +91,35 @@ pub struct HostSummary {
     pub lan: bool,
 }
 
+/// What travels encrypted in a stream: what the PC and this device agreed
+/// on when it connected. A PC decides whether it offers to encrypt its
+/// pictures, and Apollo and Sunshine do not on a local network unless told
+/// to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Encrypted {
+    /// The pictures of the PC.
+    pub picture: bool,
+    /// The sound of the PC.
+    pub sound: bool,
+    /// What this device sends the PC: keys, mouse, gamepads.
+    pub input: bool,
+}
+
+impl Encrypted {
+    pub const ALL: Self = Self { picture: true, sound: true, input: true };
+
+    /// The same in words, for a log or a report.
+    pub fn summary(self) -> String {
+        let word = |encrypted| if encrypted { "encrypted" } else { "NOT encrypted" };
+        format!(
+            "picture {}, sound {}, input {}",
+            word(self.picture),
+            word(self.sound),
+            word(self.input)
+        )
+    }
+}
+
 /// How Leto reaches a host, to show beside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Way<'a> {

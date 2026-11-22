@@ -16,8 +16,8 @@ use std::{
 };
 
 use leto_client::{
-    AppSummary, CameraLink, CameraSettings, Client, Counter, Decoded, Ended, HostId, Session,
-    StreamSettings, VideoFrame, VideoSetup, VideoSink,
+    AppSummary, CameraLink, CameraSettings, Client, Counter, Decoded, Encrypted, Ended, HostId,
+    Session, StreamSettings, VideoFrame, VideoSetup, VideoSink,
     engine::{CameraOffer, Codec},
 };
 use leto_media::{
@@ -89,6 +89,8 @@ struct Report {
     video_kbps: u64,
     sound_packets: u64,
     sound_kbps: u64,
+    /// What travelled encrypted between the PC and this device.
+    encrypted: Encrypted,
     /// The PC takes the microphone of this device.
     takes_microphone: bool,
     /// Moments of this device's microphone that left for the PC, of twenty
@@ -145,6 +147,7 @@ pub fn play(
         .map_err(|error| error.to_string())?;
     let session = Arc::new(session);
     let connected = Instant::now();
+    let encrypted = session.encrypted();
     eprintln!("Streaming {} from {} for {seconds} seconds…", app.title, host.name);
     // A PC that takes no microphone inside the stream may take one beside
     // it, on Leto's API: only a microphone to send waits to know.
@@ -215,6 +218,7 @@ pub fn play(
         video_kbps: kbps(tally.video_bytes),
         sound_packets: tally.audio_packets,
         sound_kbps: kbps(tally.audio_bytes),
+        encrypted,
         takes_microphone,
         microphone_frames: voice.as_ref().and_then(|voice| voice.as_ref().ok().copied()),
         microphone_loudest: voice.as_ref().and_then(|voice| voice.as_ref().ok().map(|_| loudest)),
@@ -273,6 +277,7 @@ pub fn play(
             ),
         },
         format!("Sound  {} packets, {} kbit/s", report.sound_packets, report.sound_kbps),
+        format!("Secret {}", report.encrypted.summary()),
         match (&report.microphone_problem, report.microphone_frames, report.takes_microphone) {
             (Some(problem), _, _) => format!("Voice  not sent: {problem}"),
             (None, Some(frames), _) => format!(

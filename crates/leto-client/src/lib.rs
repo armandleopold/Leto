@@ -44,8 +44,8 @@ pub use camera::{CameraLink, CameraRefusal, CameraSettings, ReturnOffer, VoiceLi
 pub use leto_core::{
     engine, input,
     model::{
-        AppSummary, HostId, HostKind, HostSummary, Pin, Reachability, TunnelSummary, join_address,
-        parse_address,
+        AppSummary, Encrypted, HostId, HostKind, HostSummary, Pin, Reachability, TunnelSummary,
+        join_address, parse_address,
     },
 };
 use moonlight_common::{
