@@ -370,6 +370,7 @@ pub fn show(
     let back = std::mem::take(&mut player.went_back);
     let mut asked = Asked { leave: closing, back, ..Asked::default() };
     player.controls.choose(settings.swap_mouse_buttons, settings.reverse_scroll);
+    player.controls.pace(settings.game_mouse_speed);
     // Once connected, every key is the PC's, the system's shortcuts too
     // where the system lets go of them and the person did not choose
     // otherwise, while the window is in front and until the person takes

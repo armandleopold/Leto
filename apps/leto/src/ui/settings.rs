@@ -7,7 +7,7 @@ use leto_core::engine::{BITRATES_KBPS, Codec, Decodable, ScreenMode};
 
 use super::{tunnel, widgets};
 use crate::{
-    input::{HAS_POINTER, Shortcut},
+    input::{HAS_POINTER, MOUSE_SPEEDS, Shortcut},
     settings::{CODECS, Capture, Decoder, FRAME_RATES, RESOLUTIONS, SCALES, Settings, codec_name},
     state::TunnelForm,
     theme,
@@ -288,6 +288,24 @@ fn hands_and_more(ui: &mut Ui, settings: &mut Settings, decodable: Decodable) {
                 widgets::switch(ui, &mut settings.reverse_scroll, "Reverse scrolling");
             },
         );
+        let about = format!(
+            "How far the PC's pointer goes for what the mouse moves, with the game mouse ({}).",
+            Shortcut::GameMouse.keys()
+        );
+        row(ui, "Game mouse speed", &about, SLIDER_WIDTH, |ui| {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().slider_width = SLIDER_WIDTH - 130.0;
+                ui.visuals_mut().widgets.inactive.bg_fill = theme::ground();
+                let slider = egui::Slider::new(
+                    &mut settings.game_mouse_speed,
+                    MOUSE_SPEEDS.0..=MOUSE_SPEEDS.1,
+                )
+                .logarithmic(true)
+                .trailing_fill(true)
+                .suffix(" %");
+                ui.add(slider);
+            });
+        });
     });
 
     card(ui, "Gamepads", |ui| {
