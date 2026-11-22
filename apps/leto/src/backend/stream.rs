@@ -295,9 +295,49 @@ pub struct Screen {
     /// How large the pictures are that the graphics card shows itself, as
     /// the interface was told.
     straight: Option<[usize; 2]>,
+    /// What the log was last told of the pictures, and when.
+    told: Option<(Instant, Counts)>,
 }
 
+/// How often the log tells how the pictures are doing.
+const TELL_EVERY: Duration = Duration::from_secs(5);
+
 impl Screen {
+    /// Tells the log, every few seconds, what happened to the pictures
+    /// meanwhile: where a slow device loses them shows there.
+    fn tell(&mut self) {
+        let now = Instant::now();
+        let counts = self.outlet.counts();
+        let Some((then, before)) = self.told else {
+            self.told = Some((now, counts));
+            return;
+        };
+        let took = now.saturating_duration_since(then);
+        if took < TELL_EVERY {
+            return;
+        }
+        self.told = Some((now, counts));
+        let per_second =
+            |count: u64, was: u64| count.saturating_sub(was) as f64 / took.as_secs_f64();
+        let average =
+            |time: Option<Duration>, was: Option<Duration>, count: u64, was_count: u64| {
+                let spent = time.unwrap_or_default().saturating_sub(was.unwrap_or_default());
+                let count = count.saturating_sub(was_count).max(1);
+                spent.as_secs_f64() * 1000.0 / count as f64
+            };
+        log::info!(
+            "pictures per second: {:.0} arrived, {:.0} decoded, {:.0} skipped, {:.1} lost; \
+             {:.1} ms to decode, {:.1} ms to copy, {:.0} kbit/s",
+            per_second(counts.received, before.received),
+            per_second(counts.decoded, before.decoded),
+            per_second(counts.skipped, before.skipped),
+            per_second(counts.lost.unwrap_or(0), before.lost.unwrap_or(0)),
+            average(counts.decoding, before.decoding, counts.decoded, before.decoded),
+            average(Some(counts.copying), Some(before.copying), counts.copied, before.copied),
+            per_second(counts.bytes, before.bytes) * 8.0 / 1000.0,
+        );
+    }
+
     pub fn new(outlet: &Arc<Outlet>, ctx: &egui::Context, hardware: bool) -> Self {
         Self {
             decoder: None,
@@ -310,6 +350,7 @@ impl Screen {
             stale: false,
             kept: None,
             straight: None,
+            told: None,
         }
     }
 
@@ -355,6 +396,7 @@ impl VideoSink for Screen {
         self.outlet.count(|counts| {
             counts.received(frame.data.len(), Some(u64::from(gap)), frame.host_latency);
         });
+        self.tell();
         let pace = self.outlet.pace();
         if pace == Pace::Hidden {
             self.stale = true;

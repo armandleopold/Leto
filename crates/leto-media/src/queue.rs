@@ -13,6 +13,12 @@ const CUSHION: f32 = 0.015;
 /// How much may wait beyond the starting level before the oldest sound is
 /// dropped to catch up.
 const SLACK: f32 = 0.08;
+/// How much the cushion grows each time the speakers run dry: a device or
+/// a network that cannot keep up with the shortest delay gets a longer one
+/// rather than a hole in the sound again and again.
+const GROWTH: f32 = 0.01;
+/// The longest the cushion grows to.
+const LONGEST_CUSHION: f32 = 0.1;
 
 /// Stereo sound on its way to speakers with `channels` channels.
 pub(crate) struct Queue {
@@ -21,6 +27,8 @@ pub(crate) struct Queue {
     channels: usize,
     /// Frames (one sample per channel) the queue holds before it plays.
     cushion: usize,
+    growth: usize,
+    longest_cushion: usize,
     slack: usize,
     /// The most frames the speakers ever took at once.
     largest_take: usize,
@@ -39,6 +47,8 @@ impl Queue {
             samples: VecDeque::new(),
             channels: channels.max(1),
             cushion: frames(CUSHION),
+            growth: frames(GROWTH),
+            longest_cushion: frames(LONGEST_CUSHION),
             slack: frames(SLACK),
             largest_take: 0,
             playing: false,
@@ -101,7 +111,14 @@ impl Queue {
             out[given..].fill(0.0);
             self.playing = false;
             self.dry_runs += 1;
+            self.cushion = (self.cushion + self.growth).min(self.longest_cushion);
         }
+    }
+
+    /// How long the queue waits for before playing, in frames, beyond what
+    /// the speakers take at once.
+    pub fn cushion(&self) -> usize {
+        self.cushion
     }
 }
 
@@ -153,10 +170,33 @@ mod tests {
         queue.push(&stereo(TAKE, 0.25));
         queue.take(&mut out);
         assert!(out.iter().all(|sample| *sample == 0.0));
-        queue.push(&stereo(720, 0.25));
+        // Having run dry, it waits ten milliseconds more than at first.
+        queue.push(&stereo(720 + 480, 0.25));
         queue.take(&mut out);
         assert!(out.iter().all(|sample| *sample == 0.25));
         assert_eq!(queue.dry_runs, 1);
+    }
+
+    #[test]
+    fn running_dry_again_and_again_waits_longer_each_time_up_to_a_tenth() {
+        let mut queue = Queue::new(RATE, 2);
+        let mut out = vec![0.0; TAKE * 2];
+        queue.take(&mut out);
+        let start = queue.cushion();
+        // Plays as much as asked for before starting, then runs dry.
+        let mut run_dry = |queue: &mut Queue| {
+            let dry_runs = queue.dry_runs;
+            queue.push(&stereo(TAKE + queue.cushion(), 1.0));
+            while queue.dry_runs == dry_runs {
+                queue.take(&mut out);
+            }
+        };
+        run_dry(&mut queue);
+        assert_eq!(queue.cushion(), start + 480);
+        for _ in 0..20 {
+            run_dry(&mut queue);
+        }
+        assert_eq!(queue.cushion(), 4_800);
     }
 
     #[test]
