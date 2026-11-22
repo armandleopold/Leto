@@ -286,8 +286,8 @@ What this first version does, and what it leaves for later:
   otherwise queue two or three, each a refresh later.
 - A picture decoded on the graphics card still goes from the card to memory
   and back that way, and reading it waits until the card has finished it,
-  which is most of what "decoding" takes. Behind a setting, off by default
-  and being tried, it stays on the card instead (`leto-media/src/kept.rs`).
+  which is most of what "decoding" takes. Behind a setting, on by default
+  since 0.0.3, it stays on the card instead (`leto-media/src/kept.rs`).
   The decoder's pictures are Direct3D's and the window draws with OpenGL.
   The decoder has the card copy each picture into a texture of Leto's, as
   Moonlight does, and waits for nothing. When the window is about to draw,
@@ -302,8 +302,12 @@ What this first version does, and what it leaves for later:
   falls back by itself, with one line in the log: a decoder that cannot
   leave a picture there reads it as before, and a window that cannot draw
   one (a laptop that decodes on one card and draws on the other) says so,
-  after which pictures come through memory until Leto starts again. Nothing
-  of this has run on a real graphics card yet: no test here has one.
+  after which pictures come through memory until Leto starts again. The log
+  says at the first picture of every stream which way its pictures go. It
+  has run on one real card, a Radeon 740M: 0.5 ms for a picture to leave
+  the decoder, against 6 to 17 ms through memory. The setting is saved as
+  `pictures_stay_on_card`: the name before it was on by default was saved
+  off by every Leto, and is no longer read.
 - Behind another setting, off by default and being tried, the window does
   not draw the pictures at all: the card that decoded one draws it itself
   and shows it at once, with Direct3D 11 and no OpenGL, the way Moonlight

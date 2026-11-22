@@ -92,8 +92,12 @@ pub struct Settings {
     /// The statistics show from the start of every stream.
     pub statistics: bool,
     /// Pictures decoded on the graphics card stay there until the window
-    /// draws them, instead of coming through memory. Windows only, and
-    /// being tried: off unless the person turns it on.
+    /// draws them, instead of coming through memory. Windows only. On by
+    /// default since it was seen to work (0.5 ms against 6 to 17 ms for a
+    /// picture to leave the decoder), and it turns itself off where the
+    /// card cannot. Saved under a new name: the old one was saved `false`
+    /// by every Leto that never had it turned on, which would keep it off.
+    #[serde(rename = "pictures_stay_on_card")]
     pub keep_on_card: bool,
     /// The graphics card that decodes the pictures shows them itself,
     /// straight on the screen, as Moonlight does: the window draws none.
@@ -192,7 +196,7 @@ impl Default for Settings {
             decoder: Decoder::Automatic,
             codec: None,
             statistics: false,
-            keep_on_card: false,
+            keep_on_card: cfg!(windows),
             straight_to_screen: false,
             devices: DeviceChoices::default(),
         }
@@ -529,8 +533,14 @@ mod tests {
             older,
             Settings { frame_rate: Some(60), statistics: true, ..Settings::default() }
         );
+        // Pictures stay on the card unless the person turned that off since
+        // it is on by default, even where an older Leto saved it off.
+        assert_eq!(older.keep_on_card, cfg!(windows));
+        let off_before = Settings::from_saved(r#"{"keep_on_card":false}"#);
+        assert_eq!(off_before.keep_on_card, cfg!(windows));
+        let off_now = Settings::from_saved(r#"{"pictures_stay_on_card":false}"#);
+        assert!(!off_now.keep_on_card);
         // What is being tried is off until the person turns it on.
-        assert!(!older.keep_on_card);
         assert!(!older.straight_to_screen);
         // Not settings at all.
         assert_eq!(Settings::from_saved("{ not json"), Settings::default());
