@@ -485,6 +485,10 @@ impl Image {
 
     /// Where the picture is in its buffer, which may be larger, as parts of
     /// the buffer's width and height: left, top, width, height.
+    ///
+    /// A decoder's buffer is often taller than the picture: 1088 lines for
+    /// 1080, the last 8 green. The picture's own width and height say the
+    /// picture's, not the buffer's, so the buffer is asked.
     pub fn place(&self) -> [f32; 4] {
         let (mut width, mut height) = (0, 0);
         let mut crop = sys::AImageCropRect { left: 0, top: 0, right: 0, bottom: 0 };
@@ -492,20 +496,55 @@ impl Image {
         let said = unsafe {
             sys::AImage_getWidth(self.image, &mut width) == sys::media_status_t::AMEDIA_OK
                 && sys::AImage_getHeight(self.image, &mut height) == sys::media_status_t::AMEDIA_OK
-                && sys::AImage_getCropRect(self.image, &mut crop) == sys::media_status_t::AMEDIA_OK
         };
-        if !said || width <= 0 || height <= 0 || crop.right <= crop.left || crop.bottom <= crop.top
-        {
+        if !said {
             return [0.0, 0.0, 1.0, 1.0];
         }
-        let (width, height) = (width as f32, height as f32);
-        [
-            crop.left as f32 / width,
-            crop.top as f32 / height,
-            (crop.right - crop.left) as f32 / width,
-            (crop.bottom - crop.top) as f32 / height,
-        ]
+        // SAFETY: as above.
+        let cropped = unsafe {
+            sys::AImage_getCropRect(self.image, &mut crop) == sys::media_status_t::AMEDIA_OK
+        };
+        let crop = if cropped { [crop.left, crop.top, crop.right, crop.bottom] } else { [0; 4] };
+        let mut whole = (width, height);
+        let buffer = self.buffer();
+        if !buffer.is_null() {
+            // SAFETY: the picture's live buffer; the description is written.
+            let described = unsafe {
+                let mut description = std::mem::zeroed::<sys::AHardwareBuffer_Desc>();
+                sys::AHardwareBuffer_describe(buffer.cast(), &mut description);
+                description
+            };
+            if let (Ok(across), Ok(down)) =
+                (i32::try_from(described.width), i32::try_from(described.height))
+                && across > 0
+                && down > 0
+            {
+                whole = (across, down);
+            }
+        }
+        place_in(crop, (width, height), whole)
     }
+}
+
+/// Where a picture of `picture` pixels, cut at `crop` (left, top, right,
+/// bottom; none when empty), is in a buffer of `whole` pixels, as parts of
+/// the buffer: left, top, width, height.
+fn place_in(crop: [i32; 4], picture: (i32, i32), whole: (i32, i32)) -> [f32; 4] {
+    let [mut left, mut top, mut right, mut bottom] = crop;
+    if right <= left || bottom <= top || left < 0 || top < 0 {
+        [left, top, right, bottom] = [0, 0, picture.0, picture.1];
+    }
+    let (across, down) = (whole.0.max(right), whole.1.max(bottom));
+    if across <= 0 || down <= 0 || right <= left || bottom <= top {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    let (across, down) = (across as f32, down as f32);
+    [
+        left as f32 / across,
+        top as f32 / down,
+        (right - left) as f32 / across,
+        (bottom - top) as f32 / down,
+    ]
 }
 
 impl Drop for Image {
@@ -588,4 +627,23 @@ fn status(status: sys::media_status_t, what: &str) -> Result<(), String> {
 
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::place_in;
+
+    #[test]
+    fn a_picture_in_a_taller_buffer_is_drawn_without_the_lines_under_it() {
+        let place = place_in([0, 0, 1920, 1080], (1920, 1080), (1920, 1088));
+        // Each line of the picture is read from one line of the buffer.
+        assert_eq!(place, [0.0, 0.0, 1.0, 1080.0 / 1088.0]);
+        // No cut told: the picture's own size is the cut.
+        assert_eq!(
+            place_in([0; 4], (1920, 1080), (1920, 1088)),
+            place_in([0, 0, 1920, 1080], (1920, 1080), (1920, 1088))
+        );
+        // A buffer said smaller than the cut is not believed.
+        assert_eq!(place_in([0, 0, 1920, 1080], (1920, 1080), (0, 0)), [0.0, 0.0, 1.0, 1.0]);
+    }
 }

@@ -75,7 +75,17 @@ uniform vec4 crop;
 in vec2 place;
 out vec4 colour;
 void main() {
-    colour = vec4(texture(picture, crop.xy + place * crop.zw).rgb, 1.0);
+    // The buffer may be larger than the picture, with green around it:
+    // nothing is read from further than the middle of the picture's last
+    // pixels, where a pixel drawn between two would take some of it.
+    ivec2 size = textureSize(picture, 0);
+    vec2 half_a_pixel = size.x > 0 && size.y > 0 ? 0.5 / vec2(size) : vec2(0.0);
+    vec2 at = clamp(
+        crop.xy + place * crop.zw,
+        crop.xy + half_a_pixel,
+        crop.xy + crop.zw - half_a_pixel
+    );
+    colour = vec4(texture(picture, at).rgb, 1.0);
 }
 ";
 
