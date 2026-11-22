@@ -739,7 +739,7 @@ pub(crate) mod android {
 
     use glow::HasContext as _;
     use leto_system::{
-        decoder::{Image, Reader},
+        decoder::{Image, Place, Reader},
         egl,
     };
 
@@ -778,7 +778,7 @@ pub(crate) mod android {
         texture: Texture,
         /// The picture drawn, its texture, and where it is in its buffer.
         /// The texture goes before the picture it is made of.
-        current: Option<(egl::Texture, Image, [f32; 4])>,
+        current: Option<(egl::Texture, Image, Place)>,
         /// Last, so the reader outlives its pictures.
         shared: Arc<Shared>,
     }
@@ -842,7 +842,7 @@ pub(crate) mod android {
 
         /// The texture to draw from and where the picture is in it, once a
         /// picture came.
-        pub fn drawn(&self) -> Option<(Texture, [f32; 4])> {
+        pub fn drawn(&self) -> Option<(Texture, Place)> {
             self.current.as_ref().map(|(_, _, place)| (self.texture, *place))
         }
 
