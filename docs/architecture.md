@@ -77,9 +77,12 @@ draws the native window, the Android app (`cargo xtask android` builds it
 into `dist/android/leto.apk`) and, compiled to WebAssembly, the web client
 (`cargo xtask web` builds it into `dist/web`).
 
-On Android the app runs in a NativeActivity with no Java of its own:
-`apps/leto-android` hands the activity to `leto::run_android`, which keeps
-the settings in the app's own folder. A finger is the mouse; two fingers
+On Android the app runs in a NativeActivity: `apps/leto-android` hands the
+activity to `leto::run_android`, which keeps the settings in the app's own
+folder. Its only Java is one small class
+(`apps/leto-android/android/java/re/leto/app/Screen.java`) for what Android
+takes on the thread that draws its windows alone: hiding its bars during a
+stream, and giving its own keyboard shortcuts to the window. A finger is the mouse; two fingers
 tapped are the right button and moved together are the wheel
 (`touch.rs`); the stream's bar has a button for the phone's keyboard.
 Pictures are decoded by OpenH264 in software for now, and the sound plays
@@ -134,7 +137,12 @@ crates that know nothing of each other:
 1. `leto-client` asks the PC to start the app, or to go back to it when it is
    already running, and connects the stream (`Client::play`). The video,
    the sound and the control messages are encrypted with a key made for
-   that stream. What arrives is handed over still encoded, to a `VideoSink`
+   that stream, as far as the PC offers: Leto asks for all three, and a
+   Sunshine or an Apollo on a local network keeps its pictures in clear
+   unless its LAN encryption mode says otherwise. `Session::encrypted`
+   says what was agreed on, the log notes it at every connection, the bar
+   over the picture shows a padlock, closed or open, and the statistics
+   and `leto-cli play` say the same. What arrives is handed over still encoded, to a `VideoSink`
    and an `AudioSink`, on threads that belong to the stream.
 2. The app's backend gives it two sinks built on `leto-media`. The video sink
    decodes each picture and keeps only the latest one for the window. A

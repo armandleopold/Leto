@@ -23,6 +23,10 @@ const LONGEST_CUSHION: f32 = 0.1;
 /// shrink by one step again: what made it grow may have passed, and every
 /// step is delay.
 const CALM: f32 = 10.0;
+/// How long the sound takes to fade when it stops for want of more, and
+/// to come up when it starts: a sound cut at full level, or started there,
+/// is heard as a click.
+const FADE: f32 = 0.004;
 
 /// Stereo sound on its way to speakers with `channels` channels.
 pub(crate) struct Queue {
@@ -41,6 +45,10 @@ pub(crate) struct Queue {
     slack: usize,
     /// The most frames the speakers ever took at once.
     largest_take: usize,
+    /// Frames a fade lasts.
+    fade: usize,
+    /// Frames of the fade in still to play, when playing has just started.
+    rising: usize,
     /// Playing. False while filling up, at the start and after running dry.
     playing: bool,
     /// Times the speakers wanted sound and there was none.
@@ -63,6 +71,8 @@ impl Queue {
             played_calmly: 0,
             slack: frames(SLACK),
             largest_take: 0,
+            fade: frames(FADE).max(1),
+            rising: 0,
             playing: false,
             dry_runs: 0,
             dropped: 0,
@@ -107,6 +117,7 @@ impl Queue {
 
         if !self.playing && waiting >= self.start_level() {
             self.playing = true;
+            self.rising = self.fade;
         }
         if !self.playing {
             out.fill(0.0);
@@ -116,6 +127,16 @@ impl Queue {
         let given = out.len().min(self.samples.len());
         for (slot, sample) in out.iter_mut().zip(self.samples.drain(..given)) {
             *slot = sample;
+        }
+        // Coming up from silence.
+        let channels = self.channels;
+        for frame in out[..given].chunks_mut(channels) {
+            if self.rising == 0 {
+                break;
+            }
+            let level = 1.0 - self.rising as f32 / self.fade as f32;
+            frame.iter_mut().for_each(|sample| *sample *= level);
+            self.rising -= 1;
         }
         if given < out.len() {
             // Ran dry: fill up again before playing on, or every chunk
@@ -131,6 +152,18 @@ impl Queue {
                 self.played_calmly = 0;
                 self.cushion = self.cushion.saturating_sub(self.growth).max(self.shortest_cushion);
             }
+        }
+        if self.samples.is_empty() && given > 0 {
+            // The last of the sound for now, as when the PC plays nothing
+            // more: it goes down to silence rather than stop where it was.
+            let frames = (given / channels).min(self.fade);
+            let start = given - frames * channels;
+            for (place, frame) in out[start..given].chunks_mut(channels).enumerate() {
+                let level = 1.0 - (place + 1) as f32 / frames as f32;
+                frame.iter_mut().for_each(|sample| *sample *= level);
+            }
+            // What comes next comes up from that silence.
+            self.rising = self.fade;
         }
     }
 
@@ -149,13 +182,19 @@ mod tests {
     /// What the speakers take at once in these tests: ten milliseconds.
     const TAKE: usize = 480;
 
+    /// A queue that neither fades in nor out, for the tests that count
+    /// samples.
+    fn abrupt(channels: usize) -> Queue {
+        Queue { fade: 0, ..Queue::new(RATE, channels) }
+    }
+
     fn stereo(frames: usize, value: f32) -> Vec<f32> {
         vec![value; frames * 2]
     }
 
     #[test]
     fn nothing_plays_until_enough_is_waiting() {
-        let mut queue = Queue::new(RATE, 2);
+        let mut queue = abrupt(2);
         let mut out = vec![9.0; TAKE * 2];
 
         queue.push(&stereo(TAKE, 0.5));
@@ -171,7 +210,7 @@ mod tests {
 
     #[test]
     fn running_dry_plays_what_is_left_then_fills_up_again() {
-        let mut queue = Queue::new(RATE, 2);
+        let mut queue = abrupt(2);
         let mut out = vec![0.0; TAKE * 2];
         queue.take(&mut out);
         queue.push(&stereo(TAKE * 2 + 340, 0.5));
@@ -198,7 +237,7 @@ mod tests {
 
     #[test]
     fn running_dry_again_and_again_waits_longer_each_time_up_to_a_tenth() {
-        let mut queue = Queue::new(RATE, 2);
+        let mut queue = abrupt(2);
         let mut out = vec![0.0; TAKE * 2];
         queue.take(&mut out);
         let start = queue.cushion();
@@ -250,7 +289,7 @@ mod tests {
 
     #[test]
     fn a_pile_up_is_skipped_to_catch_up() {
-        let mut queue = Queue::new(RATE, 2);
+        let mut queue = abrupt(2);
         let mut out = vec![0.0; TAKE * 2];
         queue.take(&mut out);
 
@@ -267,18 +306,40 @@ mod tests {
 
     #[test]
     fn one_speaker_gets_both_sides_and_many_get_the_front_pair() {
-        let mut mono = Queue::new(RATE, 1);
+        let mut mono = abrupt(1);
         let mut out = vec![0.0; 4];
         mono.take(&mut out);
         mono.push(&[0.2, 0.6].repeat(1000));
         mono.take(&mut out);
         assert!(out.iter().all(|sample| (*sample - 0.4).abs() < 1e-6), "{out:?}");
 
-        let mut surround = Queue::new(RATE, 6);
+        let mut surround = abrupt(6);
         let mut out = vec![9.0; 12];
         surround.take(&mut out);
         surround.push(&[0.2, 0.6].repeat(1000));
         surround.take(&mut out);
         assert_eq!(out, [0.2, 0.6, 0.0, 0.0, 0.0, 0.0, 0.2, 0.6, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn sound_comes_up_from_silence_and_goes_down_to_it_when_it_ends() {
+        let mut queue = Queue::new(RATE, 2);
+        let mut out = vec![0.0; TAKE * 2];
+        queue.take(&mut out);
+        // Enough to start, and exactly three chunks: then nothing more, as
+        // when the PC stops playing.
+        queue.push(&stereo(TAKE * 3, 0.5));
+        queue.take(&mut out);
+        assert_eq!(out[0], 0.0, "starts from silence");
+        assert!(out[..384].windows(2).all(|pair| pair[0] <= pair[1]), "and comes up");
+        assert!(out[384..].iter().all(|sample| *sample == 0.5));
+
+        queue.take(&mut out);
+        assert!(out.iter().all(|sample| *sample == 0.5));
+        queue.take(&mut out);
+        assert!(out[..TAKE * 2 - 384].iter().all(|sample| *sample == 0.5));
+        assert!(out[TAKE * 2 - 384..].windows(2).all(|pair| pair[0] >= pair[1]), "goes down");
+        assert_eq!(out[TAKE * 2 - 1], 0.0, "to silence");
+        assert_eq!(queue.dry_runs, 0);
     }
 }

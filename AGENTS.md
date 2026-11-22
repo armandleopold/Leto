@@ -55,6 +55,10 @@ refuses new ones as an owner would, and `camera on` takes them again. With
 `--no-camera` it takes none, and with `--camera 640x360` none larger than
 that, which a client answers by halving its own.
 
+With `--clear-pictures` it does not offer to encrypt its pictures, like a
+Sunshine or an Apollo on a local network as they are installed: the padlock
+of the stream's bar is open, and the log says so.
+
 Leto is one program, host and client: the app shares the PC it runs on
 from its "This PC" screen (`apps/leto/src/host.rs`), and there is no
 separate host program. The first piece of the host is the companion: beside

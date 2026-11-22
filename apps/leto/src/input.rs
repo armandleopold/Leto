@@ -33,6 +33,33 @@ pub const fn hides_its_pointer(kind: HostKind) -> bool {
 /// nothing then asks the pointer back.
 pub const HAS_POINTER: bool = !cfg!(target_os = "android");
 
+/// How wide the band along each edge of the picture is, in points, where a
+/// pointer counts as nearer the edge than it is: the half of it by the edge
+/// is the edge itself. A finger cannot touch the last row of a phone's
+/// screen, and the system keeps the edges of the screen for its own
+/// gestures and bars, on a phone as on its desktop on a monitor: the PC's
+/// taskbar that hides itself, and the buttons in the corner of a window
+/// that fills its screen, were out of reach. Nothing where a mouse reaches
+/// the edges of its window.
+const EDGE_BAND: f32 = if cfg!(target_os = "android") { 24.0 } else { 0.0 };
+
+/// Where a pointer at `at` along a picture `length` long counts as being,
+/// with a `band` along each end: the outer half of a band is the end
+/// itself, and the inner half stretches over the whole band, so that
+/// nothing jumps. A picture too short for two bands is left as it is.
+fn near_edge(at: f32, length: f32, band: f32) -> f32 {
+    if band <= 0.0 || length < band * 4.0 {
+        return at;
+    }
+    if at < band {
+        (at * 2.0 - band).max(0.0)
+    } else if at > length - band {
+        length - ((length - at) * 2.0 - band).max(0.0)
+    } else {
+        at
+    }
+}
+
 /// The letter of [`hides_its_pointer`]'s shortcut.
 const POINTER_SWITCH: char = 'N';
 
@@ -40,6 +67,9 @@ const POINTER_SWITCH: char = 'N';
 /// the PC only switches, for every device at once, so what Leto believes of
 /// the PC's pointer can be wrong, and this puts it right.
 pub const PC_POINTER_KEYS: &str = "Ctrl+Alt+Shift+N";
+
+/// The slowest and the fastest the game mouse may be made, in percent.
+pub const MOUSE_SPEEDS: (u32, u32) = (10, 300);
 
 /// What Leto keeps for itself while a stream has the keyboard. Each is its
 /// letter pressed with Ctrl, Alt and Shift held, as in Moonlight.
@@ -234,6 +264,9 @@ pub struct Controls {
     /// and the wheel scroll the other way.
     swap_buttons: bool,
     reverse_scroll: bool,
+    /// How far the game mouse goes on the PC, in percent of what the mouse
+    /// moved. Nothing chosen yet is as far.
+    mouse_speed: Option<u32>,
 }
 
 impl Controls {
@@ -301,6 +334,12 @@ impl Controls {
         self.reverse_scroll = reverse_scroll;
     }
 
+    /// Makes the game mouse go `percent` as far on the PC as the mouse
+    /// moved, within what the settings offer.
+    pub fn pace(&mut self, percent: u32) {
+        self.mouse_speed = Some(percent.clamp(MOUSE_SPEEDS.0, MOUSE_SPEEDS.1));
+    }
+
     /// A mouse button went down or came up.
     pub fn button(&mut self, pressed: PointerButton, down: bool) {
         let button = match (button(pressed), self.swap_buttons) {
@@ -352,9 +391,11 @@ impl Controls {
         };
         let (last_x, last_y) = (width - 1, height - 1);
         let on = |points: f32, last: i16| (points * scale).round().clamp(0.0, f32::from(last));
+        let x = near_edge(pointer.x - place.left(), place.width(), EDGE_BAND);
+        let y = near_edge(pointer.y - place.top(), place.height(), EDGE_BAND);
         self.push(Input::MousePosition {
-            x: on(pointer.x - place.left(), last_x) as i16,
-            y: on(pointer.y - place.top(), last_y) as i16,
+            x: on(x, last_x) as i16,
+            y: on(y, last_y) as i16,
             width: last_x,
             height: last_y,
         });
@@ -363,7 +404,9 @@ impl Controls {
     /// The mouse itself moved by `delta`, wherever the pointer is. For the
     /// game mouse.
     pub fn moved(&mut self, delta: Vec2) {
-        self.motion += delta;
+        // What is left of a slower move is kept for the next, so a slow
+        // hand still moves the pointer.
+        self.motion += delta * (self.mouse_speed.unwrap_or(100) as f32 / 100.0);
         let [dx, dy] = whole(&mut self.motion);
         if dx != 0 || dy != 0 {
             self.push(Input::MouseMove { dx, dy });
@@ -509,6 +552,26 @@ fn whole(amount: &mut Vec2) -> [i16; 2] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pointer_near_an_edge_of_the_picture_counts_as_on_it() {
+        use super::near_edge;
+        // No band: where it is.
+        assert_eq!(near_edge(3.0, 800.0, 0.0), 3.0);
+        // The outer half of the band is the edge, at both ends.
+        assert_eq!(near_edge(0.0, 800.0, 24.0), 0.0);
+        assert_eq!(near_edge(12.0, 800.0, 24.0), 0.0);
+        assert_eq!(near_edge(790.0, 800.0, 24.0), 800.0);
+        // The inner half stretches, and meets the rest without a jump.
+        assert_eq!(near_edge(18.0, 800.0, 24.0), 12.0);
+        assert_eq!(near_edge(24.0, 800.0, 24.0), 24.0);
+        assert_eq!(near_edge(776.0, 800.0, 24.0), 776.0);
+        assert_eq!(near_edge(400.0, 800.0, 24.0), 400.0);
+        // Outside the picture is still its edge, once clamped.
+        assert!(near_edge(-5.0, 800.0, 24.0) <= 0.0);
+        // A picture too short is left alone.
+        assert_eq!(near_edge(5.0, 60.0, 24.0), 5.0);
+    }
+
     use egui::pos2;
 
     use super::*;
@@ -854,6 +917,26 @@ mod tests {
                 Input::MouseButton { button: MouseButton::Left, down: false },
             ]
         );
+    }
+
+    #[test]
+    fn a_slower_game_mouse_goes_less_far_and_loses_nothing_of_the_way() {
+        let mut controls = Controls::default();
+        controls.pace(50);
+        for _ in 0..4 {
+            controls.moved(vec2(1.0, 0.0));
+        }
+        controls.moved(vec2(0.0, 6.0));
+        let moves: Vec<_> = controls
+            .take()
+            .into_iter()
+            .filter_map(|input| match input {
+                Input::MouseMove { dx, dy } => Some((dx, dy)),
+                _ => None,
+            })
+            .collect();
+        // Moves waiting for the PC are told as one.
+        assert_eq!(moves, vec![(2, 3)]);
     }
 
     #[test]

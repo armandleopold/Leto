@@ -10,7 +10,11 @@ use egui::{
 };
 use std::time::Duration;
 
-use leto_core::{engine::Codec, input::Input};
+use leto_core::{
+    engine::Codec,
+    input::Input,
+    model::{Encrypted, Way},
+};
 
 use super::{card::OnCard, frame, icons, widgets};
 use crate::{
@@ -199,6 +203,8 @@ enum Told {
     Pointer,
     /// Back was asked once: once more leaves.
     Back,
+    /// What travels encrypted.
+    Encrypted,
 }
 
 impl Player {
@@ -308,6 +314,7 @@ impl Player {
             window::keep_pointer(ctx, false);
         }
         window::keep_keyboard(false);
+        leto_system::bars::hide(false);
         *self = Self::default();
     }
 
@@ -363,6 +370,7 @@ pub fn show(
     let back = std::mem::take(&mut player.went_back);
     let mut asked = Asked { leave: closing, back, ..Asked::default() };
     player.controls.choose(settings.swap_mouse_buttons, settings.reverse_scroll);
+    player.controls.pace(settings.game_mouse_speed);
     // Once connected, every key is the PC's, the system's shortcuts too
     // where the system lets go of them and the person did not choose
     // otherwise, while the window is in front and until the person takes
@@ -376,6 +384,8 @@ pub fn show(
     }
     window::keep_keyboard(keep);
     player.keyboard_kept = keep;
+    // A phone's bars, and its desktop's, leave the screen to the PC.
+    leto_system::bars::hide(view.connected);
     player.strokes.extend(window::keys().into_iter().map(KeyStroke::System));
 
     player.hole = None;
@@ -544,7 +554,7 @@ pub fn show(
         && let Some(statistics) = &mut player.statistics
     {
         statistics.update(status.counts, player.shown, now);
-        let panel = statistics_panel(ui.ctx(), statistics, status);
+        let panel = statistics_panel(ui.ctx(), statistics, status, view.encrypted);
         player.over.push(panel);
         // The numbers change even while the picture stands still.
         ui.ctx().request_repaint_after_secs(STATISTICS_EVERY as f32 / 2.0);
@@ -575,6 +585,10 @@ pub fn show(
         settings.local_pointer = !settings.local_pointer;
         player.bar_until = Some(now + BAR_RETURNS);
         player.talks_of = Some(Told::Pointer);
+    }
+    if asked.encrypted {
+        player.bar_until = Some(now + BAR_RETURNS);
+        player.talks_of = Some(Told::Encrypted);
     }
     if asked.back {
         // Asked once more while the bar still says so, back leaves.
@@ -675,6 +689,8 @@ struct Asked {
     back: bool,
     /// Show the keyboard on the screen, or hide it.
     keyboard: bool,
+    /// Say what travels encrypted.
+    encrypted: bool,
 }
 
 /// Passes what the mouse did on to the controls. Returns whether a button
@@ -813,6 +829,7 @@ fn overlay(
                     Told::Camera => Some(News::Camera(status.film)),
                     Told::Pointer => whose.map(News::Pointer),
                     Told::Back => Some(News::Back),
+                    Told::Encrypted => Some(News::Encrypted),
                 }),
             ),
             opacity,
@@ -884,8 +901,16 @@ const DECODER: &str = if cfg!(target_arch = "wasm32") { "The browser's" } else {
 
 /// The statistics over the picture, in a corner, as in Moonlight. Returns
 /// where they are.
-fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status<'_>) -> Rect {
-    let lines = statistics_lines(statistics, status.counts, status.round_trip);
+fn statistics_panel(
+    ctx: &egui::Context,
+    statistics: &Statistics,
+    status: Status<'_>,
+    encrypted: Option<Encrypted>,
+) -> Rect {
+    let mut lines = statistics_lines(statistics, status.counts, status.round_trip);
+    if let Some(encrypted) = encrypted {
+        lines.push(("Encrypted", encrypted_line(encrypted)));
+    }
     egui::Area::new(Id::unique("stream-statistics"))
         .order(Order::Foreground)
         .anchor(Align2::LEFT_TOP, vec2(10.0, 10.0))
@@ -916,6 +941,17 @@ fn statistics_panel(ctx: &egui::Context, statistics: &Statistics, status: Status
         })
         .response
         .rect
+}
+
+/// What travels encrypted, on one line of the statistics.
+fn encrypted_line(encrypted: Encrypted) -> String {
+    let word = |is| if is { "yes" } else { "no" };
+    format!(
+        "Picture {}, sound {}, input {}",
+        word(encrypted.picture),
+        word(encrypted.sound),
+        word(encrypted.input)
+    )
 }
 
 /// The lines of the statistics: a name, and what it is at.
@@ -1158,12 +1194,18 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
                             let others = if narrow { 210.0 } else { 330.0 }
                                 + if has_camera { 44.0 } else { 0.0 }
                                 + if content.local_pointer.is_some() { 44.0 } else { 0.0 }
+                                + if content.view.encrypted.is_some() { 44.0 } else { 0.0 }
                                 + if ON_SCREEN_KEYBOARD { 44.0 } else { 0.0 }
                                 + if windowed { 3.0 * 36.0 + 17.0 } else { 0.0 };
                             names(ui, content.view, (window.width() - others).clamp(80.0, 360.0));
                             if let Some([width, height]) = content.picture.filter(|_| !narrow) {
                                 let size = format!("{width} × {height}");
                                 ui.label(widgets::dim(size).size(theme::SMALL));
+                            }
+                            if let Some(encrypted) =
+                                content.view.encrypted.filter(|_| content.view.connected)
+                            {
+                                asked.encrypted |= padlock(ui, content.view, encrypted, usable);
                             }
                             if let Some(problem) = content.sound_problem {
                                 let text = RichText::new("No sound").color(theme::problem());
@@ -1225,6 +1267,73 @@ fn bar(ctx: &egui::Context, window: Rect, content: &Bar<'_>, asked: &mut Asked) 
 /// the stream's bar goes below it.
 fn top_bar_height(ctx: &egui::Context) -> f32 {
     leto_system::bars::heights()[0] / ctx.pixels_per_point()
+}
+
+/// The padlock of the bar: closed when the pictures travel encrypted, open
+/// and lit when they do not. Returns whether the person pressed it, to
+/// read the same in the bar where nothing hovers.
+fn padlock(ui: &mut Ui, view: &StreamView, encrypted: Encrypted, usable: bool) -> bool {
+    let closed = encrypted == Encrypted::ALL;
+    let color = if closed { theme::dim() } else { theme::sun() };
+    let icon = move |painter: &egui::Painter, rect: Rect, color: Color32| {
+        icons::padlock(painter, rect, color, closed);
+    };
+    widgets::state_button(ui, icon, &encrypted_words(view, encrypted), color, usable).clicked()
+}
+
+/// What travels encrypted in the stream of `view`, and what does not.
+fn encrypted_words(view: &StreamView, encrypted: Encrypted) -> String {
+    let host = &view.host.name;
+    // A page in a browser goes through a bridge, which is what talks to
+    // the PC.
+    let ends = if cfg!(target_arch = "wasm32") {
+        format!("between {host} and the bridge this page goes through")
+    } else {
+        format!("between {host} and this device")
+    };
+    if encrypted == Encrypted::ALL {
+        return format!("Encrypted: picture, sound and input travel encrypted {ends}.");
+    }
+    let parts = [
+        ("the picture", encrypted.picture),
+        ("the sound", encrypted.sound),
+        ("the input", encrypted.input),
+    ];
+    let list = |wanted: bool| {
+        let names: Vec<&str> =
+            parts.iter().filter(|(_, is)| *is == wanted).map(|(name, _)| *name).collect();
+        match names.as_slice() {
+            [one] => (*one).to_owned(),
+            [first, second] => format!("{first} and {second}"),
+            _ => names.join(", "),
+        }
+    };
+    let clear = list(false);
+    let (travels, it) = if clear.contains(" and ") || clear.contains(", ") {
+        ("travel", "them")
+    } else {
+        ("travels", "it")
+    };
+    let mut words = format!("Not encrypted: {clear} {travels} in clear {ends}.");
+    if !encrypted.picture {
+        words.push_str(&format!(
+            " {host} does not offer to encrypt {it}: Apollo and Sunshine only do on a local \
+             network when their LAN encryption mode says so."
+        ));
+    }
+    let sealed = list(true);
+    if !sealed.is_empty() {
+        let mut sealed = sealed;
+        if let Some(first) = sealed.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        let verb = if sealed.contains(" and ") { "are" } else { "is" };
+        words.push_str(&format!(" {sealed} {verb} encrypted."));
+    }
+    if matches!(view.host.way(), Way::WireGuard(_)) {
+        words.push_str(" Leto's WireGuard tunnel encrypts all of it up to its other end.");
+    }
+    words
 }
 
 /// The switch between this device's pointer and the PC's own, which shows
@@ -1323,6 +1432,8 @@ enum News {
     Pointer(bool),
     /// Back was asked once.
     Back,
+    /// The padlock was pressed.
+    Encrypted,
 }
 
 /// The app and the PC on one line, cut short if the window is narrow.
@@ -1408,6 +1519,11 @@ fn bar_note(view: &StreamView, hands: Hands, timed: bool, news: Option<News>) ->
                  back.",
                 Shortcut::Pointer.keys()
             ));
+        }
+        Some(News::Encrypted) => {
+            if let Some(encrypted) = view.encrypted {
+                return said(encrypted_words(view, encrypted));
+            }
         }
         Some(News::Back) => {
             return said(format!(
@@ -1538,6 +1654,44 @@ mod tests {
     use crate::state::Screen;
 
     #[test]
+    fn the_padlock_says_what_travels_encrypted_and_what_does_not() {
+        let mut view = view(InputAllowed::ALL);
+        let all = encrypted_words(&view, Encrypted::ALL);
+        assert_eq!(
+            all,
+            "Encrypted: picture, sound and input travel encrypted between Salon and this device."
+        );
+
+        // An Apollo on a local network, as it is installed.
+        let clear = Encrypted { picture: false, sound: true, input: true };
+        let said = encrypted_words(&view, clear);
+        assert!(said.starts_with("Not encrypted: the picture travels in clear"), "{said}");
+        assert!(said.contains("Salon does not offer to encrypt it"), "{said}");
+        assert!(said.ends_with("The sound and the input are encrypted."), "{said}");
+
+        // Through Leto's tunnel, that is not the whole story.
+        view.host.tunnel = true;
+        let said = encrypted_words(&view, clear);
+        assert!(said.ends_with("Leto's WireGuard tunnel encrypts all of it up to its other end."));
+
+        // A host that encrypts nothing at all.
+        view.host.tunnel = false;
+        let nothing = Encrypted { picture: false, sound: false, input: false };
+        let said = encrypted_words(&view, nothing);
+        assert!(
+            said.starts_with("Not encrypted: the picture, the sound, the input travel in clear"),
+            "{said}"
+        );
+        assert!(said.contains("does not offer to encrypt them"), "{said}");
+
+        // Pressing the padlock puts the same words in the bar.
+        view.encrypted = Some(clear);
+        let note = bar_note(&view, Hands::Pointer, true, Some(News::Encrypted)).expect("a note");
+        assert_eq!(note.text, encrypted_words(&view, clear));
+        assert_eq!(encrypted_line(clear), "Picture no, sound yes, input yes");
+    }
+
+    #[test]
     fn a_key_pressed_that_reaches_the_window_while_the_stream_keeps_them_slipped_past() {
         let press = |pressed, repeat| Event::Key {
             key: egui::Key::A,
@@ -1628,6 +1782,7 @@ mod tests {
             connected: true,
             reconnecting: false,
             input,
+            encrypted: Some(Encrypted::ALL),
             microphone: Mic::Off,
             camera: Cam::Off,
         }

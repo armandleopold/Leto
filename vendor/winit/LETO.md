@@ -27,3 +27,9 @@ events whose source is a gamepad or a joystick.
 Leto can go back to winit from crates.io once it tells of gamepads on
 Android, or lets an app see the input events first, and tells of a mouse
 as a mouse.
+- `src/platform_impl/android/mod.rs`: `mouse_moved`. A mouse the window
+  keeps for itself (Android's pointer capture, source `MouseRelative`)
+  gives `DeviceEvent::MouseMotion` and its buttons and wheel, and no
+  `CursorMoved`: a game on the PC turns its view with it. Needs the copy of
+  android-activity in `vendor/android-activity` for the moves Android
+  batched in one event.

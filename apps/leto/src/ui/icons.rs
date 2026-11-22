@@ -188,6 +188,26 @@ pub fn pointer_in_picture(painter: &Painter, rect: Rect, color: Color32) {
     painter.add(egui::Shape::convex_polygon(arrow(inside), color, egui::Stroke::NONE));
 }
 
+/// A padlock, closed or with its shackle swung open.
+pub fn padlock(painter: &Painter, rect: Rect, color: Color32, closed: bool) {
+    let stroke = stroke(rect, color);
+    let body = Rect::from_min_max(at(rect, 0.16, 0.46), at(rect, 0.84, 0.98));
+    painter.rect_stroke(body, rect.width() * 0.12, stroke, StrokeKind::Inside);
+    painter.circle_filled(at(rect, 0.5, 0.72), stroke.width * 0.8, color);
+    // The shackle: two legs and the bow between them. Open, it is lifted
+    // and its right leg hangs free of the body.
+    let (top, left, right) = if closed { (0.04, 0.3, 0.7) } else { (0.0, 0.3, 0.7) };
+    let bow = (right - left) / 2.0;
+    let mut points = vec![at(rect, left, 0.46), at(rect, left, top + bow)];
+    for step in 1..=7 {
+        let angle = std::f32::consts::PI * (1.0 - step as f32 / 8.0);
+        points.push(at(rect, 0.5 + bow * angle.cos(), top + bow - bow * angle.sin()));
+    }
+    points.push(at(rect, right, top + bow));
+    points.push(at(rect, right, if closed { 0.46 } else { top + bow + 0.08 }));
+    painter.line(points, stroke);
+}
+
 /// A camera: its body, and the lens that sticks out to the right.
 pub fn camera(painter: &Painter, rect: Rect, color: Color32) {
     let stroke = stroke(rect, color);

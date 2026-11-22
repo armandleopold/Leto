@@ -267,6 +267,17 @@ impl MoonlightStream {
         self.inner.streams.video.stream(|stream| stream.arrivals())
     }
 
+    /// Leto: whether the video, the audio and the control stream travel
+    /// encrypted, in that order: what the host and this client agreed on.
+    pub fn encrypted(&self) -> (bool, bool, bool) {
+        let streams = &self.inner.streams;
+        (
+            streams.video.stream(|stream| stream.is_encrypted()),
+            streams.audio.stream(|stream| stream.is_encrypted()),
+            streams.control.stream(|stream| stream.is_encrypted()),
+        )
+    }
+
     pub fn estimated_rtt(&self) -> Result<EstimatedRttInfo, Error> {
         self.inner
             .streams

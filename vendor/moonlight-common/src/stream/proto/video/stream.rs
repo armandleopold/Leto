@@ -78,6 +78,8 @@ pub struct VideoStream {
     events: VecDeque<VideoStreamEvent>,
     /// Leto: see [`VideoArrivals`].
     arrivals: VideoArrivals,
+    /// Leto: whether the host and this client agreed to encrypt the video.
+    encrypted: bool,
 }
 
 impl VideoStream {
@@ -85,6 +87,7 @@ impl VideoStream {
     pub fn new(now: Instant, config: VideoStreamConfig, crypto_backend: DynCryptoBackend) -> Self {
         debug!("new video stream");
 
+        let encrypted = config.queue.encryption.is_some();
         let depayloader = VideoDepayloader::new(config.queue, crypto_backend);
 
         Self {
@@ -106,7 +109,13 @@ impl VideoStream {
             idr_deadline: now + IDR_REQUEST_TIMEOUT,
             events: Default::default(),
             arrivals: VideoArrivals::default(),
+            encrypted,
         }
+    }
+
+    /// Leto: whether the video travels encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     /// Leto: the pictures that arrived and wait to be taken.
