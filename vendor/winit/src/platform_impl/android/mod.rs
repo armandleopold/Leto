@@ -479,7 +479,10 @@ impl<T: 'static> EventLoop<T> {
                                 device_id: event::DeviceId(DeviceId(key.device_id())),
                                 event: event::KeyEvent {
                                     state,
-                                    physical_key: keycodes::to_physical_key(keycode),
+                                    // Leto: where the key sits, whatever the
+                                    // layout Android was told the keyboard has.
+                                    physical_key: key_at(key.scan_code())
+                                        .unwrap_or_else(|| keycodes::to_physical_key(keycode)),
                                     logical_key,
                                     location: keycodes::to_location(keycode),
                                     repeat: key.repeat_count() > 0,
@@ -1222,4 +1225,66 @@ fn mouse_events(motion: &MotionEvent<'_>) -> Vec<event::WindowEvent> {
         }
     }
     events
+}
+
+/// Leto: the key at `scan_code`, the Linux input code of where it sits on
+/// the keyboard, for the keys whose letter changes with the layout. Android's
+/// key code is the layout's letter: an AZERTY keyboard Android was told is
+/// French says `KEYCODE_A` for the key a US keyboard has Q on, and a PC
+/// whose own layout is French then typed a Q for it. `None` for the other
+/// keys, and for keys without a place, as the screen's keyboard has.
+fn key_at(scan_code: i32) -> Option<crate::keyboard::PhysicalKey> {
+    use crate::keyboard::KeyCode as K;
+    let code = match scan_code {
+        2 => K::Digit1,
+        3 => K::Digit2,
+        4 => K::Digit3,
+        5 => K::Digit4,
+        6 => K::Digit5,
+        7 => K::Digit6,
+        8 => K::Digit7,
+        9 => K::Digit8,
+        10 => K::Digit9,
+        11 => K::Digit0,
+        12 => K::Minus,
+        13 => K::Equal,
+        16 => K::KeyQ,
+        17 => K::KeyW,
+        18 => K::KeyE,
+        19 => K::KeyR,
+        20 => K::KeyT,
+        21 => K::KeyY,
+        22 => K::KeyU,
+        23 => K::KeyI,
+        24 => K::KeyO,
+        25 => K::KeyP,
+        26 => K::BracketLeft,
+        27 => K::BracketRight,
+        30 => K::KeyA,
+        31 => K::KeyS,
+        32 => K::KeyD,
+        33 => K::KeyF,
+        34 => K::KeyG,
+        35 => K::KeyH,
+        36 => K::KeyJ,
+        37 => K::KeyK,
+        38 => K::KeyL,
+        39 => K::Semicolon,
+        40 => K::Quote,
+        41 => K::Backquote,
+        43 => K::Backslash,
+        44 => K::KeyZ,
+        45 => K::KeyX,
+        46 => K::KeyC,
+        47 => K::KeyV,
+        48 => K::KeyB,
+        49 => K::KeyN,
+        50 => K::KeyM,
+        51 => K::Comma,
+        52 => K::Period,
+        53 => K::Slash,
+        86 => K::IntlBackslash,
+        _ => return None,
+    };
+    Some(crate::keyboard::PhysicalKey::Code(code))
 }

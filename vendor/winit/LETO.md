@@ -12,6 +12,12 @@ marked with comments that start with `Leto:`:
   than touches: winit made a finger of it, so the pointer only moved while
   a button was down, every button was the left one and the wheel did
   nothing.
+- `src/platform_impl/android/mod.rs`: `key_at`. A key's `physical_key`
+  comes from its scan code (the Linux input code of where it sits) for the
+  keys whose letter changes with the layout, rather than from Android's key
+  code, which is the letter of the layout Android was told the keyboard
+  has. A PC typed Q for an AZERTY keyboard's A once Android knew it was
+  French.
 
 winit makes touches of a gamepad's sticks (any motion event with a
 pointer) and unknown keys of its buttons, and gives the app no way to see
