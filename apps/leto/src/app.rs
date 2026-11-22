@@ -94,14 +94,10 @@ impl LetoApp {
     }
 
     /// During a stream: has the graphics card that decodes the pictures
-    /// show them itself, when the person asked for that, on a pane it keeps
-    /// over the place the window leaves them, less what the window shows
-    /// there.
+    /// show them itself, on a pane it keeps over the place the window leaves
+    /// them, less what the window shows there. Where no pane opens, or the
+    /// card cannot show pictures on it, the window draws them as before.
     fn place_pane(&mut self, ctx: &egui::Context, window: &eframe::Frame) {
-        if !self.settings.straight_to_screen {
-            self.close_pane();
-            return;
-        }
         if self.pane.is_none() && !self.pane_refused {
             self.pane = window_of(window).and_then(Pane::open);
             self.pane_refused = self.pane.is_none();
@@ -322,7 +318,7 @@ impl eframe::App for LetoApp {
                 self.backend.mute(self.settings.mute_in_background && pace != Pace::Full);
                 self.backend.allow_graphics_card(self.settings.decoder.hardware());
                 let keeps = self.card.as_ref().is_some_and(OnCard::keeps);
-                self.backend.keep_on_card(self.settings.keep_on_card && keeps);
+                self.backend.keep_on_card(keeps);
                 if let Some(picture) = self.backend.take_picture() {
                     self.player.picture(ui.ctx(), picture, self.card.as_ref());
                 }
