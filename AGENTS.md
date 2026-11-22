@@ -68,6 +68,15 @@ app finds one at `$XDG_CONFIG_HOME/apollo`. The app shows a PC at an
 address of the computer it runs on as "This PC", which is shared and not
 streamed: reach a stand-in host on the same computer at `127.0.0.1`. Never log what `apollo.rs` reads from `credentials`.
 
+The app that shares a PC takes a microphone when the PC has a virtual cable
+to play it on, which only Windows has. Anywhere else, `LETO_CABLE=<name of
+a sound output>` in the app's environment names one: with PulseAudio, a
+second null sink and `PULSE_SINK=<that sink>` for the app, the output named
+"Playback/recording through the PulseAudio sound server" (the one named
+"PulseAudio Sound Server" fails there), and `parecord` on the sink's
+monitor hears what a device sent. `leto-cli play --microphone` sends this
+device's microphone to such a PC.
+
 To check a stream without the window, `leto-cli play` streams an app for a few
 seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 

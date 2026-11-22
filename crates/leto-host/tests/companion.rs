@@ -10,12 +10,20 @@
 use std::{
     fs,
     path::PathBuf,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
 
-use leto_client::{CameraRefusal, CameraSettings, Client, Error, HostSummary, engine::CameraOffer};
+use leto_client::{
+    AudioSink, CameraRefusal, CameraSettings, Client, Counter, Error, HostSummary, Service, Shell,
+    VideoSink,
+    engine::{CameraOffer, Choices, Event, Request},
+};
 use leto_host::{Companion, Options as CompanionOptions, apollo::Apollo};
 use leto_media::{Picture, PictureEncoder, Sending};
 use leto_testhost::{FakeHost, Options, permission};
@@ -214,4 +222,181 @@ fn a_folder_that_is_not_an_apollo_s_is_refused_with_the_file_that_is_wrong() {
     fs::write(folder.0.join("sunshine_state.json"), "not what Apollo writes").unwrap();
     let wrong = Apollo::read(&folder.0).unwrap_err().to_string();
     assert!(wrong.contains("sunshine_state.json"), "{wrong}");
+}
+
+#[test]
+fn a_device_sends_its_microphone_to_a_companion_that_has_someone_to_hand_it_to() {
+    let (settings, folder) = (Folder::new("settings"), Folder::new("apollo"));
+    let host = apollo();
+    let client = Client::open(&settings.0).unwrap();
+    let paired = pair(&client, &host);
+    let companion = companion(&host, &folder, Some(permission::ALL));
+
+    // Nobody on the PC to hand a microphone to: none is taken.
+    assert!(!client.return_offer(&paired.id).unwrap().microphone);
+    assert!(matches!(
+        client.send_microphone(&paired.id),
+        Err(Error::Camera(CameraRefusal::NotTaken))
+    ));
+
+    let frames = companion.hear();
+    let offer = client.return_offer(&paired.id).unwrap();
+    assert!(offer.microphone);
+    assert!(offer.camera.is_some());
+
+    // The camera is asked for apart, and goes on beside the microphone.
+    let camera = client.send_camera(&paired.id, SMALL).unwrap();
+    let mut link = client.send_microphone(&paired.id).unwrap();
+    assert!(companion.cameras().report().open);
+    assert!(companion.cameras().voice_report().open);
+    assert_eq!(companion.speaker().as_deref(), Some("Device 1"));
+
+    for number in 0..10u8 {
+        assert!(link.send(Duration::from_millis(20) * u32::from(number), &[number; 40]));
+    }
+    for number in 0..10u8 {
+        let frame = frames.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(frame, vec![number; 40], "frame {number}");
+    }
+    let report = companion.cameras().voice_report();
+    assert_eq!((report.frames, report.refused), (10, 0));
+    // None of it was taken for a piece of a picture.
+    assert_eq!(companion.cameras().report().packets, 0);
+
+    // The device says that the microphone stopped: the camera stays.
+    drop(link);
+    wait_for("the microphone to close", || !companion.cameras().voice_report().open);
+    assert_eq!(companion.speaker(), None);
+    assert!(companion.cameras().report().open);
+    drop(camera);
+    wait_for("the camera to close", || !companion.cameras().report().open);
+
+    // Whoever listened is gone: the next frame ends the microphone.
+    let mut link = client.send_microphone(&paired.id).unwrap();
+    drop(frames);
+    assert!(link.send(Duration::ZERO, &[1; 40]));
+    wait_for("the companion to stop taking a microphone", || {
+        !client.return_offer(&paired.id).unwrap().microphone
+    });
+}
+
+#[test]
+fn only_the_devices_apollo_trusts_with_the_pc_send_a_microphone() {
+    let (settings, folder) = (Folder::new("settings"), Folder::new("apollo"));
+    let host = apollo();
+    let client = Client::open(&settings.0).unwrap();
+    let paired = pair(&client, &host);
+    let companion = companion(&host, &folder, Some(permission::DEFAULT));
+    let _frames = companion.hear();
+    assert!(matches!(
+        client.send_microphone(&paired.id),
+        Err(Error::Camera(CameraRefusal::NotAllowed))
+    ));
+    assert!(!companion.cameras().voice_report().open);
+}
+
+/// An interface that keeps the news in a queue and counts what a stream
+/// carries.
+struct Listener {
+    news: Mutex<mpsc::Sender<Event>>,
+    counter: Counter,
+}
+
+struct Pictures(Box<dyn VideoSink>);
+struct Sound(Box<dyn AudioSink>);
+
+impl VideoSink for Pictures {
+    fn setup(&mut self, setup: leto_client::VideoSetup) {
+        self.0.setup(setup);
+    }
+    fn frame(&mut self, frame: leto_client::VideoFrame<'_>) -> leto_client::Decoded {
+        self.0.frame(frame)
+    }
+    fn stop(&mut self) {
+        self.0.stop();
+    }
+}
+
+impl AudioSink for Sound {
+    fn setup(&mut self, setup: leto_client::AudioSetup) {
+        self.0.setup(setup);
+    }
+    fn packet(&mut self, opus: &[u8]) {
+        self.0.packet(opus);
+    }
+    fn stop(&mut self) {
+        self.0.stop();
+    }
+}
+
+impl Shell for Listener {
+    type Video = Pictures;
+    type Audio = Sound;
+
+    fn tell(&self, event: Event) {
+        let _ = self.news.lock().unwrap().send(event);
+    }
+
+    fn sinks(&self) -> Result<(Self::Video, Self::Audio), String> {
+        Ok((Pictures(Box::new(self.counter.video())), Sound(Box::new(self.counter.audio()))))
+    }
+}
+
+fn news<T>(news: &mpsc::Receiver<Event>, mut wanted: impl FnMut(Event) -> Option<T>) -> T {
+    let start = Instant::now();
+    loop {
+        let left = Duration::from_secs(20).checked_sub(start.elapsed()).expect("no such news");
+        if let Some(found) = wanted(news.recv_timeout(left).expect("no such news")) {
+            return found;
+        }
+    }
+}
+
+#[test]
+fn an_interface_learns_that_the_companion_takes_the_microphone_and_sends_it() {
+    let (settings, folder) = (Folder::new("settings"), Folder::new("apollo"));
+    let host = apollo();
+    let client = Arc::new(Client::open(&settings.0).unwrap());
+    let paired = pair(&client, &host);
+    let companion = companion(&host, &folder, Some(permission::ALL));
+    let frames = companion.hear();
+
+    let (told, heard) = mpsc::channel();
+    let shell = Listener { news: Mutex::new(told), counter: Counter::default() };
+    let service = Service::new(Arc::clone(&client), shell);
+    service.ask(Request::Play {
+        host: paired.id.clone(),
+        app: 1,
+        attempt: 1,
+        screen: None,
+        choices: Choices::default(),
+    });
+    // Apollo takes no microphone inside its stream. The companion beside it
+    // does, which is told a moment later.
+    let inside = news(&heard, |event| match event {
+        Event::Playing { attempt: 1, microphone, .. } => Some(microphone),
+        _ => None,
+    });
+    assert!(!inside);
+    let beside = news(&heard, |event| match event {
+        Event::Microphone { attempt: 1, taken } => Some(taken),
+        _ => None,
+    });
+    assert!(beside);
+    // Nothing was asked of the companion yet: the microphone is off.
+    assert!(!companion.cameras().voice_report().open);
+
+    // The first frames ask for the way, and the ones after it arrive.
+    let mut number = 0u32;
+    wait_for("the microphone to arrive", || {
+        number += 1;
+        service.microphone(Duration::from_millis(20) * number, &[7; 40]);
+        frames.try_recv().is_ok_and(|frame| frame == [7; 40])
+    });
+    assert!(companion.cameras().voice_report().open);
+
+    // It stops with the stream.
+    service.ask(Request::Leave);
+    wait_for("the microphone to close", || !companion.cameras().voice_report().open);
+    assert!(!service.microphone(Duration::ZERO, &[7; 40]));
 }

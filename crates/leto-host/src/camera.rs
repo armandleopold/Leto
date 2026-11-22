@@ -4,6 +4,10 @@
 //! port thirteen above its own, as `leto_return::api` describes it, then
 //! takes the packets that follow, decodes them and keeps the last picture
 //! for whoever shows it on the PC.
+//!
+//! A microphone can be asked for the same way, of a host that has someone
+//! to hand it to: see [`Cameras::hear`]. Its packets come to the same port,
+//! and its Opus frames leave as they are.
 
 use std::{
     io::{self, Read, Write},
@@ -11,14 +15,16 @@ use std::{
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
 };
 
 use leto_return::{
-    api::{self, Answer, Ask, CameraGrant, CameraOffer, Info, Offer},
+    api::{self, Answer, Ask, CameraAsk, CameraOffer, Grant, Info, Offer},
     camera::{Assembler, Key},
+    voice,
 };
 use openh264::{
     OpenH264API,
@@ -66,6 +72,22 @@ pub struct CameraReport {
     pub size: Option<(usize, usize)>,
 }
 
+/// What can be observed of a client's microphone: the one that is sending,
+/// or the last one that did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceReport {
+    /// A client asked to send its microphone and has not said that it
+    /// stopped.
+    pub open: bool,
+    /// Frames that arrived and were handed over.
+    pub frames: u64,
+    /// What looked like a packet of a microphone and was not one of this
+    /// microphone: under another key, changed on the way, or late.
+    pub refused: u64,
+    /// When the last frame arrived.
+    pub heard: Option<Instant>,
+}
+
 /// A picture of a client's camera: rows of pixels, four bytes each (red,
 /// green, blue and an opacity that is always full).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +119,22 @@ struct State {
     undecoded: u64,
     report: CameraReport,
     seen: Option<Arc<Seen>>,
+    /// Who takes the Opus frames of a microphone. Without anyone, the host
+    /// takes no microphone.
+    listener: Option<mpsc::Sender<Vec<u8>>>,
+    hearing: Option<Hearing>,
+    voice: VoiceReport,
+}
+
+/// The microphone that is being sent.
+struct Hearing {
+    /// The certificate of the device that sends it.
+    device: Vec<u8>,
+    /// The number of the key that seals it.
+    key_id: u32,
+    opener: voice::Opener,
+    /// When it was asked for, or last heard.
+    heard: Instant,
 }
 
 /// The camera that is being sent.
@@ -148,6 +186,24 @@ impl Cameras {
         self.state().receiving.as_ref().map(|receiving| receiving.device.clone())
     }
 
+    pub fn voice_report(&self) -> VoiceReport {
+        self.state().voice
+    }
+
+    /// The certificate of the device whose microphone is being sent.
+    pub fn speaker(&self) -> Option<Vec<u8>> {
+        self.state().hearing.as_ref().map(|hearing| hearing.device.clone())
+    }
+
+    /// From now on the host takes a microphone, and hands its Opus frames
+    /// (one channel at 48 kHz, twenty milliseconds each) to whoever holds
+    /// what this returns. It stops taking one when that is dropped.
+    pub fn hear(&self) -> mpsc::Receiver<Vec<u8>> {
+        let (listener, frames) = mpsc::channel();
+        self.state().listener = Some(listener);
+        frames
+    }
+
     /// The owner of the host lets devices send their camera, or not.
     pub fn refuse(&self, refused: bool) {
         self.state().refused_by_owner = refused;
@@ -164,7 +220,7 @@ impl Cameras {
         Info {
             api: api::VERSION,
             return_channel: Offer {
-                microphone: false,
+                microphone: self.state().listener.is_some(),
                 camera: Some(CameraOffer {
                     codecs: vec![api::H264.to_owned()],
                     max_width: self.largest.0,
@@ -176,11 +232,49 @@ impl Cameras {
     }
 
     /// What `device` asks to send, answered or refused with an HTTP status.
+    ///
+    /// The camera and the microphone are asked for apart: an ask that names
+    /// one leaves the other as it is.
     fn ask(&self, device: &[u8], ask: &Ask) -> Result<Answer, u16> {
-        let Some(camera) = &ask.camera else {
-            // Nothing this host takes was asked for.
-            return Ok(Answer::default());
-        };
+        let mut answer = Answer::default();
+        if let Some(camera) = &ask.camera {
+            answer.camera = Some(self.ask_camera(device, camera)?);
+        }
+        if ask.microphone {
+            // `None` from a host that takes no microphone, which the device
+            // knew before it asked.
+            answer.microphone = self.ask_microphone(device)?;
+        }
+        Ok(answer)
+    }
+
+    fn ask_microphone(&self, device: &[u8]) -> Result<Option<Grant>, u16> {
+        let mut state = self.state();
+        if state.listener.is_none() {
+            return Ok(None);
+        }
+        if state.refused_by_owner {
+            return Err(403);
+        }
+        let taken = state
+            .hearing
+            .as_ref()
+            .is_some_and(|other| other.device != device && other.heard.elapsed() < SILENCE);
+        if taken {
+            return Err(409);
+        }
+        let key = fresh_key()?;
+        state.hearing = Some(Hearing {
+            device: device.to_vec(),
+            key_id: key.id,
+            opener: voice::Opener::new(&key),
+            heard: Instant::now(),
+        });
+        state.voice = VoiceReport { open: true, ..VoiceReport::default() };
+        Ok(Some(Grant::new(self.port, &key)))
+    }
+
+    fn ask_camera(&self, device: &[u8], camera: &CameraAsk) -> Result<Grant, u16> {
         let fits = camera.codec == api::H264
             && (1..=self.largest.0).contains(&camera.width)
             && (1..=self.largest.1).contains(&camera.height)
@@ -203,11 +297,7 @@ impl Cameras {
             return Err(409);
         }
 
-        let (mut bytes, mut id) = ([0u8; 16], [0u8; 4]);
-        let random = ring::rand::SystemRandom::new();
-        ring::rand::SecureRandom::fill(&random, &mut bytes).map_err(|_| 500u16)?;
-        ring::rand::SecureRandom::fill(&random, &mut id).map_err(|_| 500u16)?;
-        let key = Key { bytes, id: u32::from_le_bytes(id) };
+        let key = fresh_key()?;
         // A picture comes out as soon as it went in, and damage is not
         // hidden: what does not decode is counted.
         let config = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
@@ -227,7 +317,7 @@ impl Cameras {
             asked: Some((camera.width, camera.height, camera.fps)),
             ..CameraReport::default()
         };
-        Ok(Answer { camera: Some(CameraGrant::new(self.port, &key)) })
+        Ok(Grant::new(self.port, &key))
     }
 
     /// `device` says that it stopped sending what the key of this number
@@ -241,6 +331,13 @@ impl Cameras {
             state.receiving = None;
             state.seen = None;
             state.report.open = false;
+        }
+        let meant = state.hearing.as_ref().is_some_and(|hearing| {
+            hearing.device == device && key_id.is_none_or(|id| id == hearing.key_id)
+        });
+        if meant {
+            state.hearing = None;
+            state.voice.open = false;
         }
     }
 
@@ -270,6 +367,10 @@ impl Cameras {
                 continue;
             };
             let mut state = self.state();
+            if voice::is_one(&packet[..length]) {
+                state.heard(&packet[..length]);
+                continue;
+            }
             let State { receiving, undecoded, report, seen, .. } = &mut *state;
             // Nobody was told to send: whatever this is, it is not looked at.
             let Some(receiving) = receiving else { continue };
@@ -319,6 +420,39 @@ impl Cameras {
     }
 }
 
+impl State {
+    /// Takes what says that it is a packet of a microphone.
+    fn heard(&mut self, packet: &[u8]) {
+        // Nobody was told to send: whatever this is, it is not looked at.
+        let Some(hearing) = &mut self.hearing else { return };
+        let Some(frame) = hearing.opener.open(packet) else {
+            self.voice.refused += 1;
+            return;
+        };
+        let now = Instant::now();
+        hearing.heard = now;
+        self.voice.frames += 1;
+        self.voice.heard = Some(now);
+        let taken =
+            self.listener.as_ref().is_some_and(|listener| listener.send(frame.data).is_ok());
+        if !taken {
+            // Whoever listened is gone: so is the microphone.
+            self.listener = None;
+            self.hearing = None;
+            self.voice.open = false;
+        }
+    }
+}
+
+/// A key nobody had before, from the system's random numbers.
+fn fresh_key() -> Result<Key, u16> {
+    let (mut bytes, mut id) = ([0u8; 16], [0u8; 4]);
+    let random = ring::rand::SystemRandom::new();
+    ring::rand::SecureRandom::fill(&random, &mut bytes).map_err(|_| 500u16)?;
+    ring::rand::SecureRandom::fill(&random, &mut id).map_err(|_| 500u16)?;
+    Ok(Key { bytes, id: u32::from_le_bytes(id) })
+}
+
 /// One request to Leto's API.
 struct Request {
     method: String,
@@ -333,8 +467,8 @@ struct Request {
 pub enum Access {
     /// Not a device the host is paired with.
     Stranger,
-    /// A paired device, which the owner of the PC lets send its camera or
-    /// not.
+    /// A paired device, which the owner of the PC lets send its camera and
+    /// its microphone, or not.
     Paired { camera: bool },
 }
 
@@ -383,7 +517,7 @@ fn answer(cameras: &Cameras, device: &[u8], allowed: bool, request: &Request) ->
             let Ok(ask) = serde_json::from_slice::<Ask>(&request.body) else {
                 return (400, Vec::new());
             };
-            if ask.camera.is_some() && !allowed {
+            if (ask.camera.is_some() || ask.microphone) && !allowed {
                 return (403, Vec::new());
             }
             match cameras.ask(device, &ask) {

@@ -22,7 +22,7 @@ use leto_core::{
 
 use crate::{
     AudioSink, CameraLink, CameraRefusal, CameraSettings, Client, Ended, Error, HostId, InputError,
-    Session, StreamSettings, VideoSink,
+    ReturnOffer, Session, StreamSettings, VideoSink, VoiceLink,
 };
 
 /// How long a search listens for PCs announcing themselves.
@@ -91,6 +91,22 @@ struct Watching {
     camera: Option<(u64, CameraLink)>,
     /// How many cameras were sent so far: each has its number.
     cameras: u64,
+    /// The way of this device's microphone to that PC, beside the stream.
+    voice: Voice,
+}
+
+/// The microphone of this device on its way to a PC that takes none inside
+/// a stream.
+#[derive(Default)]
+enum Voice {
+    /// The PC takes none this way, or was not asked yet.
+    #[default]
+    No,
+    /// The PC takes one, and nothing was sent yet.
+    Offered,
+    /// The PC is being asked for the way.
+    Opening,
+    Open(Box<VoiceLink>),
 }
 
 impl Watching {
@@ -147,12 +163,14 @@ impl<S: Shell> Service<S> {
                 // A camera goes with one stream, and that one is over. The
                 // next camera does not go to the PC it came from either.
                 watching.camera = None;
+                watching.voice = Voice::No;
                 watching.host = None;
             }
             Request::Leave => {
                 let mut watching = lock(&watching);
                 watching.wanted = None;
                 watching.camera = None;
+                watching.voice = Voice::No;
                 left = watching.session.take();
             }
             _ => {}
@@ -244,9 +262,63 @@ impl<S: Shell> Service<S> {
     /// Passes a frame of this device's microphone on to the PC being
     /// watched, as [`Session::send_microphone`] takes it. Returns whether it
     /// left: nothing does without a stream, or to a PC that takes none.
+    ///
+    /// A PC that takes the microphone beside the stream (see
+    /// [`Event::Microphone`]) is asked for the way there at the first frame,
+    /// and the frames until it answered do not leave.
     pub fn microphone(&self, at: Duration, frame: &[u8]) -> bool {
-        let watching = lock(&self.watching);
-        watching.session.as_ref().is_some_and(|session| session.send_microphone(at, frame))
+        let mut watching = lock(&self.watching);
+        let Some(session) = watching.session.as_ref().filter(|session| !session.is_over()) else {
+            return false;
+        };
+        if session.takes_microphone() {
+            return session.send_microphone(at, frame);
+        }
+        match &mut watching.voice {
+            Voice::Open(link) => link.send(at, frame),
+            Voice::Offered => {
+                watching.voice = Voice::Opening;
+                let (stream, attempt) = (watching.connected, watching.wanted);
+                if let Some(host) = watching.host.clone() {
+                    drop(watching);
+                    self.open_voice(host, stream, attempt);
+                }
+                false
+            }
+            Voice::No | Voice::Opening => false,
+        }
+    }
+
+    /// Asks `host` for the way of the microphone, for the stream of this
+    /// number, without keeping whoever captures waiting.
+    fn open_voice(&self, host: HostId, stream: u64, attempt: Option<u64>) {
+        let client = Arc::clone(&self.client);
+        let shell = Arc::clone(&self.shell);
+        let watching = Arc::clone(&self.watching);
+        let asking = thread::Builder::new().name("leto: microphone".to_owned()).spawn(move || {
+            let opened = client.send_microphone(&host);
+            let mut watching = lock(&watching);
+            if watching.connected != stream || !matches!(watching.voice, Voice::Opening) {
+                // That stream is over: so is its microphone, and dropping
+                // the way tells the PC.
+                return;
+            }
+            match opened {
+                Ok(link) => watching.voice = Voice::Open(Box::new(link)),
+                Err(error) => {
+                    watching.voice = Voice::No;
+                    drop(watching);
+                    log::info!("the PC did not take the microphone: {error}");
+                    if let Some(attempt) = attempt {
+                        shell.tell(Event::Microphone { attempt, taken: false });
+                    }
+                    shell.tell(Event::Notice(explain_voice(&error)));
+                }
+            }
+        });
+        if let Err(error) = asking {
+            log::error!("could not start a worker thread: {error}");
+        }
     }
 
     /// Asks the PC being watched to take this device's camera, which will
@@ -325,6 +397,7 @@ impl<S: Shell> Drop for Service<S> {
         let mut watching = lock(&self.watching);
         watching.wanted = None;
         watching.camera = None;
+        watching.voice = Voice::No;
         if let Some(session) = watching.session.take() {
             drop(watching);
             let stopping =
@@ -457,31 +530,43 @@ fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
     shell.tell(Event::Hosts(client.hosts()));
     let session = started.map_err(NotStarted::Client)?;
 
-    let mut watching = lock(watching);
-    if watching.wanted != Some(attempt) {
+    let mut now = lock(watching);
+    if now.wanted != Some(attempt) {
         // The person left while the PC was starting the app.
-        drop(watching);
+        drop(now);
         session.stop();
         return Ok(());
     }
     let (input, microphone) = (session.input_allowed(), session.takes_microphone());
-    let before = watching.session.replace(session);
-    watching.host = Some(host.clone());
-    watching.connected += 1;
-    let number = watching.connected;
-    drop(watching);
+    let before = now.session.replace(session);
+    now.voice = Voice::No;
+    now.host = Some(host.clone());
+    now.connected += 1;
+    let number = now.connected;
+    drop(now);
     // Winding down a stream waits for its threads, and one of them may be
     // waiting to say that it ended.
     drop(before);
     shell.tell(Event::Playing { attempt, input, microphone });
-    if shell.sends_camera() {
+    if !microphone || shell.sends_camera() {
         // After the news that the stream plays: a PC without Leto's API can
         // take seconds not to answer.
-        let offer = client.camera_offer(host).unwrap_or_else(|error| {
-            log::debug!("no camera for this stream: {error}");
-            None
+        let offer = client.return_offer(host).unwrap_or_else(|error| {
+            log::debug!("nothing goes back with this stream: {error}");
+            ReturnOffer::default()
         });
-        shell.tell(Event::Camera { attempt, offer });
+        if !microphone {
+            let mut watching = lock(watching);
+            let still = watching.connected == number && watching.wanted == Some(attempt);
+            if still && offer.microphone {
+                watching.voice = Voice::Offered;
+            }
+            drop(watching);
+            shell.tell(Event::Microphone { attempt, taken: offer.microphone });
+        }
+        if shell.sends_camera() {
+            shell.tell(Event::Camera { attempt, offer: offer.camera });
+        }
     }
     let waiting = {
         let stream = Arc::clone(stream);
@@ -566,6 +651,7 @@ fn ended<S: Shell>(stream: &Arc<Stream<S>>, reason: Ended) {
         let mut watching = lock(&stream.watching);
         if watching.wanted == Some(attempt) {
             watching.camera = None;
+            watching.voice = Voice::No;
         }
     }
     shell.tell(Event::Hosts(stream.client.hosts()));
@@ -650,6 +736,26 @@ pub fn explain(error: &Error) -> String {
     let words = words(error);
     log::warn!("{words} ({error:?})");
     words
+}
+
+/// Why a PC that said it takes the microphone did not, in words for the
+/// person.
+fn explain_voice(error: &Error) -> String {
+    match error {
+        Error::Camera(CameraRefusal::NotAllowed) => {
+            "This PC does not let this device send its microphone. Its owner can allow it on the \
+             PC."
+            .to_owned()
+        }
+        Error::Camera(CameraRefusal::Busy) => {
+            "Another device is sending its microphone to this PC. Turn that one off first."
+                .to_owned()
+        }
+        Error::Camera(CameraRefusal::NotTaken | CameraRefusal::Unsuitable) => {
+            "This PC no longer takes a microphone.".to_owned()
+        }
+        other => format!("The microphone did not reach the PC. {}", explain(other)),
+    }
 }
 
 fn words(error: &Error) -> String {
