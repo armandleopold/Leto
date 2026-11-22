@@ -19,6 +19,10 @@ const SLACK: f32 = 0.08;
 const GROWTH: f32 = 0.01;
 /// The longest the cushion grows to.
 const LONGEST_CUSHION: f32 = 0.1;
+/// How long the sound must play without running dry for the cushion to
+/// shrink by one step again: what made it grow may have passed, and every
+/// step is delay.
+const CALM: f32 = 10.0;
 /// How long the sound takes to fade when it stops for want of more, and
 /// to come up when it starts: a sound cut at full level, or started there,
 /// is heard as a click.
@@ -33,6 +37,11 @@ pub(crate) struct Queue {
     cushion: usize,
     growth: usize,
     longest_cushion: usize,
+    /// The cushion it started with, the shortest it shrinks back to.
+    shortest_cushion: usize,
+    calm: usize,
+    /// Frames played since the last time it ran dry, or the cushion shrank.
+    played_calmly: usize,
     slack: usize,
     /// The most frames the speakers ever took at once.
     largest_take: usize,
@@ -57,6 +66,9 @@ impl Queue {
             cushion: frames(CUSHION),
             growth: frames(GROWTH),
             longest_cushion: frames(LONGEST_CUSHION),
+            shortest_cushion: frames(CUSHION),
+            calm: frames(CALM),
+            played_calmly: 0,
             slack: frames(SLACK),
             largest_take: 0,
             fade: frames(FADE).max(1),
@@ -133,6 +145,13 @@ impl Queue {
             self.playing = false;
             self.dry_runs += 1;
             self.cushion = (self.cushion + self.growth).min(self.longest_cushion);
+            self.played_calmly = 0;
+        } else {
+            self.played_calmly += wanted;
+            if self.played_calmly >= self.calm {
+                self.played_calmly = 0;
+                self.cushion = self.cushion.saturating_sub(self.growth).max(self.shortest_cushion);
+            }
         }
         if self.samples.is_empty() && given > 0 {
             // The last of the sound for now, as when the PC plays nothing
@@ -236,6 +255,36 @@ mod tests {
             run_dry(&mut queue);
         }
         assert_eq!(queue.cushion(), 4_800);
+    }
+
+    #[test]
+    fn after_a_calm_while_the_cushion_shrinks_back_to_where_it_started() {
+        let mut queue = Queue::new(RATE, 2);
+        let mut out = vec![0.0; TAKE * 2];
+        queue.take(&mut out);
+        let start = queue.cushion();
+        for _ in 0..3 {
+            let dry_runs = queue.dry_runs;
+            queue.push(&stereo(TAKE + queue.cushion(), 1.0));
+            while queue.dry_runs == dry_runs {
+                queue.take(&mut out);
+            }
+        }
+        assert_eq!(queue.cushion(), start + 3 * 480);
+
+        // Ten seconds of sound that arrives on time, a chunk at a time.
+        let play_calmly = |queue: &mut Queue, out: &mut Vec<f32>, seconds: usize| {
+            for _ in 0..seconds * 100 {
+                queue.push(&stereo(TAKE, 1.0));
+                queue.take(out);
+            }
+        };
+        queue.push(&stereo(TAKE + queue.cushion(), 1.0));
+        play_calmly(&mut queue, &mut out, 10);
+        assert_eq!(queue.dry_runs, 3);
+        assert_eq!(queue.cushion(), start + 2 * 480, "one step less");
+        play_calmly(&mut queue, &mut out, 60);
+        assert_eq!(queue.cushion(), start, "never shorter than at first");
     }
 
     #[test]

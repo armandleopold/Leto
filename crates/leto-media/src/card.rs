@@ -16,6 +16,8 @@
 
 use glow::{HasContext as _, PixelUnpackData};
 
+#[cfg(target_os = "android")]
+use crate::kept::android::Seen;
 #[cfg(windows)]
 use crate::kept::windows::Seen;
 use crate::{Error, Kept, Planes};
@@ -66,6 +68,22 @@ void main() {
 ";
 
 /// A picture that is pixels on the card already, drawn as it is.
+#[cfg(target_os = "android")]
+const FRAGMENT_OF_PIXELS: &str = r"#extension GL_OES_EGL_image_external_essl3 : require
+uniform samplerExternalOES picture;
+uniform vec4 crop;
+uniform vec4 within;
+in vec2 place;
+out vec4 colour;
+void main() {
+    // The buffer may be larger than the picture, with green around it:
+    // nothing is read from where some of it would be taken in.
+    vec2 at = clamp(crop.xy + place * crop.zw, within.xy, within.zw);
+    colour = vec4(texture(picture, at).rgb, 1.0);
+}
+";
+
+/// A picture that is pixels on the card already, drawn as it is.
 #[cfg(windows)]
 const FRAGMENT_OF_PIXELS: &str = r"
 uniform sampler2D picture;
@@ -89,11 +107,14 @@ pub struct Card {
     /// Draws a picture that stayed on the card.
     #[cfg(windows)]
     of_pixels: Program,
+    /// Draws a picture that stayed on the card, where the card can.
+    #[cfg(target_os = "android")]
+    of_pixels: Option<Program>,
     /// Where pictures stay on the card, as OpenGL sees it, once one did.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "android"))]
     seen: Option<Seen>,
     /// The picture shown last stayed on the card.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "android"))]
     stays: bool,
 }
 
@@ -116,6 +137,13 @@ impl Card {
         }
         #[cfg(windows)]
         let of_pixels = program(gl, FRAGMENT_OF_PIXELS)?;
+        // A card without pictures from elsewhere draws the planes alone.
+        #[cfg(target_os = "android")]
+        let of_pixels = if crate::kept::android::shares(gl) {
+            program(gl, FRAGMENT_OF_PIXELS).ok()
+        } else {
+            None
+        };
         let program = program(gl, FRAGMENT)?;
         // SAFETY: plain calls into the context, which is current on this
         // thread, with names it gave.
@@ -132,6 +160,11 @@ impl Card {
                 gl.use_program(Some(of_pixels));
                 gl.uniform_1_i32(gl.get_uniform_location(of_pixels, "picture").as_ref(), 0);
             }
+            #[cfg(target_os = "android")]
+            if let Some(of_pixels) = of_pixels {
+                gl.use_program(Some(of_pixels));
+                gl.uniform_1_i32(gl.get_uniform_location(of_pixels, "picture").as_ref(), 0);
+            }
             gl.use_program(None);
             Ok(Self {
                 program,
@@ -139,11 +172,11 @@ impl Card {
                 luma,
                 chroma,
                 size: None,
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "android"))]
                 of_pixels,
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "android"))]
                 seen: None,
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "android"))]
                 stays: false,
             })
         }
@@ -159,7 +192,9 @@ impl Card {
         // SAFETY: the context is current on this thread, as every call here
         // is made.
         let keeps = Self::fits(gl) && unsafe { crate::kept::windows::shares() };
-        #[cfg(not(windows))]
+        #[cfg(target_os = "android")]
+        let keeps = Self::fits(gl) && crate::kept::android::shares(gl);
+        #[cfg(not(any(windows, target_os = "android")))]
         let keeps = {
             let _ = gl;
             false
@@ -238,7 +273,7 @@ impl Card {
             gl.bind_texture(glow::TEXTURE_2D, None);
         }
         self.size = Some((width, height));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         {
             self.stays = false;
         }
@@ -266,7 +301,31 @@ impl Card {
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    /// Finds `kept` on the card: it is what [`Self::draw`] draws from now
+    /// on.
+    #[cfg(target_os = "android")]
+    fn show_kept(&mut self, gl: &Gl, kept: &Kept) -> Result<(), Error> {
+        if self.of_pixels.is_none() {
+            return Err(Error::Video("the card draws no pictures from the decoder".into()));
+        }
+        // SAFETY: the context is current on this thread, and is the one
+        // the texture left was opened with.
+        unsafe {
+            if self.seen.as_ref().is_none_or(|seen| !seen.shows(kept)) {
+                if let Some(seen) = self.seen.take() {
+                    seen.close(gl);
+                }
+                self.seen = Some(Seen::open(gl, kept).map_err(Error::Video)?);
+            }
+            if let Some(seen) = &mut self.seen {
+                seen.take(gl).map_err(Error::Video)?;
+            }
+        }
+        self.stays = true;
+        Ok(())
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
     #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     fn show_kept(&mut self, _gl: &Gl, kept: &Kept) -> Result<(), Error> {
         kept.never()
@@ -295,6 +354,41 @@ impl Card {
                 })
             }
             .map_err(Error::Video);
+        }
+        #[cfg(target_os = "android")]
+        if self.stays {
+            let (Some(program), Some((texture, place))) =
+                (self.of_pixels, self.seen.as_ref().and_then(Seen::drawn))
+            else {
+                return Ok(());
+            };
+            // SAFETY: plain calls into the context, current on this thread,
+            // with names it gave: the one the texture was opened with.
+            unsafe {
+                gl.use_program(Some(program));
+                gl.uniform_4_f32(
+                    gl.get_uniform_location(program, "crop").as_ref(),
+                    place.part[0],
+                    place.part[1],
+                    place.part[2],
+                    place.part[3],
+                );
+                gl.uniform_4_f32(
+                    gl.get_uniform_location(program, "within").as_ref(),
+                    place.within[0],
+                    place.within[1],
+                    place.within[2],
+                    place.within[3],
+                );
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(crate::kept::android::TEXTURE_EXTERNAL, Some(texture));
+                gl.bind_vertex_array(Some(self.corners));
+                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+                gl.bind_vertex_array(None);
+                gl.bind_texture(crate::kept::android::TEXTURE_EXTERNAL, None);
+                gl.use_program(None);
+            }
+            return Ok(());
         }
         if self.size.is_none() {
             return Ok(());
@@ -344,6 +438,15 @@ impl Card {
                     seen.close(gl);
                 }
             }
+            #[cfg(target_os = "android")]
+            {
+                if let Some(of_pixels) = self.of_pixels {
+                    gl.delete_program(of_pixels);
+                }
+                if let Some(seen) = self.seen {
+                    seen.close(gl);
+                }
+            }
         }
     }
 }
@@ -374,10 +477,19 @@ unsafe fn texture(gl: &Gl) -> Result<Texture, String> {
 /// A program that draws a picture as `fragment` says, in the language
 /// version the context speaks.
 fn program(gl: &Gl, fragment: &str) -> Result<Program, Error> {
+    // An extension is asked for before anything else but the version.
+    let (extension, fragment) = match fragment.strip_prefix("#extension") {
+        Some(rest) => rest.split_once('\n').map_or(("", fragment), |(line, after)| (line, after)),
+        None => ("", fragment),
+    };
     let first = if gl.version().is_embedded {
-        "#version 300 es\nprecision highp float;\n"
+        if extension.is_empty() {
+            "#version 300 es\nprecision highp float;\n".to_owned()
+        } else {
+            format!("#version 300 es\n#extension{extension}\nprecision highp float;\n")
+        }
     } else {
-        "#version 140\n"
+        "#version 140\n".to_owned()
     };
     let failed = |what: &str, error: String| Error::Video(format!("{what}: {error}"));
     // SAFETY: plain calls into the context, current on this thread, with

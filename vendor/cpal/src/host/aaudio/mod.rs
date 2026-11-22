@@ -294,10 +294,9 @@ fn configure_for_device(
             .buffer_capacity_in_frames(size.saturating_mul(2).min(i32::MAX as FrameCount) as i32);
     }
 
-    #[cfg(feature = "realtime")]
-    {
-        builder = builder.performance_mode(ndk::audio::AudioPerformanceMode::LowLatency);
-    }
+    // Leto: always ask for the low-latency path. Without it, a Fire TV
+    // plays through its slow mixer path, hundreds of milliseconds behind.
+    builder = builder.performance_mode(ndk::audio::AudioPerformanceMode::LowLatency);
 
     builder
 }

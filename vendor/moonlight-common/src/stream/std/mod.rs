@@ -375,10 +375,16 @@ impl Inner {
         let foundation_mic = info_span!("foundation_mic");
 
         thread::scope::<_, Result<_, Error>>(|scope| {
-            let audio_run = scope
-                .spawn(|| audio.in_scope(|| self.streams.audio.run().inspect_err(|_| self.stop())));
+            let audio_run = scope.spawn(|| {
+                audio.in_scope(|| {
+                    // Leto: the threads the driver starts take this priority.
+                    put_sound_first();
+                    self.streams.audio.run().inspect_err(|_| self.stop())
+                })
+            });
             let audio_events = scope.spawn(|| {
                 audio.in_scope(|| {
+                    put_sound_first();
                     let mut started = false;
 
                     while let Some(event) = self.streams.audio.blocking_next_event() {
@@ -585,5 +591,29 @@ fn finalize_errors(errors: Vec<Error>) -> Result<(), Error> {
     match ErrorList::try_from(errors) {
         Ok(value) => Err(value.into()),
         Err(_) => Ok(()),
+    }
+}
+
+/// Leto: puts the calling thread ahead of the others, as Android does for its
+/// own sound (`THREAD_PRIORITY_AUDIO`). A busy TV otherwise lets the sound's
+/// packets wait, and the speakers run dry again and again while the picture
+/// goes on. Threads started from here on take the same priority.
+fn put_sound_first() {
+    #[cfg(target_os = "android")]
+    {
+        const THREAD_PRIORITY_AUDIO: libc::c_int = -16;
+        // SAFETY: plain system calls on the calling thread.
+        let done = unsafe {
+            libc::setpriority(
+                libc::PRIO_PROCESS,
+                libc::gettid() as libc::id_t,
+                THREAD_PRIORITY_AUDIO,
+            )
+        };
+        if done == 0 {
+            info!("sound thread put first");
+        } else {
+            warn!("sound thread not put first: {}", io::Error::last_os_error());
+        }
     }
 }

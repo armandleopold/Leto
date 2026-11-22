@@ -36,6 +36,9 @@ pub struct Speaker {
     last_try: Instant,
     /// When the holes in the sound were last told, and how many there were.
     told: (Instant, u64, u64),
+    /// Frames that arrived since then: less than the time gone by means the
+    /// sound arrives slower than it plays.
+    arrived: u64,
 }
 
 /// An open output and the sound waiting for it.
@@ -54,7 +57,14 @@ impl Speaker {
         let output = Output::open(sample_rate, name)?;
         let name = name.map(str::to_owned);
         let now = Instant::now();
-        Ok(Self { sample_rate, name, output: Some(output), last_try: now, told: (now, 0, 0) })
+        Ok(Self {
+            sample_rate,
+            name,
+            output: Some(output),
+            last_try: now,
+            told: (now, 0, 0),
+            arrived: 0,
+        })
     }
 
     /// Whether the output stopped playing, and none has taken its place
@@ -77,6 +87,7 @@ impl Speaker {
                     self.output = Some(output);
                     // A new queue counts from nothing.
                     self.told = (Instant::now(), 0, 0);
+                    self.arrived = 0;
                 }
                 Err(error) => log::debug!("still no sound output: {error}"),
             }
@@ -84,18 +95,24 @@ impl Speaker {
         if let Some(output) = &self.output {
             let mut queue = lock(&output.queue);
             queue.push(stereo);
+            self.arrived += (stereo.len() / 2) as u64;
             let (when, dry_runs, dropped) = self.told;
-            if when.elapsed() >= TELL_EVERY {
+            let gone_by = when.elapsed();
+            if gone_by >= TELL_EVERY {
                 if queue.dry_runs != dry_runs || queue.dropped != dropped {
+                    let ms = |frames: u64| frames * 1000 / u64::from(self.sample_rate);
                     log::info!(
-                        "sound: ran dry {} times and dropped {} ms in {} s, now waits {} ms",
+                        "sound: ran dry {} times and dropped {} ms in {} ms, {} ms of sound \
+                         arrived, now waits {} ms",
                         queue.dry_runs - dry_runs,
-                        (queue.dropped - dropped) * 1000 / u64::from(self.sample_rate),
-                        TELL_EVERY.as_secs(),
-                        queue.cushion() as u64 * 1000 / u64::from(self.sample_rate),
+                        ms(queue.dropped - dropped),
+                        gone_by.as_millis(),
+                        ms(self.arrived),
+                        ms(queue.cushion() as u64),
                     );
                 }
                 self.told = (Instant::now(), queue.dry_runs, queue.dropped);
+                self.arrived = 0;
             }
         }
     }
