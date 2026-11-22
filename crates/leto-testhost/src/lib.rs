@@ -168,9 +168,8 @@ pub struct Options {
     pub answer_after: Duration,
     /// Use the ports a Sunshine or an Apollo uses, counted from `port`:
     /// HTTPS five below it, RTSP twenty-one above, pictures, control and
-    /// sound nine, ten and eleven above, and the microphone thirteen above
-    /// on a host that takes no camera, which has that port otherwise. Only
-    /// with a `port`. Without it every other port is any free one, so that
+    /// sound nine, ten and eleven above, and the microphone twelve above.
+    /// Only with a `port`. Without it every other port is any free one, so that
     /// many hosts run side by side.
     pub real_ports: bool,
     /// Never give up on a client that went silent, where a host gives up
@@ -974,8 +973,9 @@ fn launch(
         video: options.port_at(9),
         control: options.port_at(10),
         audio: options.port_at(11),
-        // The camera listens there too, on a host that takes one.
-        microphone: if shared.cameras.is_some() { 0 } else { options.port_at(13) },
+        // Where the microphone build of Apollo listens: a Leto beside this
+        // host has the port above it.
+        microphone: options.port_at(12),
     };
     let session = match stream::Session::start(local, launch, ports) {
         Ok(session) => session,

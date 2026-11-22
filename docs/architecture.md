@@ -31,7 +31,6 @@ apps/
   leto/           The graphical app (egui), a library with a thin `main.rs`: desktop, and the browser through WebAssembly
   leto-android/   The same app on Android, in a NativeActivity: its entry, its log, its Wi-Fi lock, its manifest
   leto-cli/       The command line: the same engine, for scripts and diagnostics
-  leto-host/      Leto on the PC that is shared. For now the companion: beside an Apollo, it takes the camera of the devices Apollo is paired with
 crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking

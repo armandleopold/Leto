@@ -293,8 +293,9 @@ two virtual devices.
   identity as Apollo and accept exactly the devices Apollo has paired.
 - When the Leto host is complete, the companion's code is simply part of it.
 
-The companion exists for the camera: the crate `leto-host`, and the command
-`leto-host companion`. Where it had to choose:
+The companion exists for the camera: the crate `leto-host`, which the Leto
+app runs from its "This PC" screen, and `leto-cli companion` without a
+window. Where it had to choose:
 
 - **Which Apollo.** The `config` folder beside the program under
   `Program Files\Apollo` or `Program Files\Sunshine` on Windows,

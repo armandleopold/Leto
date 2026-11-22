@@ -8,11 +8,10 @@ https://leto.re
 What is in this folder
 ----------------------
 
-- leto (leto.exe on Windows): the app.
+- leto (leto.exe on Windows): the app, to reach a PC and to share this
+  one. See "Your camera on the PC" below.
 - leto-cli (leto-cli.exe on Windows): the command line, and the bridge that
   serves the web client to browsers.
-- leto-host (leto-host.exe on Windows): for the PC that is shared, beside
-  Apollo or Sunshine. See "Your camera on the PC" below.
 - dist/web: the web client, which the bridge sends to browsers.
 - LICENSE.txt: the licence, GPL-3.0. The source code of this version is
   published next to this file, as leto-<version>-source.tar.gz.
@@ -34,15 +33,18 @@ browser warns once that the certificate is the bridge's own: go on.
 Your camera on the PC
 ---------------------
 
-Apollo and Sunshine take no camera. On the PC they run on, open a terminal
-in this folder and run "leto-host companion". It reads their settings
-without changing them, and takes the camera of the devices they are paired
-with: on Apollo, the ones allowed to use the keyboard and the mouse. In
-Leto, the camera switch over a stream then works. With "--save camera.png"
-it keeps what the camera sees in that file. The pictures are not a camera
-for the PC's apps yet. Never tried beside a real Apollo so far: if Windows
-refuses to let the settings be read, open the terminal as administrator,
-and allow leto-host through the firewall when Windows asks.
+Apollo and Sunshine take no camera. On the PC they run on, start leto,
+open "This PC" (the screen button at the top of the list of PCs) and turn
+"Share this PC" on. Leto reads their settings without changing them, and
+takes the camera of the devices they are paired with: on Apollo, the ones
+allowed to use the keyboard and the mouse. In Leto on the device, the
+camera switch over a stream then works, and "This PC" shows what the camera
+sees. On Windows, closing the window keeps Leto running while the PC is
+shared: its icon beside the clock brings the window back, or quits. The
+pictures are not a camera for the PC's apps yet. Never tried beside a real
+Apollo so far: if Windows refuses to let the settings be read, start leto
+as administrator, and allow it through the firewall when Windows asks.
+Without a window, "leto-cli companion" does the same.
 
 Good to know
 ------------

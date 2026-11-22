@@ -20,9 +20,21 @@ enum Chosen {
     Add,
 }
 
-/// Returns whether the person asked for the settings.
-pub fn show(ui: &mut Ui, state: &mut State, now: f64) -> bool {
-    let settings = header(ui, state, now);
+/// The name of the screen where this PC is shared, and of its button.
+pub const THIS_PC: &str = "This PC";
+
+/// Another screen the person asked for, from the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    Settings,
+    /// The screen where this PC is shared.
+    ThisPc,
+}
+
+/// `hosts`: this device can be shared, and has a button for it. Returns
+/// the screen the person asked for, if any.
+pub fn show(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Option<Asked> {
+    let settings = header(ui, state, hosts, now);
     ui.add_space(14.0);
 
     if let Some(notice) = &state.notice {
@@ -50,16 +62,16 @@ pub fn show(ui: &mut Ui, state: &mut State, now: f64) -> bool {
 }
 
 /// The title, and on its right what is about this device and not one PC:
-/// the settings, the camera and the rest, and searching again. Returns
-/// whether the person asked for the settings.
-fn header(ui: &mut Ui, state: &mut State, now: f64) -> bool {
+/// the settings, sharing this PC, the camera and the rest, and searching
+/// again. Returns the screen the person asked for.
+fn header(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Option<Asked> {
     if ui.available_width() < NARROW {
         // A phone held upright: the buttons go on a line of their own.
         let settings = ui
             .allocate_ui_with_layout(
                 vec2(ui.available_width(), 36.0),
                 Layout::right_to_left(Align::Center),
-                |ui| header_buttons(ui, state, now),
+                |ui| header_buttons(ui, state, hosts, now),
             )
             .inner;
         titles(ui, state);
@@ -68,7 +80,7 @@ fn header(ui: &mut Ui, state: &mut State, now: f64) -> bool {
         ui.horizontal(|ui| {
             titles(ui, state);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                header_buttons(ui, state, now)
+                header_buttons(ui, state, hosts, now)
             })
             .inner
         })
@@ -94,9 +106,9 @@ fn titles(ui: &mut Ui, state: &State) {
     });
 }
 
-/// The buttons of the header, from the right. Returns whether the settings
-/// were asked for.
-fn header_buttons(ui: &mut Ui, state: &mut State, now: f64) -> bool {
+/// The buttons of the header, from the right. Returns the screen that was
+/// asked for.
+fn header_buttons(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Option<Asked> {
     let again = ui.add_enabled_ui(!state.searching, |ui| {
         widgets::icon_button(ui, icons::refresh, "Search again")
     });
@@ -106,7 +118,12 @@ fn header_buttons(ui: &mut Ui, state: &mut State, now: f64) -> bool {
     if widgets::icon_button(ui, icons::camera, super::devices::NAME).clicked() {
         state.check_devices();
     }
-    widgets::icon_button(ui, icons::gear, "Settings").clicked()
+    let this_pc = hosts && widgets::icon_button(ui, icons::monitor, THIS_PC).clicked();
+    if widgets::icon_button(ui, icons::gear, "Settings").clicked() {
+        Some(Asked::Settings)
+    } else {
+        this_pc.then_some(Asked::ThisPc)
+    }
 }
 
 /// Below this width, in points, the header puts its buttons above the

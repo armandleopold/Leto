@@ -60,6 +60,11 @@ pub struct LetoApp {
     /// The settings are on screen, over whatever was there: it carries on
     /// underneath, and is back when they close.
     settings_open: bool,
+    /// The screen where this PC is shared is on screen, in the same way.
+    host_open: bool,
+    /// This PC as a host.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    sharing: crate::host::Sharing,
     /// App time at which the window closes, once the stream it was closed
     /// on has been left.
     closes_at: Option<f64>,
@@ -88,6 +93,9 @@ impl LetoApp {
             saved: settings.clone(),
             settings,
             settings_open: false,
+            host_open: false,
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            sharing: crate::host::Sharing::default(),
             closes_at: None,
             told: None,
         }
@@ -175,7 +183,23 @@ const fn card(_cc: &eframe::CreationContext<'_>, _vsync: bool) -> Option<OnCard>
     None
 }
 
+/// This build of Leto has the screen where this PC is shared.
+const HOSTS: bool = cfg!(not(any(target_arch = "wasm32", target_os = "android")));
+
 impl LetoApp {
+    /// The window to put away instead of closing it, while Leto goes on
+    /// beside the clock because this PC is shared.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn put_away(&self, window: &eframe::Frame) -> Option<isize> {
+        window_of(window).filter(|_| self.sharing.stays())
+    }
+
+    /// Only a desktop is shared.
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    const fn put_away(&self, _window: &eframe::Frame) -> Option<isize> {
+        None
+    }
+
     /// Runs the camera and the microphone of this device as `tried` has
     /// them, and no further: what is not on captures nothing. Returns how
     /// loud the microphone is while it captures.
@@ -282,6 +306,12 @@ impl eframe::App for LetoApp {
         // Closing the window leaves a connected stream first, as the person
         // would: the PC lets go of what was held, and draws its pointer
         // again. The window closes a moment later.
+        //
+        // While this PC is shared, closing the window only puts it away:
+        // Leto goes on beside the clock.
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        self.sharing.follow(self.settings.share_this_pc, window_of(window), ui.ctx());
+        let put_away = self.put_away(window);
         let close = ui.input(|input| input.viewport().close_requested());
         if close
             && self.closes_at.is_none()
@@ -290,12 +320,18 @@ impl eframe::App for LetoApp {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.player.leave_to_close();
             self.closes_at = Some(now + CLOSES_AFTER_LEAVING);
+        } else if let (true, Some(window)) = (close, put_away) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            leto_system::shown::hide(window);
         }
         if let Some(at) = self.closes_at {
-            if now >= at {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
+            if now < at {
                 ui.ctx().request_repaint_after_secs((at - now) as f32);
+            } else if let Some(window) = put_away {
+                self.closes_at = None;
+                leto_system::shown::hide(window);
+            } else {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
 
@@ -392,11 +428,18 @@ impl eframe::App for LetoApp {
                     let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
                     if self.settings_open && escape {
                         self.settings_open = false;
+                    } else if escape {
+                        self.host_open = false;
                     }
                     let scroll = egui::ScrollArea::vertical().auto_shrink(false);
                     // The settings and the screens scroll on their own.
-                    let scroll =
-                        scroll.id_salt(if self.settings_open { "settings" } else { "screen" });
+                    let scroll = scroll.id_salt(if self.settings_open {
+                        "settings"
+                    } else if self.host_open {
+                        "this-pc"
+                    } else {
+                        "screen"
+                    });
                     scroll.show(ui, |ui| {
                         widgets::page(ui, |ui| match (door, screen) {
                             _ if self.settings_open => {
@@ -423,6 +466,14 @@ impl eframe::App for LetoApp {
                                     self.settings_open = false;
                                 }
                             }
+                            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+                            _ if self.host_open => {
+                                let back_to = back_to(&self.state.screen).to_owned();
+                                let share = &mut self.settings.share_this_pc;
+                                if self.sharing.show(ui, share, &back_to) {
+                                    self.host_open = false;
+                                }
+                            }
                             (Door::Closed(problem), _) => out_of_order(ui, problem),
                             (Door::Opening { failed }, _) => gate::reaching(ui, *failed),
                             (Door::Code { refused, checking }, _) => {
@@ -432,8 +483,10 @@ impl eframe::App for LetoApp {
                                 }
                             }
                             (Door::Open, Screen::Pcs) => {
-                                if ui::pcs::show(ui, &mut self.state, now) {
-                                    self.settings_open = true;
+                                match ui::pcs::show(ui, &mut self.state, HOSTS, now) {
+                                    Some(ui::pcs::Asked::Settings) => self.settings_open = true,
+                                    Some(ui::pcs::Asked::ThisPc) => self.host_open = true,
+                                    None => {}
                                 }
                                 ui.add_space(24.0);
                                 ui.label(widgets::dim(build_line()).size(theme::SMALL - 1.0));
