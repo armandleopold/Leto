@@ -5,6 +5,8 @@
 //! stream hears of every gamepad once, then of each change, and of a gamepad
 //! being unplugged.
 
+use std::time::{Duration, Instant};
+
 use leto_core::input::{GamepadButtons, GamepadKind, GamepadState, Input, MAX_GAMEPADS};
 
 /// The gamepads of this device, by number on the PC.
@@ -105,36 +107,79 @@ pub enum Press {
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const STICK_COUNTS: f32 = 0.5;
 
+/// How long an arrow or the stick is held before it moves again by itself.
+// A browser's gamepads go to the PC only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const REPEAT_AFTER: Duration = Duration::from_millis(400);
+
+/// How often it then moves again while still held.
+// A browser's gamepads go to the PC only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const REPEAT_EVERY: Duration = Duration::from_millis(120);
+
 /// What each gamepad held when last looked at, to tell a press, which
-/// counts once, from a button held down.
+/// counts once, from a button held down. An arrow or the stick held down
+/// moves again and again, as in other apps; A and B count once.
 // A browser's gamepads go to the PC only.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Default)]
 pub struct Menu {
-    held: Vec<(usize, Vec<Press>)>,
+    /// For each gamepad, what it holds, and when each moves again.
+    held: Vec<(usize, Vec<(Press, Instant)>)>,
 }
 
 // A browser's gamepads go to the PC only.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Menu {
-    /// The gamepad `id` is in `state`: returns what it just pressed.
+    /// The gamepad `id` is in `state`: returns what it just pressed, and
+    /// the arrows held long enough to move again.
     pub fn presses(&mut self, id: usize, state: &GamepadState) -> Vec<Press> {
-        let now = held(state);
+        self.presses_at(id, state, Instant::now())
+    }
+
+    fn presses_at(&mut self, id: usize, state: &GamepadState, now: Instant) -> Vec<Press> {
+        let holds = held(state);
         // Android tells of a gamepad when it is first used: what it holds
         // then was just pressed.
-        let before = match self.held.iter_mut().find(|(pad, _)| *pad == id) {
-            Some((_, before)) => std::mem::replace(before, now.clone()),
+        let index = match self.held.iter().position(|(pad, _)| *pad == id) {
+            Some(index) => index,
             None => {
-                self.held.push((id, now.clone()));
-                Vec::new()
+                self.held.push((id, Vec::new()));
+                self.held.len() - 1
             }
         };
-        now.into_iter().filter(|press| !before.contains(press)).collect()
+        let before = std::mem::take(&mut self.held[index].1);
+        let mut presses = Vec::new();
+        let mut after = Vec::new();
+        for press in holds {
+            let again = match before.iter().find(|(was, _)| *was == press) {
+                None => {
+                    presses.push(press);
+                    now + REPEAT_AFTER
+                }
+                Some(&(_, again)) if press.repeats() && now >= again => {
+                    presses.push(press);
+                    // From when it was due, so a late look does not slow it.
+                    (again + REPEAT_EVERY).max(now)
+                }
+                Some(&(_, again)) => again,
+            };
+            after.push((press, again));
+        }
+        self.held[index].1 = after;
+        presses
     }
 
     /// The gamepad `id` was unplugged.
     pub fn unplugged(&mut self, id: usize) {
         self.held.retain(|(pad, _)| *pad != id);
+    }
+}
+
+impl Press {
+    /// Whether holding it moves again and again: the four directions do.
+    const fn repeats(self) -> bool {
+        !matches!(self, Self::Choose | Self::Back)
     }
 }
 
@@ -297,6 +342,27 @@ mod tests {
         assert_eq!(menu.presses(1, &state(GamepadButtons::NONE, [0.0, 1.0])), [Press::Up]);
         // Each gamepad on its own.
         assert_eq!(menu.presses(2, &state(GamepadButtons::LEFT, [0.0; 2])), [Press::Left]);
+    }
+
+    #[test]
+    fn an_arrow_held_down_moves_again_and_again_and_a_held_a_does_not() {
+        let mut menu = Menu::default();
+        let state = |buttons| GamepadState { buttons, ..GamepadState::default() };
+        let start = Instant::now();
+        let at = |millis| start + Duration::from_millis(millis);
+        let down = GamepadButtons::DOWN;
+        assert_eq!(menu.presses_at(1, &state(down), at(0)), [Press::Down]);
+        assert!(menu.presses_at(1, &state(down), at(300)).is_empty());
+        assert_eq!(menu.presses_at(1, &state(down), at(400)), [Press::Down]);
+        assert!(menu.presses_at(1, &state(down), at(500)).is_empty());
+        assert_eq!(menu.presses_at(1, &state(down), at(520)), [Press::Down]);
+        // Let go, then held again: it waits again before moving by itself.
+        assert!(menu.presses_at(1, &state(GamepadButtons::NONE), at(600)).is_empty());
+        assert_eq!(menu.presses_at(1, &state(down), at(700)), [Press::Down]);
+        assert!(menu.presses_at(1, &state(down), at(1000)).is_empty());
+        // A held down opens once.
+        assert_eq!(menu.presses_at(2, &state(GamepadButtons::A), at(0)), [Press::Choose]);
+        assert!(menu.presses_at(2, &state(GamepadButtons::A), at(2000)).is_empty());
     }
 
     const REST: GamepadState = GamepadState {

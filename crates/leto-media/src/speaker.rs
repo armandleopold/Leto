@@ -20,6 +20,9 @@ use crate::{Error, endpoints, queue::Queue};
 /// How long to wait before trying again to open speakers that failed.
 const RETRY_EVERY: Duration = Duration::from_secs(2);
 
+/// How often the holes in the sound are told in the log, when there were.
+const TELL_EVERY: Duration = Duration::from_secs(5);
+
 /// Plays stereo sound on the output the person chose, or the system's
 /// default one.
 ///
@@ -31,6 +34,8 @@ pub struct Speaker {
     name: Option<String>,
     output: Option<Output>,
     last_try: Instant,
+    /// When the holes in the sound were last told, and how many there were.
+    told: (Instant, u64, u64),
 }
 
 /// An open output and the sound waiting for it.
@@ -48,7 +53,8 @@ impl Speaker {
     pub fn open(sample_rate: u32, name: Option<&str>) -> Result<Self, Error> {
         let output = Output::open(sample_rate, name)?;
         let name = name.map(str::to_owned);
-        Ok(Self { sample_rate, name, output: Some(output), last_try: Instant::now() })
+        let now = Instant::now();
+        Ok(Self { sample_rate, name, output: Some(output), last_try: now, told: (now, 0, 0) })
     }
 
     /// Whether the output stopped playing, and none has taken its place
@@ -67,12 +73,30 @@ impl Speaker {
         if self.output.is_none() && self.last_try.elapsed() >= RETRY_EVERY {
             self.last_try = Instant::now();
             match Output::open(self.sample_rate, self.name.as_deref()) {
-                Ok(output) => self.output = Some(output),
+                Ok(output) => {
+                    self.output = Some(output);
+                    // A new queue counts from nothing.
+                    self.told = (Instant::now(), 0, 0);
+                }
                 Err(error) => log::debug!("still no sound output: {error}"),
             }
         }
         if let Some(output) = &self.output {
-            lock(&output.queue).push(stereo);
+            let mut queue = lock(&output.queue);
+            queue.push(stereo);
+            let (when, dry_runs, dropped) = self.told;
+            if when.elapsed() >= TELL_EVERY {
+                if queue.dry_runs != dry_runs || queue.dropped != dropped {
+                    log::info!(
+                        "sound: ran dry {} times and dropped {} ms in {} s, now waits {} ms",
+                        queue.dry_runs - dry_runs,
+                        (queue.dropped - dropped) * 1000 / u64::from(self.sample_rate),
+                        TELL_EVERY.as_secs(),
+                        queue.cushion() as u64 * 1000 / u64::from(self.sample_rate),
+                    );
+                }
+                self.told = (Instant::now(), queue.dry_runs, queue.dropped);
+            }
         }
     }
 }

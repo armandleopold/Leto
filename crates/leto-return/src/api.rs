@@ -112,14 +112,17 @@ pub struct CameraAsk {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Answer {
-    #[serde(default)]
-    pub camera: Option<CameraGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<Grant>,
+    /// The microphone, sent as `crate::voice` describes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microphone: Option<Grant>,
 }
 
-/// Where a camera goes, and what seals it.
+/// Where a camera or a microphone goes, and what seals it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CameraGrant {
+pub struct Grant {
     /// The UDP port the packets go to, at the address of the API.
     pub port: u16,
     /// The sixteen bytes of the key, as thirty-two hexadecimal digits.
@@ -127,7 +130,7 @@ pub struct CameraGrant {
     pub key_id: u32,
 }
 
-impl CameraGrant {
+impl Grant {
     pub fn new(port: u16, key: &Key) -> Self {
         let digits = key.bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         Self { port, key: digits, key_id: key.id }
@@ -148,10 +151,10 @@ impl CameraGrant {
     }
 }
 
-impl std::fmt::Debug for CameraGrant {
+impl std::fmt::Debug for Grant {
     /// A key is not for logs.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CameraGrant {{ port: {}, key_id: {:#010x} }}", self.port, self.key_id)
+        write!(f, "Grant {{ port: {}, key_id: {:#010x} }}", self.port, self.key_id)
     }
 }
 
@@ -190,6 +193,7 @@ mod tests {
 
         let answer: Answer = serde_json::from_str("{}").expect("an answer may be empty");
         assert_eq!(answer.camera, None);
+        assert_eq!(answer.microphone, None);
     }
 
     #[test]
@@ -212,7 +216,7 @@ mod tests {
             bytes: *b"\x00\x01\x02\x03\x04\x05\x06\x07\xF8\xF9\xFA\xFB\xFC\xFD\xFE\xFF",
             id: 7,
         };
-        let answer = Answer { camera: Some(CameraGrant::new(48002, &key)) };
+        let answer = Answer { camera: Some(Grant::new(48002, &key)), microphone: None };
         let text = written(&answer);
         assert_eq!(
             text,
@@ -224,7 +228,7 @@ mod tests {
 
     #[test]
     fn a_key_that_is_not_one_is_not_used() {
-        let grant = |key: &str| CameraGrant { port: 1, key: key.to_owned(), key_id: 0 };
+        let grant = |key: &str| Grant { port: 1, key: key.to_owned(), key_id: 0 };
         assert_eq!(grant("").key(), None);
         assert_eq!(grant("0001020304050607f8f9fafbfcfdfe").key(), None);
         assert_eq!(grant("0001020304050607f8f9fafbfcfdfeffff").key(), None);
@@ -248,7 +252,7 @@ mod tests {
     #[test]
     fn a_grant_does_not_show_its_key_in_logs() {
         let key = Key { bytes: [0xAB; 16], id: 0xC0FFEE };
-        let shown = format!("{:?}", CameraGrant::new(48002, &key));
-        assert_eq!(shown, "CameraGrant { port: 48002, key_id: 0x00c0ffee }");
+        let shown = format!("{:?}", Grant::new(48002, &key));
+        assert_eq!(shown, "Grant { port: 48002, key_id: 0x00c0ffee }");
     }
 }

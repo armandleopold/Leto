@@ -31,6 +31,7 @@ pub mod permission;
 pub mod shown;
 pub mod task;
 pub mod television;
+pub mod vcam;
 
 #[cfg(target_os = "android")]
 mod java;

@@ -146,8 +146,13 @@ pub fn play(
     let session = Arc::new(session);
     let connected = Instant::now();
     eprintln!("Streaming {} from {} for {seconds} seconds…", app.title, host.name);
-    let takes_microphone = session.takes_microphone();
-    let listening = back.microphone.then(|| Listening::start(&session));
+    // A PC that takes no microphone inside the stream may take one beside
+    // it, on Leto's API: only a microphone to send waits to know.
+    let beside = !session.takes_microphone()
+        && back.microphone
+        && client.return_offer(&host.id).is_ok_and(|offer| offer.microphone);
+    let takes_microphone = session.takes_microphone() || beside;
+    let listening = back.microphone.then(|| Listening::start(&session, client, &host.id, beside));
     // Few PCs take a camera, and one that takes none may be slow to say so.
     // The stream is not kept waiting for it: only a camera to send is.
     let mut asking = Some({
@@ -327,17 +332,29 @@ struct Listening {
 }
 
 impl Listening {
-    /// Starts sending the microphone to the PC of `session`, or says why
-    /// not.
-    fn start(session: &Arc<Session>) -> Result<Self, String> {
-        if !session.takes_microphone() {
-            return Err("the PC takes no microphone".to_owned());
-        }
+    /// Starts sending the microphone to the PC of `session`, inside the
+    /// stream or `beside` it on Leto's API, or says why not.
+    fn start(
+        session: &Arc<Session>,
+        client: &Arc<Client>,
+        host: &HostId,
+        beside: bool,
+    ) -> Result<Self, String> {
+        let mut link = match (session.takes_microphone(), beside) {
+            (true, _) => None,
+            (false, true) => Some(client.send_microphone(host).map_err(|error| error.to_string())?),
+            (false, false) => return Err("the PC takes no microphone".to_owned()),
+        };
         let frames = Arc::new(AtomicU64::new(0));
         let (session, sent) = (Arc::clone(session), Arc::clone(&frames));
         let mut number = 0u32;
         let microphone = Microphone::open(None, move |frame| {
-            if session.send_microphone(VOICE_FRAME * number, frame) {
+            let at = VOICE_FRAME * number;
+            let left = match &mut link {
+                Some(link) => link.send(at, frame),
+                None => session.send_microphone(at, frame),
+            };
+            if left {
                 sent.fetch_add(1, Ordering::Relaxed);
             }
             number = number.wrapping_add(1);

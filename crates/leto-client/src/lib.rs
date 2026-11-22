@@ -40,7 +40,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use camera::{CameraLink, CameraRefusal, CameraSettings};
+pub use camera::{CameraLink, CameraRefusal, CameraSettings, ReturnOffer, VoiceLink};
 pub use leto_core::{
     engine, input,
     model::{
@@ -315,6 +315,8 @@ impl Client {
                     running_app: None,
                     wakeable: card.is_some(),
                     tunnel: false,
+                    tunnel_address: None,
+                    lan: false,
                 };
                 let entry = Entry {
                     summary,
@@ -837,6 +839,22 @@ impl Client {
         Ok(self.leto_api(id)?.camera_offer())
     }
 
+    /// What a paired host takes from this device on Leto's own API: its
+    /// camera, and its microphone when the host takes none inside a stream.
+    /// Blocks for a few seconds at most.
+    pub fn return_offer(&self, id: &HostId) -> Result<ReturnOffer, Error> {
+        Ok(self.leto_api(id)?.offer())
+    }
+
+    /// Asks a paired host to take the microphone of this device on Leto's
+    /// API, and opens the way there. Blocks until the host has answered.
+    ///
+    /// The frames travel sealed with a key of their own, which the host
+    /// made and told over the paired HTTPS connection.
+    pub fn send_microphone(&self, id: &HostId) -> Result<VoiceLink, Error> {
+        self.leto_api(id)?.send_microphone()
+    }
+
     /// Asks a paired host to take the camera of this device, and opens the
     /// way there. `sending` is what the pictures will be like: within what
     /// [`Client::camera_offer`] said. Blocks until the host has answered.
@@ -1080,6 +1098,18 @@ impl Client {
                     entry.addresses.len()
                 );
             }
+            // Through the tunnel, the PC's own address inside it, if Leto
+            // knows one: the person reads it in their WireGuard server.
+            summary.tunnel_address = if summary.tunnel {
+                entry
+                    .addresses
+                    .iter()
+                    .map(|(address, _)| address)
+                    .find(|address| self.ways.inside(address))
+                    .cloned()
+            } else {
+                None
+            };
             entry.summary = summary.clone();
             if !outdated || entry.handle.is_none() {
                 entry.door = door;
@@ -1232,6 +1262,8 @@ impl Asker {
             // Known once recorded.
             wakeable: false,
             tunnel: door.is_some(),
+            tunnel_address: None,
+            lan: door.is_none() && discovery::on_this_network(address),
         };
         // Only to a device it is paired with: the others get zeros.
         let card =

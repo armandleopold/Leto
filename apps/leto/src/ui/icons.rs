@@ -36,6 +36,30 @@ pub fn home(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([at(rect, 0.5, 0.9), at(rect, 0.5, 0.64)], stroke);
 }
 
+/// Three boxes joined by wires: a local network.
+pub fn network(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = Stroke::new((rect.width() / 10.0).clamp(1.2, 2.0), color);
+    let radius = rect.width() / 14.0;
+    let boxes = [
+        Rect::from_min_max(at(rect, 0.34, 0.04), at(rect, 0.66, 0.30)),
+        Rect::from_min_max(at(rect, 0.02, 0.70), at(rect, 0.34, 0.96)),
+        Rect::from_min_max(at(rect, 0.66, 0.70), at(rect, 0.98, 0.96)),
+    ];
+    for box_ in boxes {
+        painter.rect_stroke(box_, radius, stroke, StrokeKind::Inside);
+    }
+    painter.line_segment([at(rect, 0.5, 0.30), at(rect, 0.5, 0.50)], stroke);
+    painter.line(
+        vec![
+            at(rect, 0.18, 0.70),
+            at(rect, 0.18, 0.50),
+            at(rect, 0.82, 0.50),
+            at(rect, 0.82, 0.70),
+        ],
+        stroke,
+    );
+}
+
 pub fn plus(painter: &Painter, rect: Rect, color: Color32) {
     let stroke = stroke(rect, color);
     painter.line_segment([at(rect, 0.5, 0.12), at(rect, 0.5, 0.88)], stroke);

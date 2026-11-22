@@ -17,6 +17,7 @@
 //! decoded on the graphics card can stay there until it is drawn: a
 //! [`Kept`], which is being tried.
 
+pub mod cable;
 mod camera;
 // Drawing goes through OpenGL's C interface.
 #[allow(unsafe_code)]

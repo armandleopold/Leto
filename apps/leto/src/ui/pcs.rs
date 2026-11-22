@@ -4,7 +4,7 @@ use egui::{
     Align, CursorIcon, Key, Layout, Rect, RichText, Role, Sense, Stroke, StrokeKind, Ui, Vec2,
     WidgetInfo, pos2, vec2,
 };
-use leto_core::model::{HostId, HostSummary, Reachability, join_address};
+use leto_core::model::{HostId, HostSummary, Reachability, Way, join_address};
 
 use super::{icons, widgets};
 use crate::{state::State, theme};
@@ -194,8 +194,18 @@ fn host_card(
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let started = first && widgets::first_choice(ui, &response);
     let (dot, state_text) = status(host, waking);
+    // How it is reached, once it answered: what an offline PC was reached
+    // through may no longer be the way.
+    let way = host.way();
+    let badge = match way {
+        _ if host.reachability != Reachability::Online => None,
+        Way::WireGuard(_) => Some(Badge::WireGuard),
+        Way::Lan(_) => Some(Badge::Lan),
+        Way::Other(_) => None,
+    };
     response.widget_info(|| {
-        WidgetInfo::labeled(Role::Button, true, format!("{}, {state_text}", host.name))
+        let through = badge.map_or(String::new(), |badge| format!(", {}", badge.name()));
+        WidgetInfo::labeled(Role::Button, true, format!("{}{through}, {state_text}", host.name))
     });
     let offline = host.reachability == Reachability::Offline;
     let lit = response.hovered() || response.has_focus();
@@ -225,11 +235,27 @@ fn host_card(
     let state_pos = rect.min + vec2(33.0, 100.0);
     widgets::line(painter, state_pos, state_text, theme::SMALL + 0.5, ink, text_width - 17.0);
 
-    // Through Leto's own tunnel, the address is the PC's at home.
-    let way = if host.tunnel { " · WireGuard" } else { "" };
-    let detail = format!("{} · {}{way}", host.kind.name(), shown_address(host));
+    // Through Leto's own tunnel, the PC's address inside it when Leto
+    // knows it; else where the tunnel led, as the PC's address at home.
+    let address = match way {
+        Way::WireGuard(address) | Way::Lan(address) | Way::Other(address) => address,
+    };
+    let detail = format!("{} · {}", host.kind.name(), shown_address(address, host.port));
     let detail_pos = rect.min + vec2(16.0, 122.0);
-    widgets::line(painter, detail_pos, &detail, theme::SMALL - 0.5, theme::dim(), text_width);
+    // The way it is reached, right after the address.
+    let badge_width = badge.map_or(0.0, |badge| badge.width(painter) + BADGE_GAP);
+    let detail_size = theme::SMALL - 0.5;
+    let shown = widgets::line(
+        painter,
+        detail_pos,
+        &detail,
+        detail_size,
+        theme::dim(),
+        text_width - badge_width,
+    );
+    if let Some(badge) = badge {
+        badge.draw(ui, pos2(shown.right() + BADGE_GAP, shown.center().y));
+    }
 
     // On top of the card, so that it takes its own clicks.
     let menu_rect =
@@ -457,10 +483,75 @@ fn status(host: &HostSummary, waking: bool) -> (Dot, &'static str) {
 }
 
 /// The address as a person would type it: the port only when it is unusual.
-fn shown_address(host: &HostSummary) -> String {
-    if host.port == leto_core::model::DEFAULT_HOST_PORT {
-        host.address.clone()
+fn shown_address(address: &str, port: u16) -> String {
+    if port == leto_core::model::DEFAULT_HOST_PORT {
+        address.to_owned()
     } else {
-        join_address(&host.address, host.port)
+        join_address(address, port)
+    }
+}
+
+/// The space between a PC's address and the way it is reached.
+const BADGE_GAP: f32 = 6.0;
+
+/// The way a PC is reached, after its address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Badge {
+    /// Leto's own WireGuard tunnel: WireGuard's logo.
+    WireGuard,
+    /// The local network: a network icon and "LAN".
+    Lan,
+}
+
+impl Badge {
+    const LOGO: f32 = 15.0;
+    const ICON: f32 = 12.0;
+    const TEXT: f32 = theme::SMALL - 0.5;
+
+    /// For screen readers.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::WireGuard => "WireGuard",
+            Self::Lan => "LAN",
+        }
+    }
+
+    fn width(self, painter: &egui::Painter) -> f32 {
+        match self {
+            Self::WireGuard => Self::LOGO,
+            Self::Lan => Self::ICON + 4.0 + Self::label(painter).size().x,
+        }
+    }
+
+    fn label(painter: &egui::Painter) -> std::sync::Arc<egui::Galley> {
+        let font = egui::FontId::proportional(Self::TEXT);
+        painter.layout_no_wrap("LAN".to_owned(), font, theme::dim())
+    }
+
+    /// Draws it with its left edge at `left`, centred on it.
+    fn draw(self, ui: &Ui, left: egui::Pos2) {
+        match self {
+            Self::WireGuard => {
+                let rect = Rect::from_min_size(
+                    pos2(left.x, left.y - Self::LOGO / 2.0),
+                    Vec2::splat(Self::LOGO),
+                );
+                egui::Image::new(egui::include_image!(
+                    "../../../../assets/wireguard/wireguard.png"
+                ))
+                .paint_at(ui, rect);
+            }
+            Self::Lan => {
+                let painter = ui.painter();
+                let icon = Rect::from_min_size(
+                    pos2(left.x, left.y - Self::ICON / 2.0),
+                    Vec2::splat(Self::ICON),
+                );
+                icons::network(painter, icon, theme::dim());
+                let label = Self::label(painter);
+                let at = pos2(icon.right() + 4.0, left.y - label.size().y / 2.0);
+                painter.galley(at, label, theme::dim());
+            }
+        }
     }
 }

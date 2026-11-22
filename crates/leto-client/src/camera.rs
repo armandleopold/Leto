@@ -13,7 +13,7 @@
 
 use std::{
     fmt,
-    net::{SocketAddr, UdpSocket},
+    net::{IpAddr, SocketAddr, UdpSocket},
     thread,
     time::Duration,
 };
@@ -24,6 +24,7 @@ use leto_protocol::ports::Service as Port;
 use leto_return::{
     api,
     camera::{CLOCK, Packer},
+    voice,
 };
 use moonlight_common::http::{ClientIdentifier, ClientSecret};
 
@@ -90,10 +91,19 @@ impl LetoApi {
     }
 
     /// The camera the PC takes, when it takes one that this device can send.
-    ///
-    /// Whatever goes wrong means that it takes none: nothing listens there
-    /// on a PC that runs Sunshine or Apollo, and something else might.
     pub(crate) fn camera_offer(&self) -> Option<CameraOffer> {
+        self.offer().camera
+    }
+
+    /// What the PC takes on this API.
+    ///
+    /// Whatever goes wrong means that it takes nothing: nothing listens
+    /// there on a PC that runs Sunshine or Apollo, and something else might.
+    pub(crate) fn offer(&self) -> ReturnOffer {
+        self.asked().unwrap_or_default()
+    }
+
+    fn asked(&self) -> Option<ReturnOffer> {
         let reply = self
             .transport
             .request("GET", &self.hostport, api::INFO_PATH, None)
@@ -102,16 +112,36 @@ impl LetoApi {
         let info: api::Info = serde_json::from_slice(&reply.body)
             .inspect_err(|error| log::debug!("{} said something else: {error}", self.hostport))
             .ok()?;
-        let camera = info.return_channel.camera?;
-        let usable = camera.codecs.iter().any(|codec| codec == api::H264)
-            && camera.max_width > 0
-            && camera.max_height > 0
-            && camera.max_fps > 0;
-        usable.then_some(CameraOffer {
-            max_width: camera.max_width,
-            max_height: camera.max_height,
-            max_fps: camera.max_fps,
-        })
+        let camera = info.return_channel.camera.and_then(|camera| {
+            let usable = camera.codecs.iter().any(|codec| codec == api::H264)
+                && camera.max_width > 0
+                && camera.max_height > 0
+                && camera.max_fps > 0;
+            usable.then_some(CameraOffer {
+                max_width: camera.max_width,
+                max_height: camera.max_height,
+                max_fps: camera.max_fps,
+            })
+        });
+        Some(ReturnOffer { microphone: info.return_channel.microphone, camera })
+    }
+
+    /// Asks the PC to take the microphone, and opens the way there.
+    pub(crate) fn send_microphone(self) -> Result<VoiceLink, Error> {
+        let ask = api::Ask { microphone: true, camera: None };
+        let ask = serde_json::to_vec(&ask).map_err(|error| Error::Protocol(error.to_string()))?;
+        let reply = self
+            .transport
+            .request("POST", &self.hostport, api::RETURN_CHANNEL_PATH, Some(&ask))
+            .map_err(refusal)?;
+        let answer: api::Answer = serde_json::from_slice(&reply.body)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        let grant = answer.microphone.ok_or(Error::Camera(CameraRefusal::NotTaken))?;
+        let key = grant
+            .key()
+            .ok_or_else(|| Error::Protocol("the key for the microphone is not a key".to_owned()))?;
+        let socket = way(reply.peer.ip(), grant.port)?;
+        Ok(VoiceLink { api: Some(self), key_id: key.id, socket, sealer: voice::Sealer::new(&key) })
     }
 
     /// Asks the PC to take the camera, and opens the way there.
@@ -138,14 +168,7 @@ impl LetoApi {
             .key()
             .ok_or_else(|| Error::Protocol("the key for the camera is not a key".to_owned()))?;
 
-        // To the address that answered, which is the PC: a name may stand
-        // for several.
-        let to = SocketAddr::new(reply.peer.ip(), grant.port);
-        let from: SocketAddr =
-            if to.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { ([0u16; 8], 0).into() };
-        let socket = UdpSocket::bind(from)?;
-        socket.connect(to)?;
-        socket.set_write_timeout(Some(SEND_PATIENCE))?;
+        let socket = way(reply.peer.ip(), grant.port)?;
         Ok(CameraLink { api: Some(self), key_id: key.id, socket, packer: Packer::new(&key) })
     }
 
@@ -159,6 +182,27 @@ impl LetoApi {
             log::debug!("{} was not told that the camera stopped: {error}", self.hostport);
         }
     }
+}
+
+/// What a PC takes from this device on Leto's API.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReturnOffer {
+    /// It takes the microphone here. A PC that takes it inside the stream
+    /// does not say so here.
+    pub microphone: bool,
+    pub camera: Option<CameraOffer>,
+}
+
+/// A socket whose packets go to `port` at the address that answered, which
+/// is the PC: a name may stand for several. They hardly wait.
+fn way(to: IpAddr, port: u16) -> Result<UdpSocket, Error> {
+    let to = SocketAddr::new(to, port);
+    let from: SocketAddr =
+        if to.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { ([0u16; 8], 0).into() };
+    let socket = UdpSocket::bind(from)?;
+    socket.connect(to)?;
+    socket.set_write_timeout(Some(SEND_PATIENCE))?;
+    Ok(socket)
 }
 
 /// What a PC meant by not agreeing.
@@ -224,6 +268,42 @@ impl Drop for CameraLink {
             .spawn(move || api.stop(key_id));
         if let Err(error) = telling {
             log::debug!("the PC was not told that the camera stopped: {error}");
+        }
+    }
+}
+
+/// The way of this device's microphone to a PC that agreed to take it on
+/// Leto's API. Dropping it tells the PC that the microphone stopped.
+pub struct VoiceLink {
+    /// Gone once the PC was told that the microphone stopped.
+    api: Option<LetoApi>,
+    /// The number of the key the PC made for this microphone.
+    key_id: u32,
+    socket: UdpSocket,
+    sealer: voice::Sealer,
+}
+
+impl VoiceLink {
+    /// Sends one Opus frame (one channel at 48 kHz, twenty milliseconds)
+    /// captured `at` this long after the first one. Returns whether it left.
+    pub fn send(&mut self, at: Duration, frame: &[u8]) -> bool {
+        // The clock of the frames wraps after a day, and may.
+        let ticks = at.as_micros() * u128::from(voice::CLOCK) / 1_000_000;
+        let Some(packet) = self.sealer.seal(ticks as u32, frame) else { return false };
+        self.socket.send(packet).is_ok_and(|sent| sent == packet.len())
+    }
+}
+
+impl Drop for VoiceLink {
+    fn drop(&mut self) {
+        let Some(api) = self.api.take() else { return };
+        let key_id = self.key_id;
+        // Telling takes a moment, and whoever drops this may be drawing.
+        let telling = thread::Builder::new()
+            .name("leto: microphone off".to_owned())
+            .spawn(move || api.stop(key_id));
+        if let Err(error) = telling {
+            log::debug!("the PC was not told that the microphone stopped: {error}");
         }
     }
 }

@@ -73,6 +73,14 @@ impl Ways {
             && self.lock().config.as_ref().is_some_and(|config| config.covers(target.into()))
     }
 
+    /// Whether `address` is inside the tunnel itself, as a PC that is one of
+    /// its peers, rather than somewhere the other end leads on to, as a
+    /// network at home. See [`inside`].
+    pub(crate) fn inside(&self, address: &str) -> bool {
+        let Ok(IpAddr::V4(target)) = address.parse::<IpAddr>() else { return false };
+        self.lock().config.as_ref().is_some_and(|config| inside(config, target))
+    }
+
     /// The local address that leads through the tunnel to `address`, for a
     /// PC whose port is `port`. None when there is no tunnel, it does not
     /// cover the address, or it cannot open.
@@ -116,9 +124,18 @@ impl Ways {
                 running: false,
                 handshake: None,
                 problem: Some(problem.clone()),
+                silence: None,
             });
         };
         let status = state.tunnel.as_ref().map(|tunnel| tunnel.status());
+        let silence = status.as_ref().and_then(|status| {
+            let peer = config.endpoint.as_deref()?;
+            // Only without a session: one that works is not silent.
+            if status.handshake.is_some() {
+                return None;
+            }
+            status.silence.explain(peer, status.endpoint)
+        });
         Some(TunnelSummary {
             address: config.address.to_string(),
             endpoint: config.endpoint.clone(),
@@ -127,6 +144,7 @@ impl Ways {
             running: state.tunnel.is_some(),
             handshake: status.as_ref().and_then(|status| status.handshake).map(|ago| ago.as_secs()),
             problem: status.and_then(|status| status.problem).or_else(|| state.problem.clone()),
+            silence,
         })
     }
 
@@ -194,6 +212,24 @@ impl State {
 }
 
 /// An address a door may lead to: not one of this device's own.
+/// Whether `target` is inside the tunnel `config` describes: in one of the
+/// ranges it covers that also holds this device's own address in it, as
+/// `10.8.0.0/24` for `10.8.0.2`. A range wider than `/16`, as `0.0.0.0/0`
+/// that sends everything through, says nothing of the tunnel's own
+/// addresses: then those that share this device's first three numbers are.
+fn inside(config: &Config, target: Ipv4Addr) -> bool {
+    let own = config.address;
+    if target == own || !usable(target) {
+        return false;
+    }
+    let ranges = config.allowed.iter().filter(|range| range.prefix >= 16 && range.contains(own));
+    let mut ranges = ranges.peekable();
+    if ranges.peek().is_none() {
+        return own.octets()[..3] == target.octets()[..3] && config.covers(IpAddr::V4(target));
+    }
+    ranges.any(|range| range.contains(target))
+}
+
 fn usable(target: Ipv4Addr) -> bool {
     !(target.is_loopback() || target.is_unspecified() || target.is_broadcast())
 }
@@ -223,6 +259,32 @@ mod tests {
         assert_eq!(tcp_ports(47989), [47989, 47984, 48002, 48010]);
         assert_eq!(udp_ports(47989), [9, 47009, 47998, 47999, 48000, 48002]);
         assert_eq!(tcp_ports(65530), [65530, 65525]);
+    }
+
+    fn config(allowed: &str) -> Config {
+        let text = format!(
+            "[Interface]\nPrivateKey = {key}\nAddress = 10.8.0.2/24\n\n[Peer]\nPublicKey = \
+             {key}\nAllowedIPs = {allowed}\nEndpoint = home.example.org:51820\n",
+            key = "YMx4QwN5c1EG5dFl8uKCC4Rzl6QpTwP2O4j9Gs8VW2I="
+        );
+        Config::parse(&text).expect("a usable file")
+    }
+
+    #[test]
+    fn a_pc_inside_the_tunnel_is_told_from_one_at_home_behind_it() {
+        let both = config("10.8.0.0/24, 192.168.1.0/24");
+        assert!(inside(&both, Ipv4Addr::new(10, 8, 0, 3)));
+        assert!(!inside(&both, Ipv4Addr::new(192, 168, 1, 15)));
+        assert!(!inside(&both, Ipv4Addr::new(10, 8, 0, 2)), "this device's own");
+
+        // Everything through the tunnel: its own addresses share three numbers.
+        let everything = config("0.0.0.0/0");
+        assert!(inside(&everything, Ipv4Addr::new(10, 8, 0, 3)));
+        assert!(!inside(&everything, Ipv4Addr::new(192, 168, 1, 15)));
+
+        // A tunnel that only leads home has no PC inside it.
+        let home = config("192.168.1.0/24");
+        assert!(!inside(&home, Ipv4Addr::new(10, 8, 0, 3)));
     }
 
     #[test]
