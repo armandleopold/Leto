@@ -113,8 +113,10 @@ fn picture_and_sound(ui: &mut Ui, settings: &mut Settings, native: Option<Screen
         });
 
         if settings.resolution.is_none() {
+            // A monitor a phone is plugged into keeps a scale of its own.
+            let plugged = crate::window::on_plugged_screen();
             let about = match settings.screen(native) {
-                Some(mode) if settings.scale != 100 => format!(
+                Some(mode) if settings.scale_here(plugged) != 100 => format!(
                     "Text and windows on the PC are larger, and the stream is {} × {}.",
                     mode.width, mode.height
                 ),
@@ -122,13 +124,19 @@ fn picture_and_sound(ui: &mut Ui, settings: &mut Settings, native: Option<Screen
                     "Text and windows on the PC are larger, with fewer pixels to stream.".to_owned()
                 }
             };
+            let about = if plugged {
+                format!("{about} On this monitor only: the phone's own screen has its own.")
+            } else {
+                about
+            };
             row(ui, "Scale", &about, LIST_WIDTH, |ui| {
+                let scale_here = settings.scale_here_mut(plugged);
                 egui::ComboBox::from_id_salt("scale")
                     .width(LIST_WIDTH)
-                    .selected_text(format!("{}%", settings.scale))
+                    .selected_text(format!("{scale_here}%"))
                     .show_ui(ui, |ui| {
                         for scale in SCALES {
-                            ui.selectable_value(&mut settings.scale, scale, format!("{scale}%"));
+                            ui.selectable_value(scale_here, scale, format!("{scale}%"));
                         }
                     });
             });
