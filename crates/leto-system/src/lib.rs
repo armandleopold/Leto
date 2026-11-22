@@ -21,6 +21,8 @@ pub mod clock;
 pub mod decoder;
 pub mod desktop_mode;
 pub mod display;
+#[cfg(target_os = "android")]
+pub mod egl;
 pub mod elevate;
 #[cfg(target_os = "android")]
 pub mod gamepad;

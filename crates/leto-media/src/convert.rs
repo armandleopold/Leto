@@ -66,8 +66,8 @@ impl Planes {
 
     /// Says the picture, `width` by `height`, stayed on the graphics card:
     /// there are no planes of it.
-    // Only Windows keeps pictures there.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    // Only Windows and Android keep pictures there.
+    #[cfg_attr(not(any(windows, target_os = "android")), allow(dead_code))]
     pub(crate) fn keep(&mut self, kept: Kept, width: usize, height: usize) {
         self.width = width;
         self.height = height;

@@ -207,9 +207,7 @@ impl VideoDecoder {
             #[cfg(windows)]
             By::Windows(decoder) => decoder.keep_on_card(keep),
             #[cfg(target_os = "android")]
-            By::Android(_) => {
-                let _ = keep;
-            }
+            By::Android(decoder) => decoder.keep_on_card(keep),
         }
     }
 
@@ -252,7 +250,7 @@ impl VideoDecoder {
             #[cfg(windows)]
             By::Windows(decoder) => decoder.keeps(),
             #[cfg(target_os = "android")]
-            By::Android(_) => false,
+            By::Android(decoder) => decoder.keeps(),
         }
     }
 
