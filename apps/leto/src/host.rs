@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use egui::{Align, Color32, Layout, RichText, Stroke, TextureHandle, TextureOptions, Ui, vec2};
 use leto_host::{
     Companion, Options,
-    apollo::{Apollo, Device},
+    apollo::{Apollo, Device, Error},
 };
 
 use crate::{
@@ -32,8 +32,9 @@ enum State {
     Off,
     /// Beside an Apollo, taking cameras.
     Beside(Companion),
-    /// Asked to, and could not: why, in words for the person.
-    Stopped(String),
+    /// Asked to, and could not: why, in words for the person, and whether
+    /// it is the system that keeps Apollo's settings from Leto.
+    Stopped(String, bool),
 }
 
 /// This PC as a host, for as long as the app runs.
@@ -69,7 +70,7 @@ impl Sharing {
     pub fn follow(&mut self, wanted: bool, window: Option<isize>, ctx: &egui::Context) {
         match (&self.state, wanted) {
             (State::Off, true) => self.start(),
-            (State::Beside(_) | State::Stopped(_), false) => {
+            (State::Beside(_) | State::Stopped(..), false) => {
                 self.state = State::Off;
                 self.camera = None;
             }
@@ -102,14 +103,21 @@ impl Sharing {
         self.state = match Apollo::find() {
             Ok(apollo) => match Companion::start(apollo, &Options::default()) {
                 Ok(companion) => State::Beside(companion),
-                Err(error) => State::Stopped(format!(
-                    "The port for the camera could not be opened: {error}. Leto may already be \
-                     running on this PC: look beside the clock."
-                )),
+                Err(error) => State::Stopped(
+                    format!(
+                        "The port for the camera could not be opened: {error}. Leto may already \
+                         be running on this PC: look beside the clock."
+                    ),
+                    false,
+                ),
             },
-            Err(error) => State::Stopped(format!("{error}.")),
+            Err(error) => {
+                let kept = matches!(&error, Error::Unreadable(_, error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied);
+                State::Stopped(format!("{error}."), kept)
+            }
         };
-        if let State::Stopped(why) = &self.state {
+        if let State::Stopped(why, _) = &self.state {
             log::warn!("this PC is not shared: {why}");
         }
         self.read_devices();
@@ -157,17 +165,35 @@ impl Sharing {
         let mut again = false;
         match &self.state {
             State::Off => {}
-            State::Stopped(why) => card(ui, "Not running", |ui| {
+            State::Stopped(why, kept) => card(ui, "Not running", |ui| {
                 ui.add(egui::Label::new(RichText::new(why).color(theme::problem())).wrap());
-                ui.add(
-                    egui::Label::new(widgets::dim(
-                        "Apollo or Sunshine has to be installed on this PC. If Windows does \
-                         not let its settings be read, start Leto as administrator.",
-                    ))
-                    .wrap(),
-                );
+                // Windows keeps what is under `Program Files` from ordinary
+                // programs: only an administrator reads Apollo's key.
+                let elevates = *kept && cfg!(windows);
+                let advice = if elevates {
+                    "Windows only lets an administrator read the settings of Apollo. Leto can \
+                     start again as one: Windows asks you first."
+                } else if *kept {
+                    "The system does not let Leto read these settings."
+                } else {
+                    "Apollo or Sunshine has to be installed on this PC."
+                };
+                ui.add(egui::Label::new(widgets::dim(advice)).wrap());
                 ui.add_space(4.0);
-                again = widgets::primary_button(ui, "Try again").clicked();
+                ui.horizontal(|ui| {
+                    if elevates {
+                        if widgets::primary_button(ui, "Restart as administrator").clicked()
+                            && leto_system::elevate::restart_as_administrator()
+                        {
+                            // The other Leto shares from here on: the choice
+                            // is kept already.
+                            std::process::exit(0);
+                        }
+                        again = widgets::quiet_button(ui, "Try again").clicked();
+                    } else {
+                        again = widgets::primary_button(ui, "Try again").clicked();
+                    }
+                });
             }),
             State::Beside(companion) => {
                 card(ui, "Running", |ui| {
