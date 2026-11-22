@@ -19,3 +19,16 @@ pub fn with_java<T>(work: impl FnOnce(&mut JNIEnv<'_>, &JObject<'_>) -> Result<T
     }
     result
 }
+
+/// The version of Android's API the phone runs, `Build.VERSION.SDK_INT`;
+/// 0 when Java does not say.
+pub fn sdk() -> i32 {
+    static SDK: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *SDK.get_or_init(|| {
+        with_java(|env, _| env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i())
+            .unwrap_or_else(|error| {
+                log::warn!("the version of Android is unknown: {error}");
+                0
+            })
+    })
+}

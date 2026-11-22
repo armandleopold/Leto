@@ -29,11 +29,23 @@ mod desktop {
 
     /// Whether the window fills the screen.
     pub fn fills_screen(ctx: &Context) -> bool {
+        #[cfg(target_os = "android")]
+        return {
+            let _ = ctx;
+            android::fills_screen()
+        };
+        #[cfg(not(target_os = "android"))]
         ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
     }
 
     /// Makes the window fill the screen, or gives the screen back.
     pub fn fill_screen(ctx: &Context, fill: bool) {
+        #[cfg(target_os = "android")]
+        return {
+            let _ = ctx;
+            android::fill_screen(fill);
+        };
+        #[cfg(not(target_os = "android"))]
         ctx.send_viewport_cmd(ViewportCommand::Fullscreen(fill));
     }
 
@@ -93,6 +105,11 @@ mod desktop {
             let display::Mode { width, height, refresh_hz } = mode;
             return Some(ScreenMode { width, height, refresh_hz });
         }
+        // A monitor the phone is plugged into says its own pixels and pace;
+        // the window may be smaller on it, in the system's desktop.
+        if let Some(display::Mode { width, height, refresh_hz }) = display::plugged() {
+            return Some(ScreenMode { width, height, refresh_hz });
+        }
         let size = monitor? * scale;
         let (width, height) = (size.x.round() as u32, size.y.round() as u32);
         // A phone held upright streams on its side: it turns to landscape
@@ -101,6 +118,65 @@ mod desktop {
         let (width, height) = phone(width, height, phone_decodes_whole_screens());
         Some(ScreenMode { width, height, refresh_hz: 60 })
     }
+
+    /// Whether the window is on a screen plugged into this device, rather
+    /// than on its own: a phone's desktop on a monitor.
+    pub fn on_plugged_screen() -> bool {
+        display::plugged().is_some()
+    }
+
+    /// A phone's window fills a screen only on a monitor the phone is
+    /// plugged into, where Android shows a desktop of windows: on its own
+    /// screen the app has the whole screen already.
+    #[cfg(target_os = "android")]
+    mod android {
+        use std::sync::{
+            OnceLock,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use leto_system::{desktop_mode, display};
+        use winit::platform::android::activity::{AndroidApp, WindowManagerFlags};
+
+        /// The app's activity, whose window's flags are set through it.
+        static ACTIVITY: OnceLock<AndroidApp> = OnceLock::new();
+
+        /// Whether the window was made to fill its screen.
+        static FILLED: AtomicBool = AtomicBool::new(false);
+
+        /// Keeps the activity, for the window's flags. Called once, when
+        /// the app starts.
+        pub fn remember(activity: &AndroidApp) {
+            let _ = ACTIVITY.set(activity.clone());
+        }
+
+        pub fn fills_screen() -> bool {
+            FILLED.load(Ordering::Relaxed)
+        }
+
+        pub fn fill_screen(fill: bool) {
+            if fill && display::plugged().is_none() {
+                return;
+            }
+            if FILLED.swap(fill, Ordering::Relaxed) == fill {
+                return;
+            }
+            // The desktop's window becomes the whole screen, and the bar
+            // of the system's at its top goes away, as in a video player.
+            desktop_mode::fill_screen(fill);
+            if let Some(activity) = ACTIVITY.get() {
+                let (add, remove) = if fill {
+                    (WindowManagerFlags::FULLSCREEN, WindowManagerFlags::empty())
+                } else {
+                    (WindowManagerFlags::empty(), WindowManagerFlags::FULLSCREEN)
+                };
+                activity.set_window_flags(add, remove);
+            }
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    pub use android::remember;
 
     /// Whether this phone decodes H.264 on its video hardware, which keeps
     /// up with pictures of its whole screen.
@@ -338,6 +414,11 @@ mod page {
     /// browser.
     pub fn keys() -> Vec<super::Stroke> {
         Vec::new()
+    }
+
+    /// A page is shown on whichever screen its browser is on.
+    pub fn on_plugged_screen() -> bool {
+        false
     }
 
     /// A browser tells what a key types, and nothing of its layout.

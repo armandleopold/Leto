@@ -79,6 +79,8 @@ pub fn run_android(activity: AndroidApp) -> eframe::Result {
         leto_client::logs::start("leto", &settings);
     }
     let settings = settings::load();
+    // The window is made to fill a monitor's desktop through it.
+    window::remember(&activity);
     // Gamepads, which winit would make touches and unknown keys of.
     winit::platform::android::set_input_hook(leto_system::gamepad::hear);
 
