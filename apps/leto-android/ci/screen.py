@@ -168,7 +168,9 @@ def accent(path):
 
 def main():
     command, name, *wanted = sys.argv[1:]
-    path = shot(name)
+    # seen: a screenshot taken before, read now, for steps that must
+    # follow each other faster than tesseract reads.
+    path = os.path.join(SHOTS, name + ".png") if command == "seen" else shot(name)
     if command == "shot":
         return 0
     if command == "accent":
@@ -193,7 +195,7 @@ def main():
     for index, (word, x, y) in enumerate(found):
         following = [w for w, _, _ in found[index : index + len(wanted)]]
         if [w.lower() for w in following] == [w.lower() for w in wanted]:
-            if command == "see":
+            if command in ("see", "seen"):
                 print(f"saw {' '.join(wanted)} at {x},{y}")
                 return 0
             subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=True)
