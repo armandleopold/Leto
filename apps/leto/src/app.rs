@@ -74,9 +74,45 @@ pub struct LetoApp {
     /// and the screen offered no first choice: the next frame chooses the
     /// first of what it shows, as Tab does.
     choose_first: bool,
+    /// What was chosen on screen at the last frame, to bring a new choice
+    /// into sight.
+    focused: Option<Id>,
+    /// Whether the keys, a gamepad or a remote went through the screens
+    /// last, rather than a pointer or a finger: what is chosen is then
+    /// ringed, as nothing else shows it.
+    keys_lead: bool,
+    /// Where what was just chosen is, for the page to scroll to it.
+    bring_into_sight: Option<egui::Rect>,
+    /// What Enter opened a list from, and whether Enter chose in that list
+    /// since: the list then closes, and the choice goes back to it.
+    opened_from: Option<Id>,
+    chose_in_list: bool,
 }
 
 impl LetoApp {
+    /// A list opened from a button, as a resolution's, closes once Enter
+    /// chose in it, as a tap does, and what opened it is chosen again: egui
+    /// leaves it open, and nothing chosen.
+    fn close_chosen_list(&mut self, ctx: &egui::Context, raw_input: &egui::RawInput) {
+        if std::mem::take(&mut self.chose_in_list) {
+            egui::Popup::close_all(ctx);
+            if let Some(opener) = self.opened_from.take() {
+                ctx.memory_mut(|memory| memory.request_focus(opener));
+            }
+        }
+        let enter = raw_input.events.iter().any(|event| {
+            matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. })
+        });
+        if !enter {
+            return;
+        }
+        if egui::Popup::is_any_open(ctx) {
+            self.chose_in_list = self.opened_from.is_some();
+        } else {
+            self.opened_from = ctx.memory(|memory| memory.focused());
+        }
+    }
+
     /// Called once before the first frame, with the settings kept from
     /// before.
     pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings) -> Self {
@@ -103,6 +139,11 @@ impl LetoApp {
             closes_at: None,
             told: None,
             choose_first: false,
+            focused: None,
+            keys_lead: false,
+            bring_into_sight: None,
+            opened_from: None,
+            chose_in_list: false,
         }
     }
 
@@ -254,6 +295,31 @@ impl eframe::App for LetoApp {
                     gamepad_press(ctx, raw_input, press, nothing_chosen);
                 }
             }
+            // The settings are one column: down and up go to the next and
+            // the one before, as Tab does, where egui's own way of pointing
+            // skips rows for what is closer sideways.
+            if self.settings_open && !ctx.text_edit_focused() && !egui::Popup::is_any_open(ctx) {
+                for event in &mut raw_input.events {
+                    column_step(event);
+                }
+            }
+            self.close_chosen_list(ctx, raw_input);
+            for event in &raw_input.events {
+                match event {
+                    egui::Event::Key { pressed: true, .. } => self.keys_lead = true,
+                    egui::Event::PointerMoved(_)
+                    | egui::Event::PointerButton { .. }
+                    | egui::Event::Touch { .. }
+                    | egui::Event::MouseWheel { .. } => self.keys_lead = false,
+                    _ => {}
+                }
+            }
+            // A choice that comes from the gamepad's first press is made
+            // without a key.
+            if ctx.data(|data| data.get_temp::<bool>(Id::unique(widgets::GAMEPAD_START)).is_some())
+            {
+                self.keys_lead = true;
+            }
         }
         // Gamepads say nothing to a stream that is connected: they go to
         // the PC, on their own way.
@@ -279,6 +345,9 @@ impl eframe::App for LetoApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, window: &mut eframe::Frame) {
+        if !matches!(&self.state.screen, Screen::Stream(view) if view.connected) {
+            self.follow_focus(ui.ctx());
+        }
         let now = ui.input(|input| input.time);
         let door = self.backend.door();
         let open = door == Door::Open;
@@ -459,7 +528,11 @@ impl eframe::App for LetoApp {
                     } else {
                         "screen"
                     });
+                    let sight = self.bring_into_sight.take();
                     scroll.show(ui, |ui| {
+                        if let Some(sight) = sight {
+                            ui.scroll_to_rect(sight, None);
+                        }
                         widgets::page(ui, |ui| match (door, screen) {
                             _ if self.settings_open => {
                                 let native = crate::window::screen(ui.ctx());
@@ -684,6 +757,29 @@ fn pressed(key: egui::Key) -> [egui::Event; 2] {
     })
 }
 
+impl LetoApp {
+    /// Brings what was just chosen with the keys, a gamepad or a remote into
+    /// sight, scrolling the page if it was out of it, and rings it: egui
+    /// moves from a choice to the next but does neither.
+    fn follow_focus(&mut self, ctx: &egui::Context) {
+        let focused = ctx.memory(|memory| memory.focused());
+        let chosen = focused.and_then(|id| ctx.read_response(id));
+        if focused != self.focused {
+            self.focused = focused;
+            // The page's scroll area takes it, from inside.
+            self.bring_into_sight = chosen.as_ref().map(|chosen| chosen.rect);
+        }
+        let Some(chosen) = chosen.filter(|_| self.keys_lead) else { return };
+        let ring = egui::LayerId::new(egui::Order::Foreground, Id::unique("leto-chosen"));
+        ctx.layer_painter(ring).rect_stroke(
+            chosen.rect.expand(3.0),
+            theme::CONTROL_RADIUS,
+            egui::Stroke::new(2.0, theme::sun()),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
 /// What a gamepad pressed outside a stream, as the keyboard would ask it:
 /// the arrows go from one choice to the next, A opens what is chosen, B
 /// goes back. While `nothing_chosen`, pointing or choosing starts from the
@@ -712,6 +808,22 @@ fn gamepad_press(
         Press::Right => egui::Key::ArrowRight,
     };
     raw_input.events.extend(pressed(key));
+}
+
+/// Down as Tab and up as Shift+Tab, in a page of one column.
+fn column_step(event: &mut egui::Event) {
+    if let egui::Event::Key { key, modifiers, .. } = event
+        && modifiers.is_none()
+    {
+        match key {
+            egui::Key::ArrowDown => *key = egui::Key::Tab,
+            egui::Key::ArrowUp => {
+                *key = egui::Key::Tab;
+                *modifiers = egui::Modifiers::SHIFT;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Takes out of `raw_input` the arrows and Enter pressed while nothing is

@@ -19,14 +19,29 @@ const fn mime(codec: Codec) -> &'static str {
 }
 
 /// The codecs the phone decodes on its video hardware.
+///
+/// A television says it decodes AV1 on its hardware when it does not keep
+/// up: a Fire TV Stick 4K Max froze on 1080p at 60 pictures a second with
+/// `OMX.MS.AV1.Decoder`, which gives its pictures planar as a decoder on
+/// the processor does. AV1 is then only what the person chooses by hand,
+/// and the automatic codec is H.265 or H.264.
 pub fn decodable() -> Decodable {
-    let mut hardware = Codecs::NONE;
+    let mut any = Codecs::NONE;
     for codec in [Codec::H264, Codec::H265, Codec::Av1] {
         if system::decodes_on_hardware(mime(codec)) {
-            hardware = hardware.with(codec);
+            any = any.with(codec);
         }
     }
-    Decodable { hardware, any: hardware }
+    let mut hardware = any;
+    if leto_system::television::is_television() {
+        hardware = Codecs::NONE;
+        for codec in [Codec::H264, Codec::H265] {
+            if any.contains(codec) {
+                hardware = hardware.with(codec);
+            }
+        }
+    }
+    Decodable { hardware, any }
 }
 
 pub struct Decoder {
