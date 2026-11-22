@@ -19,6 +19,7 @@ pub mod clipboard;
 pub mod clock;
 #[cfg(target_os = "android")]
 pub mod decoder;
+pub mod desktop_mode;
 pub mod display;
 pub mod elevate;
 #[cfg(target_os = "android")]

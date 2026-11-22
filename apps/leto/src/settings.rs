@@ -40,6 +40,9 @@ pub struct Settings {
     /// With the screen's own resolution, how much larger the PC draws, in
     /// percent: a stream of 2856 by 1280 at 200% is one of 1424 by 640.
     pub scale: u32,
+    /// The same on a monitor a phone is plugged into, which is as large as
+    /// a PC's own and needs no larger text.
+    pub plugged_scale: u32,
     /// Pictures per second. `None`: as many as this screen shows.
     pub frame_rate: Option<u32>,
     /// Video bit rate, in kilobits per second. `None`: what the size and
@@ -173,6 +176,7 @@ impl Default for Settings {
         Self {
             resolution: None,
             scale: default_scale(),
+            plugged_scale: 100,
             frame_rate: None,
             bitrate_kbps: None,
             full_screen: true,
@@ -270,10 +274,21 @@ impl Settings {
         Some(ScreenMode { width, height, refresh_hz: self.frame_rate.unwrap_or(base.refresh_hz) })
     }
 
-    /// `native` with [`Self::scale`]'s fewer pixels, in the same shape, with
+    /// The scale for the screen the window is on: [`Self::plugged_scale`]
+    /// on a monitor a phone is `plugged` into, [`Self::scale`] elsewhere.
+    pub fn scale_here(&self, plugged: bool) -> u32 {
+        if plugged { self.plugged_scale } else { self.scale }
+    }
+
+    /// The scale [`Self::scale_here`] gives, to change it.
+    pub fn scale_here_mut(&mut self, plugged: bool) -> &mut u32 {
+        if plugged { &mut self.plugged_scale } else { &mut self.scale }
+    }
+
+    /// `native` with [`Self::scale_here`]'s fewer pixels, in the same shape, with
     /// a width the encoders take (a multiple of 8) and an even height.
     fn scaled(&self, native: ScreenMode) -> ScreenMode {
-        let scale = u64::from(self.scale.clamp(100, 400));
+        let scale = u64::from(self.scale_here(crate::window::on_plugged_screen()).clamp(100, 400));
         if scale == 100 {
             return native;
         }
@@ -398,6 +413,16 @@ mod tests {
         assert_eq!(choices, Choices::default());
         let plain = Settings::default().stream(None, Decodable::SOFTWARE);
         assert_eq!(plain, (None, Choices::default()));
+    }
+
+    #[test]
+    fn a_monitor_a_phone_is_plugged_into_keeps_a_scale_of_its_own() {
+        let settings = Settings { scale: 200, ..Settings::default() };
+        assert_eq!(settings.scale_here(false), 200);
+        assert_eq!(settings.scale_here(true), 100);
+        let mut settings = settings;
+        *settings.scale_here_mut(true) = 125;
+        assert_eq!((settings.scale, settings.plugged_scale), (200, 125));
     }
 
     #[test]

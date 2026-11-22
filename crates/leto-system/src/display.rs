@@ -15,7 +15,7 @@ pub struct Mode {
 const PACES: [u32; 13] = [30, 50, 60, 75, 90, 100, 120, 144, 165, 170, 180, 200, 240];
 
 /// The pace a screen that reports `hz` is sold with.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "android")), allow(dead_code))]
 fn pace(hz: u32) -> u32 {
     if PACES.contains(&(hz + 1)) { hz + 1 } else { hz }
 }
@@ -28,6 +28,103 @@ pub fn of_active_window() -> Option<Mode> {
     return windows::of_active_window();
     #[cfg(not(windows))]
     None
+}
+
+/// The mode of the screen Leto's window is on when that screen is plugged
+/// into this device rather than its own: on Android, a monitor the phone
+/// was plugged into, with the system's desktop on it. `None` on the
+/// phone's own screen, and always elsewhere.
+pub fn plugged() -> Option<Mode> {
+    #[cfg(target_os = "android")]
+    return android::of_window().and_then(|(mode, plugged)| plugged.then_some(mode));
+    #[cfg(not(target_os = "android"))]
+    None
+}
+
+#[cfg(target_os = "android")]
+mod android {
+    use std::{
+        sync::{Mutex, PoisonError},
+        time::{Duration, Instant},
+    };
+
+    use jni::{JNIEnv, errors::Result, objects::JObject};
+
+    use super::{Mode, pace};
+    use crate::java::{sdk, with_java};
+
+    /// `Display.DEFAULT_DISPLAY`: the phone's own screen.
+    const OWN_SCREEN: i32 = 0;
+
+    /// A screen's mode, and whether it is not the phone's own.
+    type Said = (Mode, bool);
+
+    /// How long what Java said is kept: the app asks every frame, and a
+    /// window moves from screen to screen rarely.
+    const KEPT: Duration = Duration::from_millis(500);
+
+    /// The mode of the screen the activity is on, and whether that screen
+    /// is not the phone's own.
+    pub fn of_window() -> Option<Said> {
+        static LAST: Mutex<Option<(Instant, Option<Said>)>> = Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((when, said)) = *last
+            && when.elapsed() < KEPT
+        {
+            return said;
+        }
+        let said = ask();
+        *last = Some((Instant::now(), said));
+        said
+    }
+
+    fn ask() -> Option<Said> {
+        let read = with_java(|env, activity| {
+            let display = display(env, activity)?;
+            if display.is_null() {
+                return Ok(None);
+            }
+            let id = env.call_method(&display, "getDisplayId", "()I", &[])?.i()?;
+            let mode =
+                env.call_method(&display, "getMode", "()Landroid/view/Display$Mode;", &[])?.l()?;
+            let width = env.call_method(&mode, "getPhysicalWidth", "()I", &[])?.i()?;
+            let height = env.call_method(&mode, "getPhysicalHeight", "()I", &[])?.i()?;
+            let hz = env.call_method(&mode, "getRefreshRate", "()F", &[])?.f()?;
+            Ok(Some((width, height, hz, id)))
+        });
+        match read {
+            Ok(Some((width, height, hz, id))) if width > 0 && height > 0 => {
+                // 59.94 is told as 59.94: the pace sold is the one above.
+                let hz = hz.max(1.0).floor() as u32;
+                let mode = Mode {
+                    width: width as u32,
+                    height: height as u32,
+                    refresh_hz: pace(hz).max(24),
+                };
+                Some((mode, id != OWN_SCREEN))
+            }
+            Ok(_) => None,
+            Err(error) => {
+                log::warn!("the screen's mode is unknown: {error}");
+                None
+            }
+        }
+    }
+
+    /// The screen the activity is on. `Activity.getDisplay` came with
+    /// Android 11; before, an app was only ever on the phone's own screen.
+    fn display<'local>(
+        env: &mut JNIEnv<'local>,
+        activity: &JObject<'_>,
+    ) -> Result<JObject<'local>> {
+        if sdk() >= 30 {
+            return env.call_method(activity, "getDisplay", "()Landroid/view/Display;", &[])?.l();
+        }
+        let manager = env
+            .call_method(activity, "getWindowManager", "()Landroid/view/WindowManager;", &[])?
+            .l()?;
+        env.call_method(&manager, "getDefaultDisplay", "()Landroid/view/Display;", &[])?.l()
+    }
 }
 
 #[cfg(windows)]

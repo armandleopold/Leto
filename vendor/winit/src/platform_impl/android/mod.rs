@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use android_activity::input::{InputEvent, KeyAction, Keycode, MotionAction};
+use android_activity::input::{
+    Axis, Button, InputEvent, KeyAction, Keycode, MotionAction, MotionEvent, Source, ToolType,
+};
 use android_activity::{
     AndroidApp, AndroidAppWaker, ConfigurationRef, InputStatus, MainEvent, Rect,
 };
@@ -381,6 +383,16 @@ impl<T: 'static> EventLoop<T> {
             return input_status;
         }
         match event {
+            // Leto: a mouse moves the pointer, presses its buttons and turns
+            // its wheel, rather than being one more finger.
+            InputEvent::MotionEvent(motion_event) if is_mouse(motion_event) => {
+                for event in mouse_events(motion_event) {
+                    callback(
+                        event::Event::WindowEvent { window_id: window::WindowId(WindowId), event },
+                        self.window_target(),
+                    );
+                }
+            },
             InputEvent::MotionEvent(motion_event) => {
                 let window_id = window::WindowId(WindowId);
                 let device_id = event::DeviceId(DeviceId(motion_event.device_id()));
@@ -1146,4 +1158,68 @@ impl VideoModeHandle {
     pub fn monitor(&self) -> MonitorHandle {
         self.monitor.clone()
     }
+}
+
+// Leto: what a mouse does, as a desktop's winit tells it.
+
+/// The mouse buttons last seen down, as Android's button state.
+static MOUSE_BUTTONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Whether `motion` comes from a mouse, or a touchpad that moves a pointer:
+/// on a phone's desktop on a monitor, both are.
+fn is_mouse(motion: &MotionEvent<'_>) -> bool {
+    motion.source() == Source::Mouse
+        || (motion.pointer_count() == 1
+            && motion.pointer_at_index(0).tool_type() == ToolType::Mouse)
+}
+
+/// The window events a mouse's `motion` makes: where the pointer is, the
+/// buttons that went down or up since the last one, and the wheel.
+fn mouse_events(motion: &MotionEvent<'_>) -> Vec<event::WindowEvent> {
+    let device_id = event::DeviceId(DeviceId(motion.device_id()));
+    let pointer = motion.pointer_at_index(0);
+    let position = PhysicalPosition::new(f64::from(pointer.x()), f64::from(pointer.y()));
+    let mut events = Vec::new();
+    match motion.action() {
+        MotionAction::HoverEnter => events.push(event::WindowEvent::CursorEntered { device_id }),
+        MotionAction::HoverExit => {
+            events.push(event::WindowEvent::CursorLeft { device_id });
+            return events;
+        },
+        _ => {},
+    }
+    events.push(event::WindowEvent::CursorMoved { device_id, position });
+    if motion.action() == MotionAction::Scroll {
+        // Android's wheel goes up for more, and right for more on the
+        // right; winit's numbers are how far what is shown moves.
+        let across = -pointer.axis_value(Axis::Hscroll);
+        let down = pointer.axis_value(Axis::Vscroll);
+        events.push(event::WindowEvent::MouseWheel {
+            device_id,
+            delta: event::MouseScrollDelta::LineDelta(across, down),
+            phase: event::TouchPhase::Moved,
+        });
+    }
+    // The buttons are told by what is down now, which every event of a
+    // mouse carries: a touchpad's tap presses with no press of its own.
+    let now = motion.button_state().0;
+    let before = MOUSE_BUTTONS.swap(now, Ordering::Relaxed);
+    for (bit, button) in [
+        (Button::Primary, event::MouseButton::Left),
+        (Button::Secondary, event::MouseButton::Right),
+        (Button::Tertiary, event::MouseButton::Middle),
+        (Button::Back, event::MouseButton::Back),
+        (Button::Forward, event::MouseButton::Forward),
+    ] {
+        let bit: u32 = bit.into();
+        if (before ^ now) & bit != 0 {
+            let state = if now & bit != 0 {
+                event::ElementState::Pressed
+            } else {
+                event::ElementState::Released
+            };
+            events.push(event::WindowEvent::MouseInput { device_id, state, button });
+        }
+    }
+    events
 }

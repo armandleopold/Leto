@@ -29,11 +29,23 @@ mod desktop {
 
     /// Whether the window fills the screen.
     pub fn fills_screen(ctx: &Context) -> bool {
+        #[cfg(target_os = "android")]
+        return {
+            let _ = ctx;
+            android::fills_screen()
+        };
+        #[cfg(not(target_os = "android"))]
         ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
     }
 
     /// Makes the window fill the screen, or gives the screen back.
     pub fn fill_screen(ctx: &Context, fill: bool) {
+        #[cfg(target_os = "android")]
+        return {
+            let _ = ctx;
+            android::fill_screen(fill);
+        };
+        #[cfg(not(target_os = "android"))]
         ctx.send_viewport_cmd(ViewportCommand::Fullscreen(fill));
     }
 
@@ -93,6 +105,13 @@ mod desktop {
             let display::Mode { width, height, refresh_hz } = mode;
             return Some(ScreenMode { width, height, refresh_hz });
         }
+        // A monitor the phone is plugged into says its own pixels and pace;
+        // the window may be smaller on it, in the system's desktop.
+        if let Some(display::Mode { width, height, refresh_hz }) = display::plugged() {
+            #[cfg(target_os = "android")]
+            let (width, height, refresh_hz) = within_phone((width, height, refresh_hz));
+            return Some(ScreenMode { width, height, refresh_hz });
+        }
         let size = monitor? * scale;
         let (width, height) = (size.x.round() as u32, size.y.round() as u32);
         // A phone held upright streams on its side: it turns to landscape
@@ -102,11 +121,109 @@ mod desktop {
         Some(ScreenMode { width, height, refresh_hz: 60 })
     }
 
+    /// Whether the window is on a screen plugged into this device, rather
+    /// than on its own: a phone's desktop on a monitor.
+    pub fn on_plugged_screen() -> bool {
+        display::plugged().is_some()
+    }
+
+    /// A phone's window fills a screen only on a monitor the phone is
+    /// plugged into, where Android shows a desktop of windows: on its own
+    /// screen the app has the whole screen already.
+    #[cfg(target_os = "android")]
+    mod android {
+        use std::sync::{
+            OnceLock,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use leto_system::{desktop_mode, display};
+        use winit::platform::android::activity::{AndroidApp, WindowManagerFlags};
+
+        /// The app's activity, whose window's flags are set through it.
+        static ACTIVITY: OnceLock<AndroidApp> = OnceLock::new();
+
+        /// Whether the window was made to fill its screen.
+        static FILLED: AtomicBool = AtomicBool::new(false);
+
+        /// Keeps the activity, for the window's flags. Called once, when
+        /// the app starts.
+        pub fn remember(activity: &AndroidApp) {
+            let _ = ACTIVITY.set(activity.clone());
+        }
+
+        pub fn fills_screen() -> bool {
+            FILLED.load(Ordering::Relaxed)
+        }
+
+        pub fn fill_screen(fill: bool) {
+            if fill && display::plugged().is_none() {
+                return;
+            }
+            if FILLED.swap(fill, Ordering::Relaxed) == fill {
+                return;
+            }
+            // The desktop's window becomes the whole screen, and the bar
+            // of the system's at its top goes away, as in a video player.
+            desktop_mode::fill_screen(fill);
+            if let Some(activity) = ACTIVITY.get() {
+                let (add, remove) = if fill {
+                    (WindowManagerFlags::FULLSCREEN, WindowManagerFlags::empty())
+                } else {
+                    (WindowManagerFlags::empty(), WindowManagerFlags::FULLSCREEN)
+                };
+                activity.set_window_flags(add, remove);
+            }
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    pub use android::remember;
+
     /// Whether this phone decodes H.264 on its video hardware, which keeps
     /// up with pictures of its whole screen.
     #[cfg(target_os = "android")]
     fn phone_decodes_whole_screens() -> bool {
         leto_media::decodable().hardware.contains(leto_core::engine::Codec::H264)
+    }
+
+    /// The most pixels a second a phone is asked to show from a stream:
+    /// its own screen, 2856 by 1280 sixty times a second, plays well; a
+    /// monitor at 1440p and 144 Hz, more than twice that, froze the app.
+    /// Each picture is decoded on the video hardware, then copied by the
+    /// processor into what the window draws.
+    #[cfg(any(target_os = "android", test))]
+    const PHONE_PIXEL_RATE: u64 = 2560 * 1440 * 60;
+
+    /// The pace a monitor is never asked below for the sake of
+    /// [`PHONE_PIXEL_RATE`]: fewer pixels are asked for first.
+    #[cfg(any(target_os = "android", test))]
+    const PHONE_LEAST_PACE: u32 = 60;
+
+    /// A monitor's `(width, height, pace)` brought within
+    /// [`PHONE_PIXEL_RATE`]: a lower pace first, down to
+    /// [`PHONE_LEAST_PACE`], then fewer pixels in the same shape, with a
+    /// width the encoders take (a multiple of 8) and an even height.
+    #[cfg(any(target_os = "android", test))]
+    fn within_phone((width, height, pace): (u32, u32, u32)) -> (u32, u32, u32) {
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels == 0 || pixels * u64::from(pace) <= PHONE_PIXEL_RATE {
+            return (width, height, pace);
+        }
+        let least = PHONE_LEAST_PACE.min(pace);
+        let fits = u32::try_from(PHONE_PIXEL_RATE / pixels).unwrap_or(u32::MAX);
+        // The highest pace screens are sold with that fits, if any.
+        if let Some(fitting) = [120, 100, 90, 75, 60].into_iter().find(|&p| p < pace && p <= fits)
+            && fitting >= least
+        {
+            return (width, height, fitting);
+        }
+        let most = PHONE_PIXEL_RATE / u64::from(least);
+        // Width and height shrink alike: by the square root of the excess.
+        let shrink = (most as f64 / pixels as f64).sqrt();
+        let width = ((f64::from(width) * shrink) as u32 / 8 * 8).max(8);
+        let height = ((f64::from(height) * shrink) as u32 / 2 * 2).max(2);
+        (width, height, least)
     }
 
     /// The most a phone without a hardware decoder asks for on its short
@@ -131,7 +248,23 @@ mod desktop {
 
     #[cfg(test)]
     mod tests {
-        use super::phone;
+        use super::{phone, within_phone};
+
+        #[test]
+        fn a_monitor_too_fast_for_a_phone_is_asked_slower_then_smaller() {
+            assert_eq!(within_phone((2856, 1280, 60)), (2856, 1280, 60));
+            assert_eq!(within_phone((1920, 1080, 60)), (1920, 1080, 60));
+            assert_eq!(within_phone((1920, 1080, 144)), (1920, 1080, 100));
+            assert_eq!(within_phone((1920, 1080, 120)), (1920, 1080, 100));
+            assert_eq!(within_phone((2560, 1440, 144)), (2560, 1440, 60));
+            assert_eq!(within_phone((2560, 1440, 60)), (2560, 1440, 60));
+            assert_eq!(within_phone((3840, 2160, 60)), (2560, 1440, 60));
+            assert_eq!(within_phone((3840, 2160, 30)), (3616, 2036, 30));
+            let (width, height, pace) = within_phone((3440, 1440, 100));
+            assert_eq!(pace, 60);
+            assert!(u64::from(width * height) * 60 <= 2560 * 1440 * 60, "{width}x{height}");
+            assert!(width % 8 == 0 && height % 2 == 0 && width > height * 2);
+        }
 
         #[test]
         fn a_phone_decoding_on_its_processor_asks_for_720_lines() {
@@ -338,6 +471,11 @@ mod page {
     /// browser.
     pub fn keys() -> Vec<super::Stroke> {
         Vec::new()
+    }
+
+    /// A page is shown on whichever screen its browser is on.
+    pub fn on_plugged_screen() -> bool {
+        false
     }
 
     /// A browser tells what a key types, and nothing of its layout.
