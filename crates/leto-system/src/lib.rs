@@ -25,6 +25,8 @@ pub mod elevate;
 #[cfg(target_os = "android")]
 pub mod gamepad;
 pub mod keyboard;
+#[cfg(target_os = "android")]
+pub mod opus;
 pub mod orientation;
 pub mod pane;
 pub mod permission;

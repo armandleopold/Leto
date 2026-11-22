@@ -10,6 +10,10 @@ const LONGEST_PACKET: f32 = 0.12;
 /// Decodes the sound of one stream, in order.
 pub struct SoundDecoder {
     decoder: OpusMultistreamDecoder,
+    /// On Android, the system's decoder, for plain stereo or mono: about
+    /// ten times as fast, which a Fire TV's processor needs to keep up.
+    #[cfg(target_os = "android")]
+    system: Option<leto_system::opus::OpusDecoder>,
     channels: usize,
     samples: Vec<f32>,
 }
@@ -34,7 +38,28 @@ impl SoundDecoder {
             OpusMultistreamDecoder::new(sample_rate, channels, streams, coupled_streams, mapping)
                 .map_err(|error| Error::Sound(error.to_string()))?;
         let longest = (sample_rate as f32 * LONGEST_PACKET).ceil() as usize;
-        Ok(Self { decoder, channels, samples: vec![0.0; longest * channels] })
+        #[cfg(target_os = "android")]
+        let system = (streams == 1
+            && coupled_streams + 1 == channels
+            && mapping.iter().copied().eq(0..channels as u8))
+        .then(|| match leto_system::opus::OpusDecoder::new(sample_rate, channels as u8) {
+            Ok(system) => {
+                log::info!("sound decodes on the system's Opus decoder");
+                Some(system)
+            }
+            Err(error) => {
+                log::warn!("sound decodes in Leto, the system's decoder did not start: {error}");
+                None
+            }
+        })
+        .flatten();
+        Ok(Self {
+            decoder,
+            #[cfg(target_os = "android")]
+            system,
+            channels,
+            samples: vec![0.0; longest * channels],
+        })
     }
 
     pub fn channels(&self) -> usize {
@@ -43,7 +68,14 @@ impl SoundDecoder {
 
     /// Decodes one packet. The samples of all channels come out interleaved,
     /// between -1 and 1.
+    ///
+    /// On Android, what comes out may be the samples of the packets before,
+    /// and none at times: the system's decoder gives them a little later.
     pub fn decode(&mut self, packet: &[u8]) -> Result<&[f32], Error> {
+        #[cfg(target_os = "android")]
+        if let Some(system) = &mut self.system {
+            return system.decode(packet).map_err(Error::Sound);
+        }
         let per_channel = self
             .decoder
             .decode_float(packet, &mut self.samples, false)
