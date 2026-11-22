@@ -15,8 +15,11 @@
 //! given that texture to draw from (`WGL_NV_DX_interop2`, which the drivers
 //! of AMD, Intel and Nvidia all have). Nothing of the picture is in memory.
 //!
-//! Only on Windows, where both ends are. Elsewhere a [`Kept`] cannot be
-//! made, and pictures are planes as before.
+//! On Android, the decoder gives its pictures onto an image reader's, on the
+//! card, and the window's OpenGL ES draws each straight from there, as a
+//! texture the card itself turns into pixels (`samplerExternalOES`).
+//!
+//! Elsewhere a [`Kept`] cannot be made, and pictures are planes as before.
 
 /// A picture that stayed on the graphics card. It stands for the latest one
 /// the decoder left there: showing it shows that one.
@@ -24,8 +27,10 @@
 pub struct Kept {
     #[cfg(windows)]
     pub(crate) shared: std::sync::Arc<windows::Shared>,
+    #[cfg(target_os = "android")]
+    pub(crate) shared: std::sync::Arc<android::Shared>,
     /// Nothing makes one where pictures cannot stay.
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "android")))]
     never: std::convert::Infallible,
 }
 
@@ -38,9 +43,9 @@ impl std::fmt::Debug for Kept {
 impl PartialEq for Kept {
     /// Whether both are on the same texture of the card.
     fn eq(&self, other: &Self) -> bool {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         return std::sync::Arc::ptr_eq(&self.shared, &other.shared);
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         {
             let _ = other;
             self.never()
@@ -48,7 +53,7 @@ impl PartialEq for Kept {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 impl Kept {
     /// There is none, so this is never reached.
     pub(crate) const fn never(&self) -> ! {
@@ -725,5 +730,140 @@ pub(crate) mod windows {
                 let _ = (self.sharing.close)(self.device);
             }
         }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub(crate) mod android {
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use glow::HasContext as _;
+    use leto_system::{
+        decoder::{Image, Reader},
+        egl,
+    };
+
+    use super::Kept;
+
+    /// Where OpenGL ES binds a picture from elsewhere.
+    pub use leto_system::egl::TEXTURE_EXTERNAL;
+
+    type Gl = glow::Context;
+    type Texture = <Gl as glow::HasContext>::Texture;
+
+    /// What the decoder and the window share: the reader the decoder gives
+    /// its pictures onto, and the newest one, waiting to be drawn.
+    pub struct Shared {
+        /// Dropped before the reader, which it goes back to.
+        latest: Mutex<Option<Image>>,
+        pub(crate) reader: Reader,
+    }
+
+    impl Shared {
+        pub fn new(width: u32, height: u32) -> Result<Self, String> {
+            Ok(Self { latest: Mutex::new(None), reader: Reader::new(width, height)? })
+        }
+
+        /// Takes the newest picture the decoder left on the reader, if one
+        /// came: it is what the window draws next. Returns whether one did.
+        pub fn take_from_reader(&self) -> bool {
+            let Some(image) = self.reader.latest() else { return false };
+            *self.latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(image);
+            true
+        }
+    }
+
+    /// The window's side: the picture being drawn, as a texture.
+    pub struct Seen {
+        texture: Texture,
+        /// The picture drawn, its texture, and where it is in its buffer.
+        /// The texture goes before the picture it is made of.
+        current: Option<(egl::Texture, Image, [f32; 4])>,
+        /// Last, so the reader outlives its pictures.
+        shared: Arc<Shared>,
+    }
+
+    // SAFETY: the texture is the context's name for it, used only on the
+    // thread that context is current on, where `Card`, which has this, is.
+    unsafe impl Send for Seen {}
+
+    impl Seen {
+        /// Gives OpenGL a texture for the pictures `kept` stands for.
+        ///
+        /// # Safety
+        ///
+        /// `gl` is current on this thread.
+        pub unsafe fn open(gl: &Gl, kept: &Kept) -> Result<Self, String> {
+            // SAFETY: as the caller promises.
+            let texture = unsafe { gl.create_texture()? };
+            // SAFETY: as above, with the texture just made.
+            unsafe {
+                gl.bind_texture(egl::TEXTURE_EXTERNAL, Some(texture));
+                for (what, how) in [
+                    (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                    (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+                ] {
+                    gl.tex_parameter_i32(egl::TEXTURE_EXTERNAL, what, how as i32);
+                }
+                gl.bind_texture(egl::TEXTURE_EXTERNAL, None);
+            }
+            Ok(Self { texture, current: None, shared: Arc::clone(&kept.shared) })
+        }
+
+        /// Whether this draws the pictures `kept` stands for.
+        pub fn shows(&self, kept: &Kept) -> bool {
+            Arc::ptr_eq(&self.shared, &kept.shared)
+        }
+
+        /// Makes the newest picture the decoder left the texture, unless
+        /// none came since: it is what [`Self::draw`] draws from.
+        ///
+        /// # Safety
+        ///
+        /// `gl` is current on this thread, and is the one this was opened
+        /// with.
+        pub unsafe fn take(&mut self, gl: &Gl) -> Result<(), String> {
+            let newest = self.shared.latest.lock().unwrap_or_else(PoisonError::into_inner).take();
+            let Some(image) = newest else { return Ok(()) };
+            let place = image.place();
+            // SAFETY: as the caller promises; the picture lives as long as
+            // its texture, which goes first.
+            unsafe {
+                gl.bind_texture(egl::TEXTURE_EXTERNAL, Some(self.texture));
+                let bound = egl::Texture::bind(&image);
+                gl.bind_texture(egl::TEXTURE_EXTERNAL, None);
+                // The picture before goes back to the reader.
+                self.current = Some((bound?, image, place));
+            }
+            Ok(())
+        }
+
+        /// The texture to draw from and where the picture is in it, once a
+        /// picture came.
+        pub fn drawn(&self) -> Option<(Texture, [f32; 4])> {
+            self.current.as_ref().map(|(_, _, place)| (self.texture, *place))
+        }
+
+        /// Gives the texture back, and the picture to the reader.
+        ///
+        /// # Safety
+        ///
+        /// `gl` is current on this thread, and is the one this was opened
+        /// with.
+        pub unsafe fn close(mut self, gl: &Gl) {
+            self.current = None;
+            // SAFETY: as the caller promises, deleted once.
+            unsafe { gl.delete_texture(self.texture) };
+        }
+    }
+
+    /// Whether the window's OpenGL ES, current on this thread, draws the
+    /// decoder's pictures from where they are.
+    pub fn shares(gl: &Gl) -> bool {
+        gl.version().is_embedded
+            && gl.supported_extensions().contains("GL_OES_EGL_image_external_essl3")
+            && egl::takes_pictures()
     }
 }

@@ -9,14 +9,20 @@ use std::{
     ffi::{CStr, CString, c_char, c_void},
     ptr,
     sync::OnceLock,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ndk_sys as sys;
 
-/// How long a picture is waited for, once its data went in. A decoder that
-/// keeps pictures longer gives them out with the next ones.
-const OUT_PATIENCE: Duration = Duration::from_millis(4);
+/// How much of the time between two pictures a picture is waited for, once
+/// its data went in. A decoder that keeps it longer gives it out with the
+/// next one, and only the newer of the two is shown: a Fire TV Stick takes
+/// about 8 ms, and waiting 4 ms lost 6 to 9 pictures of 60 each second.
+/// Three quarters still leave the rest of the time for the next picture's
+/// data to arrive.
+const OUT_PATIENCE: f32 = 0.75;
+/// How often the pictures given out together are told in the log.
+const TELL_EVERY: Duration = Duration::from_secs(5);
 /// How long a free input buffer is waited for.
 const IN_PATIENCE: Duration = Duration::from_millis(20);
 
@@ -57,6 +63,14 @@ pub struct Decoder {
     count: u64,
     /// The decoder's layout, once it said.
     shape: Option<Shape>,
+    /// How long a picture is waited for: see `OUT_PATIENCE`.
+    patience: Duration,
+    /// Pictures given out behind a newer one and so never shown, since the
+    /// log was last told, and when that was.
+    passed_over: (u64, Instant),
+    /// The pictures go onto a [`Reader`]'s, on the graphics card, instead of
+    /// into the decoder's memory.
+    onto: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,14 +92,32 @@ unsafe impl Send for Decoder {}
 impl Decoder {
     /// A decoder for `mime` ("video/avc", "video/hevc", "video/av01"), for
     /// pictures `width` by `height` at `fps`.
-    pub fn new(mime: &str, width: u32, height: u32, fps: u32) -> Result<Self, String> {
+    ///
+    /// With `onto`, the pictures go onto that reader's, on the graphics card,
+    /// and are never in memory: see [`Self::decode_onto`].
+    pub fn new(
+        mime: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+        onto: Option<&Reader>,
+    ) -> Result<Self, String> {
         let mime_c = CString::new(mime).map_err(|error| error.to_string())?;
         // SAFETY: a valid C string; the codec is freed by `Drop`.
         let codec = unsafe { sys::AMediaCodec_createDecoderByType(mime_c.as_ptr()) };
         if codec.is_null() {
             return Err(format!("this phone has no {mime} decoder"));
         }
-        let decoder = Self { codec, name: name(codec), count: 0, shape: None };
+        let patience = Duration::from_secs_f32(OUT_PATIENCE / fps.max(1) as f32);
+        let decoder = Self {
+            codec,
+            name: name(codec),
+            count: 0,
+            shape: None,
+            patience,
+            passed_over: (0, Instant::now()),
+            onto: onto.is_some(),
+        };
         // SAFETY: a new format, freed below.
         let format = unsafe { sys::AMediaFormat_new() };
         let int = |key: &CStr, value: i32| {
@@ -110,10 +142,11 @@ impl Decoder {
         int(c"vendor.low-latency.enable", 1);
         int(c"vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1);
         int(c"vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1);
-        // SAFETY: the codec and format are valid; no surface, no crypto.
-        let configured = unsafe {
-            sys::AMediaCodec_configure(codec, format, ptr::null_mut(), ptr::null_mut(), 0)
-        };
+        let surface = onto.map_or(ptr::null_mut(), |reader| reader.window);
+        // SAFETY: the codec and format are valid; a reader's window, which
+        // outlives the decoder as its owner sees to, or none; no crypto.
+        let configured =
+            unsafe { sys::AMediaCodec_configure(codec, format, surface, ptr::null_mut(), 0) };
         // SAFETY: the format is no longer used.
         unsafe { sys::AMediaFormat_delete(format) };
         status(configured, "setting up the decoder")?;
@@ -142,6 +175,18 @@ impl Decoder {
     ) -> Result<bool, String> {
         self.put(data)?;
         self.take(show)
+    }
+
+    /// Decodes one picture onto the [`Reader`] the decoder was made with,
+    /// when `shown`: it comes out there a moment later. A picture nobody
+    /// will see is only decoded. Returns whether a picture came out.
+    pub fn decode_onto(&mut self, data: &[u8], shown: bool) -> Result<bool, String> {
+        self.put(data)?;
+        let Some(index) = self.newest()? else { return Ok(false) };
+        // SAFETY: an index the codec gave, given back once: onto the
+        // reader's window when shown.
+        unsafe { sys::AMediaCodec_releaseOutputBuffer(self.codec, index, shown && self.onto) };
+        Ok(true)
     }
 
     fn put(&mut self, data: &[u8]) -> Result<(), String> {
@@ -173,9 +218,26 @@ impl Decoder {
     }
 
     fn take(&mut self, show: Option<&mut dyn FnMut(Picture<'_>)>) -> Result<bool, String> {
-        // Only the newest picture is shown: older ones are only late.
+        let Some((index, info)) = self.newest_with_info()? else { return Ok(false) };
+        let read = match show {
+            Some(show) if !self.onto => self.read(index, &info, show),
+            _ => Ok(()),
+        };
+        // SAFETY: an index the codec gave, given back once.
+        unsafe { sys::AMediaCodec_releaseOutputBuffer(self.codec, index, false) };
+        read.map(|()| true)
+    }
+
+    /// The newest picture out of the decoder, if one came in time.
+    fn newest(&mut self) -> Result<Option<usize>, String> {
+        Ok(self.newest_with_info()?.map(|(index, _)| index))
+    }
+
+    /// The newest picture out of the decoder and what it says of it, if one
+    /// came in time. Older ones are given back: they are only late.
+    fn newest_with_info(&mut self) -> Result<Option<(usize, sys::AMediaCodecBufferInfo)>, String> {
         let mut newest: Option<(usize, sys::AMediaCodecBufferInfo)> = None;
-        let mut patience = OUT_PATIENCE;
+        let mut patience = self.patience;
         loop {
             let mut info =
                 sys::AMediaCodecBufferInfo { offset: 0, size: 0, presentationTimeUs: 0, flags: 0 };
@@ -187,23 +249,36 @@ impl Decoder {
                 if let Some((older, _)) = newest.replace((index, info)) {
                     // SAFETY: an index the codec gave, given back once.
                     unsafe { sys::AMediaCodec_releaseOutputBuffer(self.codec, older, false) };
+                    self.passed_over.0 += 1;
                 }
                 // The next one only if it is there already.
                 patience = Duration::ZERO;
             } else if index == sys::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize {
-                self.shape = Some(self.shape()?);
+                // Onto a reader, the layout is the graphics card's business.
+                if !self.onto {
+                    self.shape = Some(self.shape()?);
+                }
             } else if index != sys::AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED as isize {
                 break;
             }
         }
-        let Some((index, info)) = newest else { return Ok(false) };
-        let read = match show {
-            Some(show) => self.read(index, &info, show),
-            None => Ok(()),
-        };
-        // SAFETY: an index the codec gave, given back once.
-        unsafe { sys::AMediaCodec_releaseOutputBuffer(self.codec, index, false) };
-        read.map(|()| true)
+        self.tell();
+        Ok(newest)
+    }
+
+    /// Tells the log, every few seconds, of pictures that were never shown
+    /// because the decoder gave them out together with newer ones.
+    fn tell(&mut self) {
+        let (count, since) = self.passed_over;
+        if since.elapsed() >= TELL_EVERY {
+            if count > 0 {
+                log::info!(
+                    "the decoder gave out {count} pictures behind newer ones in {} s, not shown",
+                    TELL_EVERY.as_secs()
+                );
+            }
+            self.passed_over = (0, Instant::now());
+        }
     }
 
     fn read(
@@ -324,13 +399,129 @@ impl Drop for Decoder {
     }
 }
 
+/// How many pictures a [`Reader`] holds: the one being drawn, the next one
+/// waiting, the one being taken from the decoder and one to spare.
+const READER_HOLDS: i32 = 4;
+
+/// Where a decoder leaves its pictures on the graphics card, for the window
+/// to draw them from there (`AImageReader`). Nothing of a picture is ever in
+/// memory: a Fire TV Stick spent 5 ms copying each one out of its decoder.
+pub struct Reader {
+    reader: *mut sys::AImageReader,
+    window: *mut sys::ANativeWindow,
+}
+
+// SAFETY: an image reader may be used from any thread; its pictures are
+// taken on the decoder's and given back on the window's, which it allows.
+unsafe impl Send for Reader {}
+// SAFETY: as above: what is shared is only read, or locked by the reader.
+unsafe impl Sync for Reader {}
+
+impl Reader {
+    /// A reader for pictures `width` by `height` that the graphics card
+    /// draws from.
+    pub fn new(width: u32, height: u32) -> Result<Self, String> {
+        let side = |value: u32| i32::try_from(value).map_err(|error| error.to_string());
+        let mut reader = ptr::null_mut();
+        // SAFETY: `reader` is written.
+        let made = unsafe {
+            sys::AImageReader_newWithUsage(
+                side(width)?,
+                side(height)?,
+                sys::AIMAGE_FORMATS::AIMAGE_FORMAT_PRIVATE.0 as i32,
+                sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE.0,
+                READER_HOLDS,
+                &mut reader,
+            )
+        };
+        status(made, "making a place for pictures on the graphics card")?;
+        let mut window = ptr::null_mut();
+        // SAFETY: a reader just made; `window` is written, and the reader's.
+        let found = unsafe { sys::AImageReader_getWindow(reader, &mut window) };
+        if let Err(error) = status(found, "finding where the decoder puts its pictures") {
+            // SAFETY: made above, deleted once.
+            unsafe { sys::AImageReader_delete(reader) };
+            return Err(error);
+        }
+        Ok(Self { reader, window })
+    }
+
+    /// The newest picture the decoder left, older ones given back, or none
+    /// if none came since the last.
+    pub fn latest(&self) -> Option<Image> {
+        let mut image = ptr::null_mut();
+        // SAFETY: a live reader; `image` is written.
+        let taken = unsafe { sys::AImageReader_acquireLatestImage(self.reader, &mut image) };
+        (taken == sys::media_status_t::AMEDIA_OK && !image.is_null()).then_some(Image { image })
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        // SAFETY: made in `new`, deleted once, after its pictures: whoever
+        // holds one holds what owns the reader.
+        unsafe { sys::AImageReader_delete(self.reader) };
+    }
+}
+
+/// A picture on the graphics card, in a [`Reader`]. It goes back to the
+/// reader when dropped, so it must be dropped before the reader is.
+pub struct Image {
+    image: *mut sys::AImage,
+}
+
+// SAFETY: a picture of a reader may be given back from any thread.
+unsafe impl Send for Image {}
+
+impl Image {
+    /// The picture's buffer on the card (an `AHardwareBuffer`), as long as
+    /// the picture lives.
+    pub fn buffer(&self) -> *mut c_void {
+        let mut buffer = ptr::null_mut();
+        // SAFETY: a live picture; `buffer` is written.
+        unsafe { sys::AImage_getHardwareBuffer(self.image, &mut buffer) };
+        buffer.cast()
+    }
+
+    /// Where the picture is in its buffer, which may be larger, as parts of
+    /// the buffer's width and height: left, top, width, height.
+    pub fn place(&self) -> [f32; 4] {
+        let (mut width, mut height) = (0, 0);
+        let mut crop = sys::AImageCropRect { left: 0, top: 0, right: 0, bottom: 0 };
+        // SAFETY: a live picture; each is written.
+        let said = unsafe {
+            sys::AImage_getWidth(self.image, &mut width) == sys::media_status_t::AMEDIA_OK
+                && sys::AImage_getHeight(self.image, &mut height) == sys::media_status_t::AMEDIA_OK
+                && sys::AImage_getCropRect(self.image, &mut crop) == sys::media_status_t::AMEDIA_OK
+        };
+        if !said || width <= 0 || height <= 0 || crop.right <= crop.left || crop.bottom <= crop.top
+        {
+            return [0.0, 0.0, 1.0, 1.0];
+        }
+        let (width, height) = (width as f32, height as f32);
+        [
+            crop.left as f32 / width,
+            crop.top as f32 / height,
+            (crop.right - crop.left) as f32 / width,
+            (crop.bottom - crop.top) as f32 / height,
+        ]
+    }
+}
+
+impl Drop for Image {
+    fn drop(&mut self) {
+        // SAFETY: taken from a reader that still lives, given back once.
+        unsafe { sys::AImage_delete(self.image) };
+    }
+}
+
 /// Whether the phone decodes `mime` on its video hardware. Found out once
 /// for each, by opening a decoder.
 pub fn decodes_on_hardware(mime: &str) -> bool {
     static FOUND: OnceLock<[(String, bool); 3]> = OnceLock::new();
     let found = FOUND.get_or_init(|| {
         ["video/avc", "video/hevc", "video/av01"].map(|mime| {
-            let on = Decoder::new(mime, 1280, 720, 60).is_ok_and(|decoder| {
+            let on = Decoder::new(mime, 1280, 720, 60, None).is_ok_and(|decoder| {
                 log::info!("{mime} is decoded by {}", decoder.name());
                 decoder.hardware()
             });

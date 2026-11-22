@@ -2,12 +2,15 @@
 //! video hardware, which decodes a picture of the whole screen in a few
 //! milliseconds where OpenH264 on the processor falls behind.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use leto_core::engine::{Codec, Codecs, Decodable};
 use leto_system::decoder::{self as system, Layout, Picture};
 
-use crate::{Error, Planes, convert::Nv12};
+use crate::{Error, Kept, Planes, convert::Nv12, kept::android::Shared};
 
 /// The name Android knows a codec by.
 const fn mime(codec: Codec) -> &'static str {
@@ -44,17 +47,34 @@ pub fn decodable() -> Decodable {
     Decodable { hardware, any }
 }
 
+/// How long the window waits for a picture to reach the reader it was given
+/// onto, at most: the card takes a moment after the decoder let it go.
+const ONTO_PATIENCE: Duration = Duration::from_millis(10);
+
 pub struct Decoder {
     decoder: system::Decoder,
+    codec: Codec,
+    size: (u32, u32, u32),
     copying: Duration,
+    /// Pictures are wanted on the card, where the window draws them from.
+    keep: bool,
+    /// The reader the decoder gives its pictures onto, when it does.
+    keeper: Option<Arc<Shared>>,
 }
 
 impl Decoder {
     pub fn new(codec: Codec, width: u32, height: u32, fps: u32) -> Result<Self, Error> {
         let decoder =
-            system::Decoder::new(mime(codec), width, height, fps).map_err(Error::Video)?;
+            system::Decoder::new(mime(codec), width, height, fps, None).map_err(Error::Video)?;
         log::info!("{} is decoded by {}", codec.name(), decoder.name());
-        Ok(Self { decoder, copying: Duration::ZERO })
+        Ok(Self {
+            decoder,
+            codec,
+            size: (width, height, fps),
+            copying: Duration::ZERO,
+            keep: false,
+            keeper: None,
+        })
     }
 
     pub fn on_graphics_card(&self) -> bool {
@@ -65,8 +85,68 @@ impl Decoder {
         self.copying
     }
 
+    /// Has the pictures stay on the card from the next one on, or come
+    /// through memory again. Only a decoder on the video hardware keeps them.
+    pub fn keep_on_card(&mut self, keep: bool) {
+        self.keep = keep && self.on_graphics_card();
+    }
+
+    /// Whether the next picture stays on the card.
+    pub fn keeps(&self) -> bool {
+        self.keep
+    }
+
+    /// Makes the decoder again when pictures are now wanted elsewhere: onto
+    /// a reader of the card's, or into memory. The pictures after build on
+    /// ones the new decoder never saw, so this fails, and a keyframe is
+    /// asked for. A reader that cannot be made leaves pictures in memory.
+    fn follow(&mut self) -> Result<(), Error> {
+        if self.keep == self.keeper.is_some() {
+            return Ok(());
+        }
+        let (width, height, fps) = self.size;
+        let keeper = if self.keep {
+            match Shared::new(width, height) {
+                Ok(shared) => Some(Arc::new(shared)),
+                Err(error) => {
+                    log::warn!("pictures come through memory: {error}");
+                    self.keep = false;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
+        let reader = keeper.as_ref().map(|shared| &shared.reader);
+        let decoder = system::Decoder::new(mime(self.codec), width, height, fps, reader)
+            .map_err(Error::Video)?;
+        // The old decoder goes before the reader it gave onto.
+        self.decoder = decoder;
+        self.keeper = keeper;
+        Err(Error::Video("the decoder was made again for where its pictures go".into()))
+    }
+
     pub fn decode(&mut self, data: &[u8], planes: Option<&mut Planes>) -> Result<bool, Error> {
         self.copying = Duration::ZERO;
+        self.follow()?;
+        if let Some(shared) = &self.keeper {
+            let came = self.decoder.decode_onto(data, planes.is_some()).map_err(Error::Video)?;
+            let Some(planes) = planes else { return Ok(came) };
+            if !came {
+                return Ok(false);
+            }
+            let start = Instant::now();
+            while !shared.take_from_reader() {
+                if start.elapsed() >= ONTO_PATIENCE {
+                    return Ok(false);
+                }
+                std::thread::sleep(Duration::from_micros(500));
+            }
+            self.copying = start.elapsed();
+            let (width, height, _) = self.size;
+            planes.keep(Kept { shared: Arc::clone(shared) }, width as usize, height as usize);
+            return Ok(true);
+        }
         let Some(planes) = planes else {
             return self.decoder.decode(data, None).map_err(Error::Video);
         };
