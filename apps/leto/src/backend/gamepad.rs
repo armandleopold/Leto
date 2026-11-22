@@ -9,7 +9,7 @@ use std::{thread, time::Duration};
 use gilrs::{Axis, Button, EventType, Gilrs};
 use leto_core::input::{GamepadButtons, GamepadState, Input};
 
-use super::pads::{Pads, kind};
+use super::pads::{Menu, Pads, Press, kind};
 
 /// How long to wait for a gamepad to do something before looking whether a
 /// stream started or ended meanwhile.
@@ -37,14 +37,16 @@ const BUTTONS: [(Button, GamepadButtons); 15] = [
 
 /// Starts following the gamepads. `stream` tells the stream being watched
 /// from the one before it, and is `None` while there is none. `send` passes
-/// an input on to that stream.
+/// an input on to that stream. Outside a stream, what a gamepad presses
+/// goes to Leto's own screens through `menu`.
 pub fn watch(
     stream: impl Fn() -> Option<u64> + Send + 'static,
     send: impl Fn(Input) + Send + 'static,
+    menu: impl Fn(Press) + Send + 'static,
 ) {
     let spawned = thread::Builder::new().name("leto: gamepads".to_owned()).spawn(move || {
         match Gilrs::new() {
-            Ok(gilrs) => follow(gilrs, &stream, &send),
+            Ok(gilrs) => follow(gilrs, &stream, &send, &menu),
             // Everything else works without them.
             Err(error) => log::warn!("gamepads cannot be used: {error}"),
         }
@@ -54,8 +56,14 @@ pub fn watch(
     }
 }
 
-fn follow(mut gilrs: Gilrs, stream: &dyn Fn() -> Option<u64>, send: &dyn Fn(Input)) {
+fn follow(
+    mut gilrs: Gilrs,
+    stream: &dyn Fn() -> Option<u64>,
+    send: &dyn Fn(Input),
+    menu: &dyn Fn(Press),
+) {
     let mut pads = Pads::default();
+    let mut screens = Menu::default();
     for (id, pad) in gilrs.gamepads() {
         pads.plugged(id.into(), kind(pad.vendor_id(), pad.name()));
     }
@@ -79,6 +87,7 @@ fn follow(mut gilrs: Gilrs, stream: &dyn Fn() -> Option<u64>, send: &dyn Fn(Inpu
                 }
                 EventType::Disconnected => {
                     log::info!("gamepad unplugged");
+                    screens.unplugged(id);
                     if let Some(input) = pads.unplugged(id)
                         && watched.is_some()
                         && watched == told
@@ -99,6 +108,14 @@ fn follow(mut gilrs: Gilrs, stream: &dyn Fn() -> Option<u64>, send: &dyn Fn(Inpu
             told = watched;
             pads.forget_what_was_sent();
             moved = pads.plugged_in();
+        }
+        // Presses are followed during a stream too: a button held when it
+        // ends is no press on the screen after it.
+        for (id, pad) in gilrs.gamepads() {
+            let presses = screens.presses(usize::from(id), &state(&pad));
+            if watched.is_none() {
+                presses.into_iter().for_each(menu);
+            }
         }
         if watched.is_none() {
             continue;

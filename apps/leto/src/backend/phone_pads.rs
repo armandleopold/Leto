@@ -7,7 +7,7 @@ use std::{thread, time::Duration};
 use leto_core::input::{GamepadButtons, GamepadState, Input};
 use leto_system::gamepad::{self, Button, Pad};
 
-use super::pads::{Pads, kind};
+use super::pads::{Menu, Pads, Press, kind};
 
 /// How long to wait for a gamepad to do something before looking whether a
 /// stream started or ended meanwhile, or a gamepad was unplugged.
@@ -37,21 +37,24 @@ const BUTTONS: [(Button, GamepadButtons); 15] = [
 
 /// Starts following the gamepads. `stream` tells the stream being watched
 /// from the one before it, and is `None` while there is none. `send` passes
-/// an input on to that stream.
+/// an input on to that stream. Outside a stream, what a gamepad presses
+/// goes to Leto's own screens through `menu`.
 pub fn watch(
     stream: impl Fn() -> Option<u64> + Send + 'static,
     send: impl Fn(Input) + Send + 'static,
+    menu: impl Fn(Press) + Send + 'static,
 ) {
     let spawned = thread::Builder::new()
         .name("leto: gamepads".to_owned())
-        .spawn(move || follow(&stream, &send));
+        .spawn(move || follow(&stream, &send, &menu));
     if let Err(error) = spawned {
         log::error!("could not start the gamepad thread: {error}");
     }
 }
 
-fn follow(stream: &dyn Fn() -> Option<u64>, send: &dyn Fn(Input)) {
+fn follow(stream: &dyn Fn() -> Option<u64>, send: &dyn Fn(Input), menu: &dyn Fn(Press)) {
     let mut pads = Pads::default();
+    let mut screens = Menu::default();
     let mut told = None;
     let mut seen = 0;
     let mut looks = 0;
@@ -76,6 +79,7 @@ fn follow(stream: &dyn Fn() -> Option<u64>, send: &dyn Fn(Input)) {
                 if gamepad::describe(pad.id).is_none() {
                     log::info!("gamepad unplugged");
                     gamepad::forget(pad.id);
+                    screens.unplugged(number(pad.id));
                     if let Some(input) = pads.unplugged(number(pad.id))
                         && watched.is_some()
                         && watched == told
@@ -90,6 +94,14 @@ fn follow(stream: &dyn Fn() -> Option<u64>, send: &dyn Fn(Input)) {
             // Another stream, or none: the PC knows nothing of the gamepads.
             told = watched;
             pads.forget_what_was_sent();
+        }
+        // Presses are followed during a stream too: a button held when it
+        // ends is no press on the screen after it.
+        for pad in &heard {
+            let presses = screens.presses(number(pad.id), &state(pad));
+            if watched.is_none() {
+                presses.into_iter().for_each(menu);
+            }
         }
         if watched.is_none() {
             continue;

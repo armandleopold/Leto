@@ -172,6 +172,22 @@ pub fn back_asked(ui: &Ui) -> bool {
     })
 }
 
+/// Where the app keeps what a gamepad asked while nothing on screen was
+/// chosen: `true` to open the first choice, `false` only to choose it.
+pub const GAMEPAD_START: &str = "leto-gamepad-start";
+
+/// Makes `response` what a gamepad starts from on its screen, the first
+/// of what the screen offers. A gamepad that points or chooses while
+/// nothing is chosen gets it; returns whether it opens it too, as A does.
+pub fn first_choice(ui: &Ui, response: &Response) -> bool {
+    let id = Id::unique(GAMEPAD_START);
+    let Some(open) = ui.ctx().data_mut(|data| data.remove_temp::<bool>(id)) else {
+        return false;
+    };
+    response.request_focus();
+    open
+}
+
 /// A button with the back arrow and the name of where it leads.
 pub fn back_button(ui: &mut Ui, to: &str) -> Response {
     let font = FontId::proportional(theme::BODY);

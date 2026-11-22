@@ -94,9 +94,10 @@ adb shell input keyevent KEYCODE_BACK
 sleep 6
 # The apps screen's own back button leads to the list of PCs.
 screen see 11-apps PCs || fail "back twice did not leave the stream for the apps"
-adb shell input keyevent KEYCODE_BACK
+# A gamepad's B goes back too, outside a stream.
+adb shell input gamepad keyevent KEYCODE_BUTTON_B
 sleep 4
-screen see 12-pcs Your PCs || fail "back on the apps did not lead to the list of PCs"
+screen see 12-pcs Your PCs || fail "the gamepad's B on the apps did not lead to the list of PCs"
 # On the list, back puts the app behind the others, still running.
 adb shell input keyevent KEYCODE_BACK
 sleep 4
