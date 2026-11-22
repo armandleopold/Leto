@@ -538,6 +538,7 @@ fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
         return Ok(());
     }
     let (input, microphone) = (session.input_allowed(), session.takes_microphone());
+    let encrypted = session.encrypted();
     let before = now.session.replace(session);
     now.voice = Voice::No;
     now.host = Some(host.clone());
@@ -547,7 +548,7 @@ fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
     // Winding down a stream waits for its threads, and one of them may be
     // waiting to say that it ended.
     drop(before);
-    shell.tell(Event::Playing { attempt, input, microphone });
+    shell.tell(Event::Playing { attempt, input, microphone, encrypted });
     if !microphone || shell.sends_camera() {
         // After the news that the stream plays: a PC without Leto's API can
         // take seconds not to answer.

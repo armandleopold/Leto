@@ -203,6 +203,12 @@ fn a_peer_that_answers_is_not_silent() {
     let at_home = home.bind(Some(7)).unwrap();
     laptop.bind(None).unwrap().send_to(b"ping", SocketAddrV4::new(HOME, 7)).unwrap();
     at_home.recv_from(WAIT).expect("the datagram arrives");
+    // The laptop sends what waited for the handshake before it notes that
+    // the peer answered: the datagram can be home a moment before the note.
+    let asked = std::time::Instant::now();
+    while !laptop.status().silence.answered_once && asked.elapsed() < WAIT {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let silence = laptop.status().silence;
     assert!(silence.answered_once);
     assert_eq!((silence.tries, silence.refused), (0, 0));

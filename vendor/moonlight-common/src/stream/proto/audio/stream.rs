@@ -64,6 +64,8 @@ pub struct AudioStream {
     ping_sender: PingSender,
     depayloader: AudioDepayloader,
     events: VecDeque<AudioStreamEvent>,
+    /// Leto: whether the host and this client agreed to encrypt the audio.
+    encrypted: bool,
 }
 
 impl AudioStream {
@@ -100,7 +102,13 @@ impl AudioStream {
                 crypto_backend,
             ),
             events: Default::default(),
+            encrypted: config.sunshine_encryption.is_some(),
         }
+    }
+
+    /// Leto: whether the audio travels encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     fn poll_depayloader(&mut self, now: Instant) -> Result<(), Error> {

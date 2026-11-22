@@ -17,6 +17,7 @@ use std::{
 use leto_core::{
     engine::{BITRATES_KBPS, Choices, Codec, Codecs, ScreenMode, bitrate_for},
     input::{GamepadButtons, GamepadKind, Input, InputAllowed, MouseButton},
+    model::Encrypted,
 };
 use moonlight_common::{
     error::Error as ProtocolError,
@@ -369,7 +370,21 @@ impl Session {
         if control.keyframe_wanted_early.swap(false, Ordering::SeqCst) {
             control.request_keyframe();
         }
-        Ok(Self { stream, leaving, input_allowed, sideways_wheel, microphone, _clock: clock })
+        let session =
+            Self { stream, leaving, input_allowed, sideways_wheel, microphone, _clock: clock };
+        // Said every time: a stream that comes back may come back another
+        // way. Leto asked for everything, and the PC decides what it offers.
+        let encrypted = session.encrypted();
+        if encrypted.picture {
+            log::info!("the stream travels with {}", encrypted.summary());
+        } else {
+            log::warn!(
+                "the stream travels with {}: the PC does not offer to encrypt its pictures to \
+                 this device",
+                encrypted.summary()
+            );
+        }
+        Ok(session)
     }
 
     /// Whether the stream has ended, by either side.
@@ -412,6 +427,14 @@ impl Session {
     /// connection measures it. `None` until it has.
     pub fn round_trip(&self) -> Option<Duration> {
         self.stream.estimated_rtt().ok().map(|estimate| estimate.rtt)
+    }
+
+    /// What travels encrypted in this stream: what the PC and this device
+    /// agreed on. Leto always asks for everything, and the PC decides what
+    /// it offers.
+    pub fn encrypted(&self) -> Encrypted {
+        let (picture, sound, input) = self.stream.encrypted();
+        Encrypted { picture, sound, input }
     }
 
     /// Whether the PC takes the microphone of this device. Few do: it needs

@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::{
     input::InputAllowed,
-    model::{AppSummary, HostId, HostSummary, Pin, TunnelSummary},
+    model::{AppSummary, Encrypted, HostId, HostSummary, Pin, TunnelSummary},
 };
 
 /// Work for the engine.
@@ -106,11 +106,13 @@ pub enum Event<Image = ImageFile> {
     },
     /// The stream is connected: pictures and sound are on their way, and
     /// the PC accepts `input` from this device. `microphone` says whether
-    /// it takes this device's microphone too.
+    /// it takes this device's microphone too, and `encrypted` what travels
+    /// encrypted between the two.
     Playing {
         attempt: u64,
         input: InputAllowed,
         microphone: bool,
+        encrypted: Encrypted,
     },
     /// Whether the PC takes this device's microphone after all, beside the
     /// stream, when [`Event::Playing`] said that it takes none inside it.
@@ -177,8 +179,8 @@ impl<Image> Event<Image> {
             Self::PinChosen { attempt, pin } => Event::PinChosen { attempt, pin },
             Self::PairingEnded { attempt, result } => Event::PairingEnded { attempt, result },
             Self::Apps { host, result } => Event::Apps { host, result },
-            Self::Playing { attempt, input, microphone } => {
-                Event::Playing { attempt, input, microphone }
+            Self::Playing { attempt, input, microphone, encrypted } => {
+                Event::Playing { attempt, input, microphone, encrypted }
             }
             Self::Microphone { attempt, taken } => Event::Microphone { attempt, taken },
             Self::Camera { attempt, offer } => Event::Camera { attempt, offer },
@@ -606,7 +608,12 @@ mod tests {
         let offer = CameraOffer { max_width: 1920, max_height: 1080, max_fps: 30 };
         let events: [Event; 9] = [
             Event::Added(Err("The PC did not answer.".into())),
-            Event::Playing { attempt: 2, input: InputAllowed::ALL, microphone: true },
+            Event::Playing {
+                attempt: 2,
+                input: InputAllowed::ALL,
+                microphone: true,
+                encrypted: Encrypted { picture: false, sound: true, input: true },
+            },
             Event::Camera { attempt: 2, offer: Some(offer) },
             Event::Camera { attempt: 2, offer: None },
             Event::PinChosen { attempt: 1, pin: Pin::from_bytes([0, 9, 0, 5]) },

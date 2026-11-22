@@ -7,7 +7,7 @@
 use leto_core::{
     engine::{Choices, ScreenMode, WireGuardFile},
     input::InputAllowed,
-    model::{AppSummary, HostId, HostSummary, Pin, Reachability, TunnelSummary},
+    model::{AppSummary, Encrypted, HostId, HostSummary, Pin, Reachability, TunnelSummary},
 };
 
 /// Seconds between two searches while the list of PCs is on screen.
@@ -104,6 +104,9 @@ pub struct StreamView {
     pub reconnecting: bool,
     /// What the PC lets this device play with, known once connected.
     pub input: InputAllowed,
+    /// What travels encrypted between the PC and this device, known once
+    /// connected.
+    pub encrypted: Option<Encrypted>,
     pub microphone: Mic,
     pub camera: Cam,
 }
@@ -341,6 +344,7 @@ impl State {
             connected: false,
             reconnecting: false,
             input: InputAllowed::ALL,
+            encrypted: None,
             // Off at the start of every stream: a PC hears and sees this
             // device only once the person says so.
             microphone: Mic::NotTaken,
@@ -605,7 +609,7 @@ impl State {
                     };
                 }
             }
-            Event::Playing { attempt, input, microphone } => {
+            Event::Playing { attempt, input, microphone, encrypted } => {
                 if let Screen::Stream(view) = &mut self.screen
                     && view.attempt == attempt
                 {
@@ -614,6 +618,7 @@ impl State {
                     let back = std::mem::take(&mut view.reconnecting);
                     view.connected = true;
                     view.input = input;
+                    view.encrypted = Some(encrypted);
                     view.microphone = match &view.microphone {
                         // Without `microphone`, the PC may still take it
                         // beside the stream: that news follows.
@@ -995,7 +1000,36 @@ mod tests {
     /// The news that stream `attempt` is connected, to a PC that takes a
     /// microphone or not.
     fn playing(attempt: u64, microphone: bool) -> Event {
-        Event::Playing { attempt, input: InputAllowed::ALL, microphone }
+        Event::Playing { attempt, input: InputAllowed::ALL, microphone, encrypted: Encrypted::ALL }
+    }
+
+    #[test]
+    fn a_stream_knows_what_travels_encrypted_once_connected_and_again_when_it_is_back() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"), None, Choices::default());
+        let encrypted = |state: &State| {
+            let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+            view.encrypted
+        };
+        assert_eq!(encrypted(&state), None, "nothing is agreed on before the stream connects");
+        let attempt = {
+            let Screen::Stream(view) = &state.screen else { panic!("{:?}", state.screen) };
+            view.attempt
+        };
+        let clear = Encrypted { picture: false, sound: true, input: true };
+        let news = |encrypted| Event::Playing {
+            attempt,
+            input: InputAllowed::ALL,
+            microphone: false,
+            encrypted,
+        };
+        state.apply(news(clear), 2.0);
+        assert_eq!(encrypted(&state), Some(clear));
+        // A stream that comes back may come back another way.
+        state.apply(Event::Reconnecting { attempt }, 3.0);
+        state.apply(news(Encrypted::ALL), 4.0);
+        assert_eq!(encrypted(&state), Some(Encrypted::ALL));
     }
 
     fn microphone(state: &State) -> &Mic {

@@ -146,6 +146,10 @@ pub struct Options {
     /// by default. Without it the handshake is in clear text, as a host
     /// configured to never encrypt does it.
     pub encrypt_rtsp: bool,
+    /// Offer to encrypt the pictures. Apollo and Sunshine do not on a local
+    /// network unless they are told to, and a client then gets them in
+    /// clear whatever it asked for.
+    pub encrypt_video: bool,
     /// With some bits of [`permission`], the host behaves as Apollo: it
     /// reports them and refuses what they do not cover. Without, it is a
     /// Sunshine, where a paired device may do everything.
@@ -202,6 +206,7 @@ impl Default for Options {
                 App::new(881_448_767, "Steam Big Picture", false),
             ],
             encrypt_rtsp: true,
+            encrypt_video: true,
             permissions: None,
             microphone: true,
             camera: Some((1920, 1080)),
@@ -950,6 +955,7 @@ fn launch(
         // Clients that can encrypt RTSP say so with `corever`.
         encrypt_rtsp: shared.options.encrypt_rtsp
             && query.get("corever").and_then(|version| version.parse::<u32>().ok()) >= Some(1),
+        encrypt_video: shared.options.encrypt_video,
         microphone: shared.options.microphone,
         camera: shared.cameras.clone(),
         encodes: shared.options.encodes,

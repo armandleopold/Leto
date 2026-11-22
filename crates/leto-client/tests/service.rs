@@ -274,7 +274,7 @@ fn a_stream_starts_takes_input_and_is_left() {
         choices: Choices::default(),
     });
     let (allowed, microphone) = desk.wait(|event| match event {
-        Event::Playing { attempt: 7, input, microphone } => Some((input, microphone)),
+        Event::Playing { attempt: 7, input, microphone, .. } => Some((input, microphone)),
         Event::PlayFailed { message, .. } => panic!("{message}"),
         _ => None,
     });

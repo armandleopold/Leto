@@ -102,6 +102,8 @@ pub(crate) struct Launch {
     pub key_id: AesIv,
     /// Answer RTSP encrypted, as a host does for a client that sent `corever=1`.
     pub encrypt_rtsp: bool,
+    /// Offer to encrypt the pictures.
+    pub encrypt_video: bool,
     /// Take the microphone of a client that offers it.
     pub microphone: bool,
     /// Where the camera of a client arrives, when the host takes one: the
@@ -502,7 +504,10 @@ fn answer_rtsp(inner: &Arc<Inner>, request: &RtspRequest) -> RtspResponse {
     match request.method.as_str() {
         "OPTIONS" | "PLAY" => {}
         "DESCRIBE" => {
-            let mut supported = ENCRYPT_CONTROL | ENCRYPT_VIDEO | ENCRYPT_AUDIO;
+            let mut supported = ENCRYPT_CONTROL | ENCRYPT_AUDIO;
+            if inner.launch.encrypt_video {
+                supported |= ENCRYPT_VIDEO;
+            }
             let mut requested = ENCRYPT_CONTROL;
             let mut microphone = String::new();
             if inner.launch.microphone {
