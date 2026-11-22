@@ -80,10 +80,21 @@ fn pair(client: &Client, host: &FakeHost) -> HostSummary {
 /// whose devices have these permissions.
 fn companion(host: &FakeHost, folder: &Folder, permissions: Option<u32>) -> Companion {
     host.write_apollo_folder(&folder.0, permissions).unwrap();
-    let apollo = Apollo::read(&folder.0).unwrap();
-    assert_eq!(apollo.port(), host.port());
+    assert_eq!(Apollo::read(&folder.0).unwrap().port(), host.port());
     let options = CompanionOptions { interface: "127.0.0.1".to_owned(), largest: (1280, 720) };
-    Companion::start(apollo, &options).unwrap()
+    // The port `apollo()` found free may have gone to a test running beside
+    // this one in the meantime: it gives it back when it ends.
+    let start = Instant::now();
+    loop {
+        match Companion::start(Apollo::read(&folder.0).unwrap(), &options) {
+            Ok(companion) => return companion,
+            Err(error) if start.elapsed() < Duration::from_secs(20) => {
+                eprintln!("the companion's port is taken for now: {error}");
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => panic!("the companion did not start: {error}"),
+        }
+    }
 }
 
 fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
