@@ -55,10 +55,11 @@ use moonlight_common::{
 
 use opus_decoder::OpusDecoder;
 
-use crate::{
-    camera::Cameras,
-    media::{Hands, Melody, TestCard},
+use super::{
+    media::Hands,
+    source::{Asked, SOUND_PACKET, SOUND_PACKET_BYTES, Screen, Sound, Watching},
 };
+use crate::camera::Cameras;
 
 /// The version the stand-in host reports, the one of a current Sunshine.
 pub(crate) const APP_VERSION: &str = "7.1.431.-1";
@@ -89,13 +90,6 @@ const RTSP_ENCRYPTED: u32 = 0x8000_0000;
 /// Largest RTSP message accepted from a client.
 const RTSP_LIMIT: usize = 64 * 1024;
 
-/// Sound is sent in packets of this length, as Sunshine does.
-const AUDIO_PACKET: Duration = Duration::from_millis(5);
-const AUDIO_RATE: u32 = 48_000;
-/// Bit rate of Sunshine's stereo stream. With packets of 5 ms it makes every
-/// packet 60 bytes long, and the audio packet format needs that fixed size.
-const AUDIO_BITRATE: i32 = 96_000;
-
 /// What `/launch` or `/resume` asked for.
 pub(crate) struct Launch {
     pub key: AesKey,
@@ -104,6 +98,9 @@ pub(crate) struct Launch {
     pub encrypt_rtsp: bool,
     /// Offer to encrypt the pictures.
     pub encrypt_video: bool,
+    /// Where the pictures and the sound of the stream come from.
+    pub screen: Arc<dyn Screen>,
+    pub sound: Arc<dyn Sound>,
     /// Take the microphone of a client that offers it.
     pub microphone: bool,
     /// Where the camera of a client arrives, when the host takes one: the
@@ -241,7 +238,7 @@ impl Session {
         let rtsp_port = listener.local_addr()?.port();
 
         let mut random = [0u8; 12];
-        fill_random(&mut random);
+        fill_random(&mut random)?;
         // Sixteen printable characters, as Sunshine sends them in a header.
         let ping = hex(&random[..8]);
         let mut ping_bytes = [0u8; 16];
@@ -249,7 +246,9 @@ impl Session {
 
         let inner = Arc::new(Inner {
             launch,
-            version: APP_VERSION.parse().expect("the stand-in host's version is well formed"),
+            version: APP_VERSION
+                .parse()
+                .map_err(|_| io::Error::other("the version the host reports is not one"))?,
             video: UdpSocket::bind((interface, ports.video))?,
             audio: UdpSocket::bind((interface, ports.audio))?,
             control: UdpSocket::bind((interface, ports.control))?,
@@ -919,43 +918,53 @@ fn serve_video(inner: &Inner, negotiated: Negotiated) {
         },
         Arc::new(RustCryptoBackend),
     );
-    let Some(mut card) =
-        TestCard::new(negotiated.width, negotiated.height, negotiated.fps, negotiated.bitrate_kbps)
-    else {
+    let asked = Asked {
+        width: negotiated.width,
+        height: negotiated.height,
+        fps: negotiated.fps,
+        bitrate_kbps: negotiated.bitrate_kbps,
+        codec: negotiated.codec,
+    };
+    let Some(mut pictures) = inner.launch.screen.open(asked) else {
+        log::warn!("no pictures for this stream: nothing to show as {asked:?}");
         return;
     };
 
-    let interval = Duration::from_secs_f64(1.0 / f64::from(negotiated.fps));
-    let mut due = Instant::now();
-    let mut number: u64 = 0;
+    let started = Instant::now();
     while !inner.stop.load(Ordering::SeqCst) {
         drain(socket);
         let keyframe = inner.wants_keyframe.swap(false, Ordering::SeqCst);
         let hands = *lock(&inner.hands);
         let seen = inner.launch.camera.as_ref().and_then(|cameras| cameras.seen());
-        let frame = card.next(keyframe, hands, seen.as_deref());
-        if let Some(frame) = frame.filter(|_| !inner.launch.blank) {
-            let kind = if frame.keyframe { ServerFrameType::Idr } else { ServerFrameType::PFrame };
-            // Video time counts in ninetieths of a millisecond.
-            let timestamp = (number * 90_000 / u64::from(negotiated.fps)) as u32;
-            // Made as it was due, and late all the same when a test asks:
-            // a keyframe asked for in the meantime is the next picture.
-            let late = inner.picture_held.swap(0, Ordering::SeqCst);
-            if late > 0 {
-                thread::sleep(Duration::from_millis(late));
+        let watching = Watching { hands, camera: seen.as_deref() };
+        let Some(picture) = pictures.next(keyframe, watching) else {
+            if keyframe {
+                // Still owed: the source had no picture this time.
+                inner.wants_keyframe.store(true, Ordering::SeqCst);
             }
-            if payloader.push_frame(timestamp, None, kind, frame.data).is_ok() {
-                while let Some(packet) = payloader.poll_packet() {
-                    send(socket, &packet, client);
-                }
-                inner.frames_sent.fetch_add(1, Ordering::SeqCst);
-                if frame.keyframe {
-                    inner.keyframes_sent.fetch_add(1, Ordering::SeqCst);
-                }
+            continue;
+        };
+        if inner.launch.blank {
+            continue;
+        }
+        let kind = if picture.keyframe { ServerFrameType::Idr } else { ServerFrameType::PFrame };
+        // Video time counts in ninetieths of a millisecond.
+        let timestamp = (started.elapsed().as_micros() * 9 / 100) as u32;
+        // Made as it was due, and late all the same when a test asks: a
+        // keyframe asked for in the meantime is the next picture.
+        let late = inner.picture_held.swap(0, Ordering::SeqCst);
+        if late > 0 {
+            thread::sleep(Duration::from_millis(late));
+        }
+        if payloader.push_frame(timestamp, picture.took, kind, picture.data).is_ok() {
+            while let Some(packet) = payloader.poll_packet() {
+                send(socket, &packet, client);
+            }
+            inner.frames_sent.fetch_add(1, Ordering::SeqCst);
+            if picture.keyframe {
+                inner.keyframes_sent.fetch_add(1, Ordering::SeqCst);
             }
         }
-        number += 1;
-        due = pace(due, interval);
     }
 }
 
@@ -964,27 +973,27 @@ fn serve_audio(inner: &Inner, negotiated: Negotiated) {
     let Some(client) = wait_for_client(inner, socket) else { return };
     let _ = socket.set_nonblocking(true);
 
-    let samples = (AUDIO_RATE as usize * AUDIO_PACKET.as_millis() as usize) / 1000;
-    let frame_bytes = AUDIO_BITRATE as usize / 8 * AUDIO_PACKET.as_millis() as usize / 1000;
-    let Some(mut melody) = Melody::new(AUDIO_RATE, AUDIO_BITRATE, samples) else { return };
+    let Some(mut sound) = inner.launch.sound.open() else {
+        log::warn!("no sound for this stream");
+        return;
+    };
     let encrypted = negotiated.encryption & ENCRYPT_AUDIO != 0;
     let mut payloader = AudioPayloader::new(
         AudioPayloaderConfig {
             // A real host always adds recovery packets, encrypted or not.
             fec: true,
-            frame_len: frame_bytes,
+            frame_len: SOUND_PACKET_BYTES,
             encryption: encrypted.then_some((inner.launch.key, inner.launch.key_id)),
         },
         Arc::new(RustCryptoBackend),
     );
 
-    let mut due = Instant::now();
     let mut number: u32 = 0;
     while !inner.stop.load(Ordering::SeqCst) {
         drain(socket);
-        if let Some(packet) = melody.next()
-            && packet.len() == frame_bytes
-            && payloader.push_frame(AUDIO_PACKET * number, packet).is_ok()
+        if let Some(packet) = sound.next()
+            && packet.len() == SOUND_PACKET_BYTES
+            && payloader.push_frame(SOUND_PACKET * number, packet).is_ok()
         {
             while let Some(packet) = payloader.poll_packet() {
                 send(socket, &packet, client);
@@ -992,7 +1001,6 @@ fn serve_audio(inner: &Inner, negotiated: Negotiated) {
             inner.audio_packets_sent.fetch_add(1, Ordering::SeqCst);
         }
         number = number.wrapping_add(1);
-        due = pace(due, AUDIO_PACKET);
     }
 }
 
@@ -1079,28 +1087,16 @@ fn send(socket: &UdpSocket, packet: &[u8], client: SocketAddr) {
     }
 }
 
-/// Sleeps until `due + interval` and returns that instant. After a stall it
-/// starts counting again from now instead of rushing to catch up.
-fn pace(due: Instant, interval: Duration) -> Instant {
-    let next = due + interval;
-    let now = Instant::now();
-    if next > now {
-        thread::sleep(next - now);
-        next
-    } else if now - next > interval * 4 {
-        now
-    } else {
-        next
-    }
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-pub(crate) fn fill_random(bytes: &mut [u8]) {
+/// Fills `bytes` from the system's random numbers.
+pub(crate) fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
     use moonlight_common::http::pair::PairingCryptoBackend;
-    RustCryptoBackend.random_bytes(bytes).expect("the system provides random bytes");
+    RustCryptoBackend
+        .random_bytes(bytes)
+        .map_err(|_| io::Error::other("the system gave no random numbers"))
 }
 
 fn hex(bytes: &[u8]) -> String {

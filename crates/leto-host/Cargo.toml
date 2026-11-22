@@ -13,10 +13,18 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+leto-core = { workspace = true }
 leto-return = { workspace = true }
 log = { workspace = true }
+# The protocol of Sunshine and Apollo, host side: pairing arithmetic, the
+# control connection, and the packets of pictures and sound.
+moonlight-common = { workspace = true }
 # The pictures of a client's camera are decoded to be shown on the PC.
 openh264 = { workspace = true }
+# What a client's microphone sends is decoded, and the melody of the test
+# card is encoded.
+opus-decoder = "0.1"
+opus-rs = "0.1"
 # Apollo's certificate, key and paired devices are kept as PEM.
 pem = "3"
 # Keys for the cameras, from the system's random numbers.
