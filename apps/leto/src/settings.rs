@@ -134,6 +134,8 @@ pub enum ClientIcon {
     Console,
 }
 
+// Only a desktop shares its PC and has devices to give an icon to.
+#[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
 impl ClientIcon {
     pub const ALL: [Self; 6] =
         [Self::Computer, Self::Laptop, Self::Phone, Self::Tablet, Self::Television, Self::Console];
