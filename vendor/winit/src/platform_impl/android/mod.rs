@@ -388,7 +388,7 @@ impl<T: 'static> EventLoop<T> {
             InputEvent::MotionEvent(motion_event) if is_mouse(motion_event) => {
                 // Leto: a mouse the window keeps for itself tells how far
                 // it moved, as a desktop's raw mouse does.
-                if let Some(delta) = mouse_moved(motion_event) {
+                for delta in mouse_moved(motion_event) {
                     callback(
                         event::Event::DeviceEvent {
                             device_id: event::DeviceId(DeviceId(motion_event.device_id())),
@@ -1190,18 +1190,22 @@ fn is_mouse(motion: &MotionEvent<'_>) -> bool {
 
 /// How far a mouse the window keeps for itself moved (Android's "pointer
 /// capture"): its events then say that in place of where a pointer is, and
-/// there is no pointer. `None` for a mouse that moves Android's pointer.
-fn mouse_moved(motion: &MotionEvent<'_>) -> Option<(f64, f64)> {
+/// there is no pointer. One move for each report of the mouse, as a
+/// desktop tells them: Android puts several in one event, and a PC speeds
+/// its pointer up with the size of each move it is told. None for a mouse
+/// that moves Android's pointer.
+fn mouse_moved(motion: &MotionEvent<'_>) -> Vec<(f64, f64)> {
     if motion.source() != Source::MouseRelative {
-        return None;
+        return Vec::new();
     }
-    // Every report of the mouse Android put in this event counts: read
-    // alone, the last one is a small part of the way.
-    let delta = (
-        f64::from(motion.summed_axis_value(Axis::X, 0)),
-        f64::from(motion.summed_axis_value(Axis::Y, 0)),
-    );
-    (delta != (0.0, 0.0)).then_some(delta)
+    let across = motion.axis_samples(Axis::X, 0);
+    let down = motion.axis_samples(Axis::Y, 0);
+    across
+        .into_iter()
+        .zip(down)
+        .map(|(x, y)| (f64::from(x), f64::from(y)))
+        .filter(|delta| *delta != (0.0, 0.0))
+        .collect()
 }
 
 /// The window events a mouse's `motion` makes: where the pointer is, the

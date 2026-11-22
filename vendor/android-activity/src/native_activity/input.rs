@@ -128,11 +128,11 @@ impl<'a> MotionEvent<'a> {
         }
     }
 
-    /// Leto: how far along `axis` the pointer at `pointer_index` went over
-    /// the whole event: its last sample and every earlier one Android put
-    /// in the same event (a mouse reports more often than Android hands
-    /// events out). Only for axes that tell a move, not a place.
-    pub fn summed_axis_value(&self, axis: Axis, pointer_index: usize) -> f32 {
+    /// Leto: every value `axis` took for the pointer at `pointer_index`
+    /// in this event, oldest first: the earlier samples Android put in the
+    /// same event (a mouse reports more often than Android hands events
+    /// out), then the event's own.
+    pub fn axis_samples(&self, axis: Axis, pointer_index: usize) -> Vec<f32> {
         let axis: u32 = axis.into();
         let axis = axis as i32;
         let event = self.ndk_event.ptr().as_ptr();
@@ -140,16 +140,17 @@ impl<'a> MotionEvent<'a> {
         // the indexes it is given against what the event holds.
         unsafe {
             let earlier = ndk_sys::AMotionEvent_getHistorySize(event);
-            let mut sum = ndk_sys::AMotionEvent_getAxisValue(event, axis, pointer_index);
+            let mut samples = Vec::with_capacity(earlier + 1);
             for sample in 0..earlier {
-                sum += ndk_sys::AMotionEvent_getHistoricalAxisValue(
+                samples.push(ndk_sys::AMotionEvent_getHistoricalAxisValue(
                     event,
                     axis,
                     pointer_index,
                     sample,
-                );
+                ));
             }
-            sum
+            samples.push(ndk_sys::AMotionEvent_getAxisValue(event, axis, pointer_index));
+            samples
         }
     }
 
