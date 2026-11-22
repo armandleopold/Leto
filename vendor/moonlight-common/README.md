@@ -65,6 +65,13 @@ Each is marked with a comment that starts with `Leto:`.
   to 7 ms above the truth and stays, so a host 1 ms away read 8 ms. Its
   tests are at the end of `enet.rs`; like the rest of this crate's, they
   do not build here (the crate's test helper needs what Leto leaves out).
+- `src/stream/std/mod.rs` (`put_sound_first`) and `Cargo.toml` (`libc` on
+  Android): on Android, the thread that receives the sound and the one that
+  hands it on to the application run at Android's priority for sound
+  (`THREAD_PRIORITY_AUDIO`). On a busy Fire TV the sound otherwise arrived
+  late, a packet at a time, and the speakers ran dry several times a second
+  while the picture played on (2026-11-22). The commit left them at the
+  default priority.
 - `src/high/std.rs` (`pair`): before pairing, one step out of order makes
   the host drop an attempt that never got its PIN. Sunshine and Apollo keep
   one such attempt under the unique id every Moonlight client shares, and

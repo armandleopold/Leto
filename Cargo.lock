@@ -2703,6 +2703,7 @@ dependencies = [
  "hex",
  "http",
  "httparse",
+ "libc",
  "num",
  "num-derive",
  "num-traits",

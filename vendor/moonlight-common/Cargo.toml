@@ -110,6 +110,10 @@ sdp-types = "0.1.8"
 # serde serialization for some types
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 
+# Leto: to put the sound's threads ahead of the rest on Android.
+[target.'cfg(target_os = "android")'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["std", "rustcrypto"]
 
