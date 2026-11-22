@@ -30,4 +30,6 @@ as a mouse.
 - `src/platform_impl/android/mod.rs`: `mouse_moved`. A mouse the window
   keeps for itself (Android's pointer capture, source `MouseRelative`)
   gives `DeviceEvent::MouseMotion` and its buttons and wheel, and no
-  `CursorMoved`: a game on the PC turns its view with it.
+  `CursorMoved`: a game on the PC turns its view with it. Needs the copy of
+  android-activity in `vendor/android-activity` for the moves Android
+  batched in one event.

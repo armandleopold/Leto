@@ -1195,8 +1195,12 @@ fn mouse_moved(motion: &MotionEvent<'_>) -> Option<(f64, f64)> {
     if motion.source() != Source::MouseRelative {
         return None;
     }
-    let pointer = motion.pointer_at_index(0);
-    let delta = (f64::from(pointer.x()), f64::from(pointer.y()));
+    // Every report of the mouse Android put in this event counts: read
+    // alone, the last one is a small part of the way.
+    let delta = (
+        f64::from(motion.summed_axis_value(Axis::X, 0)),
+        f64::from(motion.summed_axis_value(Axis::Y, 0)),
+    );
     (delta != (0.0, 0.0)).then_some(delta)
 }
 
