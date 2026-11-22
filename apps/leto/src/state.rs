@@ -202,6 +202,10 @@ pub struct State {
     pub screen: Screen,
     pub hosts: Vec<HostSummary>,
     pub searching: bool,
+    /// The search that is running is one the person asked for: only that
+    /// one is worth a word on screen, the others are Leto keeping its list
+    /// fresh.
+    pub search_asked: bool,
     /// At least one search has ended since the app started.
     pub searched: bool,
     /// The last search could listen on the network.
@@ -223,6 +227,7 @@ impl State {
             screen: Screen::Pcs,
             hosts: Vec::new(),
             searching: false,
+            search_asked: false,
             searched: false,
             network_searched: true,
             add: AddForm::default(),
@@ -255,6 +260,12 @@ impl State {
             self.searching = true;
             self.requests.push(Request::Search);
         }
+    }
+
+    /// Starts the search the person asked for, which says that it runs.
+    pub fn search_by_hand(&mut self, now: f64) {
+        self.search(now);
+        self.search_asked = true;
     }
 
     /// The person chose a PC in the list.
@@ -550,6 +561,7 @@ impl State {
             }
             Event::SearchFinished { network_searched } => {
                 self.searching = false;
+                self.search_asked = false;
                 self.searched = true;
                 self.network_searched = network_searched;
                 self.last_search = now;

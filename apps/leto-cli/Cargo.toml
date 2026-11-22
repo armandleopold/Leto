@@ -17,6 +17,10 @@ clap = { workspace = true }
 leto-bridge = { workspace = true }
 leto-client = { workspace = true }
 leto-core = { workspace = true }
+# `companion`: Leto on the PC that is shared, with no window.
+leto-host = { workspace = true }
+# `companion --save` writes what a camera sees as a PNG, to look at.
+image = { workspace = true }
 # `play` decodes what it receives, to tell whether Leto can show it.
 leto-media = { workspace = true }
 leto-protocol = { workspace = true }

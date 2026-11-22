@@ -87,11 +87,14 @@ done_
 step "Back"
 # Android's back, as the gesture or the button sends it: once in a stream
 # the bar says that once more leaves, twice leaves for the apps of the PC.
+# Reading a screen takes tesseract longer than the 8 s back again has:
+# the screen is kept, and read once the stream is left.
 adb shell input keyevent KEYCODE_BACK
 sleep 1
-screen see 10-back-once Back again || fail "the bar does not say that back again leaves"
+screen shot 10-back-once
 adb shell input keyevent KEYCODE_BACK
 sleep 6
+screen seen 10-back-once Back again || fail "the bar does not say that back again leaves"
 # The apps screen's own back button leads to the list of PCs.
 screen see 11-apps PCs || fail "back twice did not leave the stream for the apps"
 # A gamepad's B goes back too, outside a stream.

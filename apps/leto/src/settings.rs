@@ -98,6 +98,10 @@ pub struct Settings {
     /// The camera, microphone and speakers of this device that Leto uses,
     /// chosen on their own page.
     pub devices: DeviceChoices,
+
+    /// This PC is shared: Leto is its host too, from the moment it starts.
+    /// Only a desktop has the screen that turns it on.
+    pub share_this_pc: bool,
 }
 
 /// The camera, microphone and speakers Leto uses, by the names the system
@@ -188,6 +192,7 @@ impl Default for Settings {
             codec: None,
             statistics: false,
             devices: DeviceChoices::default(),
+            share_this_pc: false,
         }
     }
 }

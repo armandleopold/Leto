@@ -1,9 +1,9 @@
-//! The camera of a client, taken the way Leto's own host will take it.
+//! The camera of a client, on the PC.
 //!
-//! No Sunshine or Apollo does this. The stand-in host answers Leto's API on
-//! the port thirteen above its own, as `leto_return::api` describes it, then
-//! takes the packets that follow, decodes them and keeps the last picture:
-//! the test card shows it in a corner, and a test can look at it.
+//! No Sunshine or Apollo takes one. A Leto host answers Leto's API on the
+//! port thirteen above its own, as `leto_return::api` describes it, then
+//! takes the packets that follow, decodes them and keeps the last picture
+//! for whoever shows it on the PC.
 
 use std::{
     io::{self, Read, Write},
@@ -25,13 +25,14 @@ use openh264::{
     decoder::{Decoder, DecoderConfig, Flush},
     formats::YUVSource,
 };
-use rustls::{ServerConnection, StreamOwned};
+use rustls::{HandshakeKind, ServerConfig, ServerConnection, StreamOwned};
 use serde::Serialize;
 
-use crate::Shared;
-
 /// How far above the host's own port Leto's API and the camera are.
-const OFFSET: u16 = 13;
+pub const OFFSET: u16 = 13;
+
+/// How long a device has to send its request once it connected.
+const PATIENCE: Duration = Duration::from_secs(10);
 
 /// The most pictures a second the host takes.
 const FASTEST: u32 = 30;
@@ -75,7 +76,7 @@ pub struct Seen {
 }
 
 /// The cameras of the clients of one host: one at a time.
-pub(crate) struct Cameras {
+pub struct Cameras {
     port: u16,
     socket: UdpSocket,
     /// The largest picture the host says it takes.
@@ -142,6 +143,11 @@ impl Cameras {
         self.state().seen.clone()
     }
 
+    /// The certificate of the device whose camera is being sent.
+    pub fn sender(&self) -> Option<Vec<u8>> {
+        self.state().receiving.as_ref().map(|receiving| receiving.device.clone())
+    }
+
     /// The owner of the host lets devices send their camera, or not.
     pub fn refuse(&self, refused: bool) {
         self.state().refused_by_owner = refused;
@@ -198,8 +204,9 @@ impl Cameras {
         }
 
         let (mut bytes, mut id) = ([0u8; 16], [0u8; 4]);
-        crate::stream::fill_random(&mut bytes);
-        crate::stream::fill_random(&mut id);
+        let random = ring::rand::SystemRandom::new();
+        ring::rand::SecureRandom::fill(&random, &mut bytes).map_err(|_| 500u16)?;
+        ring::rand::SecureRandom::fill(&random, &mut id).map_err(|_| 500u16)?;
         let key = Key { bytes, id: u32::from_le_bytes(id) };
         // A picture comes out as soon as it went in, and damage is not
         // hidden: what does not decode is counted.
@@ -321,22 +328,47 @@ struct Request {
     body: Vec<u8>,
 }
 
+/// What a host knows of the device at the other end of a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Not a device the host is paired with.
+    Stranger,
+    /// A paired device, which the owner of the PC lets send its camera or
+    /// not.
+    Paired { camera: bool },
+}
+
 /// Answers one connection to Leto's API.
-pub(crate) fn handle(stream: TcpStream, shared: &Shared, cameras: &Cameras) {
-    let config = Arc::clone(&shared.identity.lock().unwrap().tls);
-    let Ok(connection) = ServerConnection::new(config) else { return };
+///
+/// `tls` asks the device for its certificate, and `access` says what the
+/// host knows of the one it showed: the certificate is all that tells a
+/// paired device from a stranger, as on the rest of a host.
+pub fn handle(
+    stream: TcpStream,
+    tls: Arc<ServerConfig>,
+    access: impl FnOnce(&[u8]) -> Access,
+    cameras: &Cameras,
+) {
+    // A stranger that connects and says nothing does not keep a thread.
+    let _ = stream.set_read_timeout(Some(PATIENCE));
+    let _ = stream.set_write_timeout(Some(PATIENCE));
+    let Ok(connection) = ServerConnection::new(tls) else { return };
     let mut stream = StreamOwned::new(connection, stream);
     // Reading the request runs the handshake first.
     let Some(request) = read_request(&mut stream) else { return };
-    if crate::resumed(&stream.conn) {
+    // Apollo and Sunshine answer a session that is taken up again with an
+    // alert. A Leto host beside one of them keeps to the same rule, so that
+    // a client never succeeds here with what fails next door.
+    if stream.conn.handshake_kind() == Some(HandshakeKind::Resumed) {
         return;
     }
     let device =
         stream.conn.peer_certificates().and_then(|chain| chain.first()).map(|c| c.to_vec());
-    // Like the rest of the host, only for a device it is paired with.
-    let device = device.filter(|device| shared.paired.lock().unwrap().contains(device));
     let (status, body) = match device {
-        Some(device) => answer(cameras, &device, &request),
+        Some(device) => match access(&device) {
+            Access::Paired { camera } => answer(cameras, &device, camera, &request),
+            Access::Stranger => (401, Vec::new()),
+        },
         None => (401, Vec::new()),
     };
     write_response(&mut stream, status, &body);
@@ -344,13 +376,16 @@ pub(crate) fn handle(stream: TcpStream, shared: &Shared, cameras: &Cameras) {
     let _ = stream.flush();
 }
 
-fn answer(cameras: &Cameras, device: &[u8], request: &Request) -> (u16, Vec<u8>) {
+fn answer(cameras: &Cameras, device: &[u8], allowed: bool, request: &Request) -> (u16, Vec<u8>) {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", api::INFO_PATH) => (200, json(&cameras.info())),
         ("POST", api::RETURN_CHANNEL_PATH) => {
             let Ok(ask) = serde_json::from_slice::<Ask>(&request.body) else {
                 return (400, Vec::new());
             };
+            if ask.camera.is_some() && !allowed {
+                return (403, Vec::new());
+            }
             match cameras.ask(device, &ask) {
                 Ok(answer) => (200, json(&answer)),
                 Err(status) => (status, Vec::new()),
@@ -366,7 +401,8 @@ fn answer(cameras: &Cameras, device: &[u8], request: &Request) -> (u16, Vec<u8>)
 }
 
 fn json(value: &impl Serialize) -> Vec<u8> {
-    serde_json::to_vec(value).expect("the messages of the API have no map keys to refuse")
+    // The messages of the API have no map keys to refuse.
+    serde_json::to_vec(value).unwrap_or_default()
 }
 
 /// Reads one request: its method, its path and its body.
@@ -432,6 +468,7 @@ fn write_response(stream: &mut impl Write, status: u16, body: &[u8]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use leto_return::{api::CameraAsk, camera::Packer};
 

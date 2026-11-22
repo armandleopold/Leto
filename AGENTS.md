@@ -55,6 +55,19 @@ refuses new ones as an owner would, and `camera on` takes them again. With
 `--no-camera` it takes none, and with `--camera 640x360` none larger than
 that, which a client answers by halving its own.
 
+Leto is one program, host and client: the app shares the PC it runs on
+from its "This PC" screen (`apps/leto/src/host.rs`), and there is no
+separate host program. The first piece of the host is the companion: beside
+an Apollo or a Sunshine, it takes the camera of the devices they are paired
+with (`crates/leto-host`). It reads their settings folder and never writes
+there. `leto-cli companion` runs it without a window. No Apollo at hand?
+`FakeHost::write_apollo_folder` writes the folder of one, as
+`crates/leto-host/tests/companion.rs` does, and so does `folder <path>`
+typed into the stand-in host; `--apollo` names it for `leto-cli`, and the
+app finds one at `$XDG_CONFIG_HOME/apollo`. The app shows a PC at an
+address of the computer it runs on as "This PC", which is shared and not
+streamed: reach a stand-in host on the same computer at `127.0.0.1`. Never log what `apollo.rs` reads from `credentials`.
+
 To check a stream without the window, `leto-cli play` streams an app for a few
 seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 

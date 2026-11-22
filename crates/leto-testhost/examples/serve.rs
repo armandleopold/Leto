@@ -30,6 +30,7 @@
 use std::{
     fs,
     io::{self, BufRead},
+    path::Path,
     process::ExitCode,
     time::Duration,
 };
@@ -170,6 +171,9 @@ fn main() -> ExitCode {
     println!("Type \"busy\" to start no stream for now, \"free\" to start them again.");
     println!("Type \"blank\" for the next stream to bring no pictures.");
     println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
+    println!(
+        "Type \"folder <path>\" to write there what an Apollo keeps, for a Leto that shares this PC."
+    );
     println!("Type \"inputs\" to see what the keyboard, mouse and gamepads of the client sent.");
     println!("Type \"voice\" to save what the microphone of the client sent to {VOICE_FILE}.");
     println!("Type \"camera\" to save what the camera of the client shows to {CAMERA_FILE},");
@@ -269,6 +273,17 @@ fn main() -> ExitCode {
             "camera on" => {
                 host.refuse_camera(false);
                 println!("Devices may send their camera.");
+            }
+            folder if folder.starts_with("folder ") => {
+                // Every device as the first one paired with Apollo, which
+                // may do everything.
+                let folder = folder["folder ".len()..].trim();
+                match host.write_apollo_folder(Path::new(folder), Some(permission::ALL)) {
+                    Ok(()) => println!(
+                        "Wrote in {folder} what an Apollo keeps: `leto-cli companion --apollo {folder}`."
+                    ),
+                    Err(error) => println!("Could not write in {folder}: {error}"),
+                }
             }
             other => match other.parse::<Pin>() {
                 Ok(pin) => {

@@ -24,6 +24,18 @@ pub fn monitor(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([at(rect, 0.28, 0.88), at(rect, 0.72, 0.88)], stroke);
 }
 
+/// A house: the PC Leto runs on.
+pub fn home(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    // The roof, then the walls under it, with the door.
+    painter.line_segment([at(rect, 0.06, 0.52), at(rect, 0.5, 0.12)], stroke);
+    painter.line_segment([at(rect, 0.5, 0.12), at(rect, 0.94, 0.52)], stroke);
+    painter.line_segment([at(rect, 0.2, 0.42), at(rect, 0.2, 0.9)], stroke);
+    painter.line_segment([at(rect, 0.8, 0.42), at(rect, 0.8, 0.9)], stroke);
+    painter.line_segment([at(rect, 0.2, 0.9), at(rect, 0.8, 0.9)], stroke);
+    painter.line_segment([at(rect, 0.5, 0.9), at(rect, 0.5, 0.64)], stroke);
+}
+
 pub fn plus(painter: &Painter, rect: Rect, color: Color32) {
     let stroke = stroke(rect, color);
     painter.line_segment([at(rect, 0.5, 0.12), at(rect, 0.5, 0.88)], stroke);
