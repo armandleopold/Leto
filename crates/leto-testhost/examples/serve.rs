@@ -40,7 +40,7 @@ use std::{
 
 use image::{ImageFormat, Rgb, RgbImage};
 use leto_core::model::Pin;
-use leto_testhost::{App, FakeHost, HOST_ID, Options, permission};
+use leto_testhost::{ApolloPages, App, FakeHost, HOST_ID, Options, permission};
 
 /// How many inputs the "inputs" command prints, counted from the last.
 const SHOWN_INPUTS: usize = 24;
@@ -52,6 +52,10 @@ const VOICE_RATE: u32 = 48_000;
 
 /// Where the "camera" command saves the last picture of the client's camera.
 const CAMERA_FILE: &str = "leto-camera.png";
+
+/// Who signs in to the stand-in for Apollo's pages.
+const PAGES_NAME: &str = "leto";
+const PAGES_PASSWORD: &str = "leto";
 
 const USAGE: &str = "\
 Usage: serve [--name NAME] [--id ID] [--port PORT] [--announce] [--apollo]
@@ -182,12 +186,17 @@ fn main() -> ExitCode {
     println!("Type \"blank\" for the next stream to bring no pictures.");
     println!("Type \"allow\" or \"restrict\" to change what paired devices may do.");
     println!(
-        "Type \"folder <path>\" to write there what an Apollo keeps, for a Leto that shares this PC."
+        "Type \"folder <path>\" to write there what an Apollo keeps, for a Leto that shares this PC, and to answer as Apollo's pages do."
+    );
+    println!(
+        "With pages: \"streaming <uuid>\" for a device to be streaming, \"await <pin>\" for a PIN to be waited for, \"sign out\" to forget who signed in."
     );
     println!("Type \"inputs\" to see what the keyboard, mouse and gamepads of the client sent.");
     println!("Type \"voice\" to save what the microphone of the client sent to {VOICE_FILE}.");
     println!("Type \"camera\" to save what the camera of the client shows to {CAMERA_FILE},");
     println!("\"camera off\" to refuse cameras and \"camera on\" to take them again.");
+    // Apollo's own pages, once a folder was written for them.
+    let mut pages: Option<ApolloPages> = None;
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         match line.trim() {
@@ -293,6 +302,40 @@ fn main() -> ExitCode {
                         "Wrote in {folder} what an Apollo keeps: `leto-cli companion --apollo {folder}`."
                     ),
                     Err(error) => println!("Could not write in {folder}: {error}"),
+                }
+                // Its pages too, for a Leto that changes what a device may
+                // do: the ones before are let go of first, for their port.
+                pages = None;
+                match ApolloPages::start(Path::new(folder), PAGES_NAME, PAGES_PASSWORD) {
+                    Ok(started) => {
+                        println!(
+                            "Apollo's pages answer on port {}: sign in as {PAGES_NAME} with the password {PAGES_PASSWORD}.",
+                            started.port()
+                        );
+                        pages = Some(started);
+                    }
+                    Err(error) => println!("Apollo's pages did not start: {error}"),
+                }
+            }
+            "sign out" => match &pages {
+                Some(pages) => {
+                    pages.sign_out();
+                    println!("Apollo's pages forgot who signed in.");
+                }
+                None => println!("No pages yet: type \"folder <path>\" first."),
+            },
+            asked if asked.starts_with("streaming ") || asked.starts_with("await ") => {
+                let (what, about) = asked.split_once(' ').unwrap_or((asked, ""));
+                match (&pages, what) {
+                    (Some(pages), "streaming") => {
+                        pages.connect(about.trim());
+                        println!("The pages say the device {} is streaming.", about.trim());
+                    }
+                    (Some(pages), _) => {
+                        pages.await_pin(about.trim());
+                        println!("The pages wait for the PIN {} to be typed.", about.trim());
+                    }
+                    (None, _) => println!("No pages yet: type \"folder <path>\" first."),
                 }
             }
             other => match other.parse::<Pin>() {

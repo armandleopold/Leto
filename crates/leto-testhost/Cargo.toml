@@ -17,6 +17,10 @@ workspace = true
 leto-host = { workspace = true }
 # A moment of a microphone, for the tests that send one.
 opus-rs = "0.1"
+# Apollo's own pages, stood in for: its certificate, and its file of devices.
+pem = "3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 leto-core = { workspace = true }

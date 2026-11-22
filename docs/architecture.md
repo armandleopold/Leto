@@ -40,7 +40,7 @@ crates/
   leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
-  leto-host/      The host side: Leto's own host (pairing kept between launches, apps, the stream of a screen and its sound), and the companion of an Apollo (what that Apollo knows, read and never written, Leto's API and the receiver of the camera)
+  leto-host/      The host side: Leto's own host (pairing kept between launches, apps, the stream of a screen and its sound), and the companion of an Apollo (what that Apollo knows, read and never written, its own pages asked to change what a device may do, Leto's API and the receiver of the camera)
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client: Leto's own host with a test card for a screen
 xtask/            Project automation, run with `cargo xtask`
 assets/brand/     Logo, icons and colours

@@ -72,6 +72,18 @@ app finds one at `$XDG_CONFIG_HOME/apollo`. The app shows a PC at an
 address of the computer it runs on as "This PC", which is shared and not
 streamed: reach a stand-in host on the same computer at `127.0.0.1`. Never log what `apollo.rs` reads from `credentials`.
 
+"This PC" also lists the devices Apollo is paired with and what each may do
+(`apps/leto/src/host/registered.rs`). What the owner changes there, Apollo
+changes itself: Leto asks Apollo's own pages (`leto_host::pages`), on the
+port after Apollo's, once the owner signed in with the name and the password
+of those pages. Leto still never writes in Apollo's folder. The password is
+given to Apollo and kept nowhere, and what Apollo gives back to stay signed
+in is kept in memory only: never log either. `folder <path>` typed into the
+stand-in host also starts stand-in pages (`leto_testhost::ApolloPages`,
+name `leto`, password `leto`); `streaming <uuid>`, `await <pin>` and
+`sign out` typed there make them say a device streams, wait for a PIN, and
+forget who signed in. `crates/leto-host/tests/pages.rs` tries all of it.
+
 The app that shares a PC takes a microphone when the PC has a virtual cable
 to play it on, which only Windows has. Anywhere else, `LETO_CABLE=<name of
 a sound output>` in the app's environment names one: with PulseAudio, a
@@ -249,7 +261,8 @@ those notes, builds Windows, Linux, macOS, the web client and the Android APK
 - **A browser has to be known to the bridge.** Never add a way to ask the
   bridge for anything, or to send it input, that skips its gate.
 - **A log tells no secret.** People send their logs to whoever helps them.
-  Never log a PIN, a key, a bridge code, the text of a WireGuard file, or
+  Never log a PIN, a key, a bridge code, the text of a WireGuard file, the
+  password of Apollo's pages or what they give back at sign-in, or
   the query of a request (during pairing it carries the challenges). See
   `leto_client::logs`.
 - **Code ported from another project** says so in a comment at the top of the

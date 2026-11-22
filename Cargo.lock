@@ -2500,6 +2500,9 @@ dependencies = [
  "leto-host",
  "mdns-sd",
  "opus-rs",
+ "pem 3.0.6",
+ "rustls",
+ "serde_json",
 ]
 
 [[package]]

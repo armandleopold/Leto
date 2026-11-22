@@ -26,6 +26,8 @@ use crate::{
     ui::{pcs::THIS_PC, widgets},
 };
 
+mod registered;
+
 /// How often the screen looks at what changed while nobody touches it.
 const GLANCE: Duration = Duration::from_millis(250);
 
@@ -53,6 +55,8 @@ pub struct Sharing {
     state: State,
     devices: Vec<Device>,
     devices_read: Instant,
+    /// Apollo's devices and what each may do, as the screen shows them.
+    registered: registered::Registered,
     /// What the camera that is being sent sees, and how many pictures had
     /// arrived when it was last drawn.
     camera: Option<(TextureHandle, u64)>,
@@ -72,6 +76,7 @@ impl Default for Sharing {
             state: State::Off,
             devices: Vec::new(),
             devices_read: Instant::now(),
+            registered: registered::Registered::default(),
             camera: None,
             wanted: false,
             own: HashMap::new(),
@@ -92,6 +97,8 @@ impl Sharing {
             (State::Beside(..) | State::Stopped(..), false) => {
                 self.state = State::Off;
                 self.camera = None;
+                // Signed out of Apollo's pages as well.
+                self.registered = registered::Registered::default();
             }
             _ => {}
         }
@@ -186,8 +193,9 @@ impl Sharing {
                     ui.add(
                         egui::Label::new(widgets::dim(
                             "Your devices reach this PC through Leto. For now Leto works \
-                             beside Apollo or Sunshine, which stream the screen, and takes \
-                             what they do not: the camera and the microphone of your \
+                             beside Apollo or Sunshine, which stream the screen: it shows \
+                             the devices they are paired with and what each may do, and \
+                             takes what they do not, the camera and the microphone of your \
                              devices.",
                         ))
                         .wrap(),
@@ -241,7 +249,7 @@ impl Sharing {
                     ui.add(
                         egui::Label::new(widgets::dim(format!(
                             "Devices are the ones Apollo is paired with. Its settings are read \
-                             from {} and never changed.",
+                             from {}, where Leto never writes.",
                             companion.apollo().folder().display()
                         )))
                         .wrap(),
@@ -249,7 +257,13 @@ impl Sharing {
                 });
                 let sender = companion.sender();
                 let speaker = companion.speaker();
-                devices(ui, &self.devices, sender.as_deref(), speaker.as_deref());
+                self.registered.show(
+                    ui,
+                    companion.apollo(),
+                    &self.devices,
+                    sender.as_deref(),
+                    speaker.as_deref(),
+                );
                 camera(ui, companion, sender.as_deref(), handing.given(), &mut self.camera);
                 microphone(ui, companion, voicing);
                 if cfg!(windows) {
@@ -290,54 +304,6 @@ fn is_here(address: &str) -> bool {
     address
         .parse::<IpAddr>()
         .is_ok_and(|address| !address.is_loopback() && UdpSocket::bind((address, 0)).is_ok())
-}
-
-/// The devices Apollo is paired with, and which may send a camera and a
-/// microphone.
-fn devices(ui: &mut Ui, devices: &[Device], sender: Option<&str>, speaker: Option<&str>) {
-    card(ui, "Devices", |ui| {
-        if devices.is_empty() {
-            ui.label(widgets::dim("Apollo is paired with no device yet. Pair one from Leto."));
-        }
-        for device in devices {
-            let name = if device.name.is_empty() { "A device" } else { &device.name };
-            ui.horizontal(|ui| {
-                ui.label(name);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let name = Some(device.name.as_str());
-                    let sending = match (sender == name, speaker == name) {
-                        (true, true) => Some("Sending its camera and its microphone"),
-                        (true, false) => Some("Sending its camera"),
-                        (false, true) => Some("Sending its microphone"),
-                        (false, false) => None,
-                    };
-                    if let Some(sending) = sending {
-                        ui.label(RichText::new(sending).color(theme::sun()));
-                    } else if device.trusted() {
-                        ui.label(widgets::dim("May send its camera and its microphone"));
-                    } else {
-                        ui.label(widgets::dim("No camera, no microphone")).on_hover_text(
-                            "Apollo does not let this device use the keyboard and the mouse.",
-                        );
-                    }
-                });
-            });
-        }
-        if devices.iter().any(|device| !device.trusted()) {
-            ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(
-                    widgets::dim(
-                        "A device may send its camera and its microphone once Apollo lets it \
-                         use the keyboard and the mouse: tick both for it on Apollo's page, \
-                         under PIN.",
-                    )
-                    .size(theme::SMALL),
-                )
-                .wrap(),
-            );
-        }
-    });
 }
 
 /// What the camera that is being sent sees.

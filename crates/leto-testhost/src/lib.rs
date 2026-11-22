@@ -8,17 +8,22 @@
 //! It is Leto's own host ([`leto_host::server`]) with the test card for a
 //! screen, so a client is tried against the code a shared PC runs. What is
 //! here is what only tests want: a host that starts or stops the test, and
-//! a few sounds to send it.
+//! a few sounds to send it, and a stand-in for the pages of an Apollo
+//! ([`ApolloPages`]), which a Leto that shares a PC beside one asks.
 
 // Test support: a failed assumption should stop the test loudly.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::ops::Deref;
 
+mod pages;
+
 pub use leto_host::server::{
     App, CLIENT_MISSED_WITHIN, COVER_PNG, CameraReport, HOST_CARD, HOST_ID, HOST_NAME, Host,
     Options, ScreenAsked, Seen, StreamReport, permission,
 };
+
+pub use pages::ApolloPages;
 
 /// Twenty milliseconds of silence, as a client's microphone sends them: one
 /// Opus frame, one channel at 48 kHz.
