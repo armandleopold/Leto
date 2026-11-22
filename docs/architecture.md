@@ -855,7 +855,7 @@ derived from its base port as Sunshine and Apollo do: what connects to
 [the race for the nearest](#the-ways-to-a-pc), and starts 150 ms after the
 direct ways: at home the local network still wins, and with the system's
 WireGuard connected the PC is still reached through it. A PC reached
-through Leto's tunnel has WireGuard's logo beside its name in the list,
+through Leto's tunnel has WireGuard's logo after its address in the list,
 with its own address inside the tunnel when Leto knows one (an address of
 the PC in a range of `AllowedIPs` that also holds this device's, as
 `10.8.0.3` beside `10.8.0.2`), else the address the tunnel led to. A PC

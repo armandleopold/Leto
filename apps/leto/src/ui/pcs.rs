@@ -221,12 +221,7 @@ fn host_card(
     icons::monitor(painter, tile.shrink(10.0), if offline { theme::dim() } else { theme::sun() });
 
     let text_width = size.x - 32.0;
-    let badge_width = badge.map_or(0.0, |badge| badge.width(painter) + BADGE_GAP);
-    let name_pos = rect.min + vec2(16.0, 70.0);
-    let name = widgets::line(painter, name_pos, &host.name, 19.0, ink, text_width - badge_width);
-    if let Some(badge) = badge {
-        badge.draw(ui, pos2(name.right() + BADGE_GAP, name.center().y));
-    }
+    widgets::line(painter, rect.min + vec2(16.0, 70.0), &host.name, 19.0, ink, text_width);
 
     let dot_center = rect.min + vec2(21.0, 109.0);
     match dot {
@@ -247,7 +242,20 @@ fn host_card(
     };
     let detail = format!("{} · {}", host.kind.name(), shown_address(address, host.port));
     let detail_pos = rect.min + vec2(16.0, 122.0);
-    widgets::line(painter, detail_pos, &detail, theme::SMALL - 0.5, theme::dim(), text_width);
+    // The way it is reached, right after the address.
+    let badge_width = badge.map_or(0.0, |badge| badge.width(painter) + BADGE_GAP);
+    let detail_size = theme::SMALL - 0.5;
+    let shown = widgets::line(
+        painter,
+        detail_pos,
+        &detail,
+        detail_size,
+        theme::dim(),
+        text_width - badge_width,
+    );
+    if let Some(badge) = badge {
+        badge.draw(ui, pos2(shown.right() + BADGE_GAP, shown.center().y));
+    }
 
     // On top of the card, so that it takes its own clicks.
     let menu_rect =
@@ -483,10 +491,10 @@ fn shown_address(address: &str, port: u16) -> String {
     }
 }
 
-/// The space between a PC's name and the way it is reached.
-const BADGE_GAP: f32 = 8.0;
+/// The space between a PC's address and the way it is reached.
+const BADGE_GAP: f32 = 6.0;
 
-/// The way a PC is reached, beside its name.
+/// The way a PC is reached, after its address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Badge {
     /// Leto's own WireGuard tunnel: WireGuard's logo.
@@ -496,8 +504,8 @@ enum Badge {
 }
 
 impl Badge {
-    const LOGO: f32 = 18.0;
-    const ICON: f32 = 14.0;
+    const LOGO: f32 = 15.0;
+    const ICON: f32 = 12.0;
     const TEXT: f32 = theme::SMALL - 0.5;
 
     /// For screen readers.
