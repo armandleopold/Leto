@@ -108,6 +108,7 @@ mod desktop {
         // A monitor the phone is plugged into says its own pixels and pace;
         // the window may be smaller on it, in the system's desktop.
         if let Some(display::Mode { width, height, refresh_hz }) = display::plugged() {
+            #[cfg(target_os = "android")]
             let (width, height, refresh_hz) = within_phone((width, height, refresh_hz));
             return Some(ScreenMode { width, height, refresh_hz });
         }
