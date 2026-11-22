@@ -68,6 +68,9 @@ const POINTER_SWITCH: char = 'N';
 /// the PC's pointer can be wrong, and this puts it right.
 pub const PC_POINTER_KEYS: &str = "Ctrl+Alt+Shift+N";
 
+/// The slowest and the fastest the game mouse may be made, in percent.
+pub const MOUSE_SPEEDS: (u32, u32) = (10, 300);
+
 /// What Leto keeps for itself while a stream has the keyboard. Each is its
 /// letter pressed with Ctrl, Alt and Shift held, as in Moonlight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +264,9 @@ pub struct Controls {
     /// and the wheel scroll the other way.
     swap_buttons: bool,
     reverse_scroll: bool,
+    /// How far the game mouse goes on the PC, in percent of what the mouse
+    /// moved. Nothing chosen yet is as far.
+    mouse_speed: Option<u32>,
 }
 
 impl Controls {
@@ -328,6 +334,12 @@ impl Controls {
         self.reverse_scroll = reverse_scroll;
     }
 
+    /// Makes the game mouse go `percent` as far on the PC as the mouse
+    /// moved, within what the settings offer.
+    pub fn pace(&mut self, percent: u32) {
+        self.mouse_speed = Some(percent.clamp(MOUSE_SPEEDS.0, MOUSE_SPEEDS.1));
+    }
+
     /// A mouse button went down or came up.
     pub fn button(&mut self, pressed: PointerButton, down: bool) {
         let button = match (button(pressed), self.swap_buttons) {
@@ -392,7 +404,9 @@ impl Controls {
     /// The mouse itself moved by `delta`, wherever the pointer is. For the
     /// game mouse.
     pub fn moved(&mut self, delta: Vec2) {
-        self.motion += delta;
+        // What is left of a slower move is kept for the next, so a slow
+        // hand still moves the pointer.
+        self.motion += delta * (self.mouse_speed.unwrap_or(100) as f32 / 100.0);
         let [dx, dy] = whole(&mut self.motion);
         if dx != 0 || dy != 0 {
             self.push(Input::MouseMove { dx, dy });
@@ -903,6 +917,26 @@ mod tests {
                 Input::MouseButton { button: MouseButton::Left, down: false },
             ]
         );
+    }
+
+    #[test]
+    fn a_slower_game_mouse_goes_less_far_and_loses_nothing_of_the_way() {
+        let mut controls = Controls::default();
+        controls.pace(50);
+        for _ in 0..4 {
+            controls.moved(vec2(1.0, 0.0));
+        }
+        controls.moved(vec2(0.0, 6.0));
+        let moves: Vec<_> = controls
+            .take()
+            .into_iter()
+            .filter_map(|input| match input {
+                Input::MouseMove { dx, dy } => Some((dx, dy)),
+                _ => None,
+            })
+            .collect();
+        // Moves waiting for the PC are told as one.
+        assert_eq!(moves, vec![(2, 3)]);
     }
 
     #[test]

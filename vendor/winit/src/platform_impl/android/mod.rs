@@ -386,6 +386,17 @@ impl<T: 'static> EventLoop<T> {
             // Leto: a mouse moves the pointer, presses its buttons and turns
             // its wheel, rather than being one more finger.
             InputEvent::MotionEvent(motion_event) if is_mouse(motion_event) => {
+                // Leto: a mouse the window keeps for itself tells how far
+                // it moved, as a desktop's raw mouse does.
+                for delta in mouse_moved(motion_event) {
+                    callback(
+                        event::Event::DeviceEvent {
+                            device_id: event::DeviceId(DeviceId(motion_event.device_id())),
+                            event: event::DeviceEvent::MouseMotion { delta },
+                        },
+                        self.window_target(),
+                    );
+                }
                 for event in mouse_events(motion_event) {
                     callback(
                         event::Event::WindowEvent { window_id: window::WindowId(WindowId), event },
@@ -1172,8 +1183,29 @@ static MOUSE_BUTTONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 /// on a phone's desktop on a monitor, both are.
 fn is_mouse(motion: &MotionEvent<'_>) -> bool {
     motion.source() == Source::Mouse
+        || motion.source() == Source::MouseRelative
         || (motion.pointer_count() == 1
             && motion.pointer_at_index(0).tool_type() == ToolType::Mouse)
+}
+
+/// How far a mouse the window keeps for itself moved (Android's "pointer
+/// capture"): its events then say that in place of where a pointer is, and
+/// there is no pointer. One move for each report of the mouse, as a
+/// desktop tells them: Android puts several in one event, and a PC speeds
+/// its pointer up with the size of each move it is told. None for a mouse
+/// that moves Android's pointer.
+fn mouse_moved(motion: &MotionEvent<'_>) -> Vec<(f64, f64)> {
+    if motion.source() != Source::MouseRelative {
+        return Vec::new();
+    }
+    let across = motion.axis_samples(Axis::X, 0);
+    let down = motion.axis_samples(Axis::Y, 0);
+    across
+        .into_iter()
+        .zip(down)
+        .map(|(x, y)| (f64::from(x), f64::from(y)))
+        .filter(|delta| *delta != (0.0, 0.0))
+        .collect()
 }
 
 /// The window events a mouse's `motion` makes: where the pointer is, the
@@ -1183,15 +1215,20 @@ fn mouse_events(motion: &MotionEvent<'_>) -> Vec<event::WindowEvent> {
     let pointer = motion.pointer_at_index(0);
     let position = PhysicalPosition::new(f64::from(pointer.x()), f64::from(pointer.y()));
     let mut events = Vec::new();
-    match motion.action() {
-        MotionAction::HoverEnter => events.push(event::WindowEvent::CursorEntered { device_id }),
-        MotionAction::HoverExit => {
-            events.push(event::WindowEvent::CursorLeft { device_id });
-            return events;
-        },
-        _ => {},
+    // A mouse the window keeps has no pointer to tell the place of.
+    if motion.source() != Source::MouseRelative {
+        match motion.action() {
+            MotionAction::HoverEnter => {
+                events.push(event::WindowEvent::CursorEntered { device_id })
+            },
+            MotionAction::HoverExit => {
+                events.push(event::WindowEvent::CursorLeft { device_id });
+                return events;
+            },
+            _ => {},
+        }
+        events.push(event::WindowEvent::CursorMoved { device_id, position });
     }
-    events.push(event::WindowEvent::CursorMoved { device_id, position });
     if motion.action() == MotionAction::Scroll {
         // Android's wheel goes up for more, and right for more on the
         // right; winit's numbers are how far what is shown moves.

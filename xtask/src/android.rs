@@ -1,11 +1,12 @@
 //! `cargo xtask android`: the Android app as an APK, in `dist/android`.
 //!
 //! The app is the Rust library `apps/leto-android` in a NativeActivity, so
-//! there is no Java to compile and no Gradle: the NDK builds the library,
-//! and the SDK's build tools (`aapt2`, `zipalign`, `apksigner`) wrap it.
+//! there is no Gradle: the NDK builds the library, `javac` and `d8` the
+//! one small Java class beside it, and the SDK's build tools (`aapt2`,
+//! `zipalign`, `apksigner`) wrap them.
 //!
 //! Needs the Android SDK (`ANDROID_HOME`) with build tools, a platform and
-//! the NDK, Java for `apksigner`, and `zip`. GitHub's Ubuntu runners have
+//! the NDK, a JDK (`javac`, and Java for `d8` and `apksigner`), and `zip`. GitHub's Ubuntu runners have
 //! them all.
 
 use std::{
@@ -204,6 +205,28 @@ pub fn apk() -> Result<(), String> {
         .args(["--target-sdk-version", &TARGET_SDK.to_string()])
         .args(["--version-name", &name, "--version-code", &code.to_string()])
         .arg(&resources))?;
+    // The app's few Java classes, as Android runs them.
+    let classes = work.join("classes");
+    if classes.exists() {
+        fs::remove_dir_all(&classes).map_err(|e| format!("clearing {}: {e}", classes.display()))?;
+    }
+    fs::create_dir_all(&classes).map_err(|e| format!("creating {}: {e}", classes.display()))?;
+    let sources = java_sources(&root.join("apps/leto-android/android/java"))?;
+    run(Command::new("javac")
+        .args(["--release", "11", "-Xlint:all", "-Werror", "-Xlint:-options", "-proc:none"])
+        .arg("-classpath")
+        .arg(sdk.platform()?)
+        .arg("-d")
+        .arg(&classes)
+        .args(&sources))?;
+    run(Command::new(sdk.build_tool("d8")?)
+        .args(["--release", "--min-api", &MIN_SDK.to_string()])
+        .arg("--lib")
+        .arg(sdk.platform()?)
+        .arg("--output")
+        .arg(&staging)
+        .args(java_classes(&classes)?))?;
+    run(Command::new("zip").current_dir(&staging).args(["-q"]).arg(&unsigned).arg("classes.dex"))?;
     // The libraries stay uncompressed, so Android maps them from the APK
     // as they are (`extractNativeLibs="false"` in the manifest).
     run(Command::new("zip")
@@ -236,6 +259,31 @@ pub fn apk() -> Result<(), String> {
     eprintln!("xtask: Android app ready in {}", apk.display());
     eprintln!("xtask: install it with `adb install -r {}`", apk.display());
     Ok(())
+}
+
+/// The Java files under `folder`.
+fn java_sources(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    files_ending(folder, "java")
+}
+
+/// The classes `javac` wrote under `folder`.
+fn java_classes(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    files_ending(folder, "class")
+}
+
+fn files_ending(folder: &Path, extension: &str) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
+    let entries = fs::read_dir(folder).map_err(|e| format!("reading {}: {e}", folder.display()))?;
+    for entry in entries {
+        let path = entry.map_err(|e| format!("reading {}: {e}", folder.display()))?.path();
+        if path.is_dir() {
+            found.extend(files_ending(&path, extension)?);
+        } else if path.extension().is_some_and(|ending| ending == extension) {
+            found.push(path);
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// Where `apksigner` reads the keystore's password.

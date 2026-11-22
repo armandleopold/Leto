@@ -314,6 +314,7 @@ impl Player {
             window::keep_pointer(ctx, false);
         }
         window::keep_keyboard(false);
+        leto_system::bars::hide(false);
         *self = Self::default();
     }
 
@@ -369,6 +370,7 @@ pub fn show(
     let back = std::mem::take(&mut player.went_back);
     let mut asked = Asked { leave: closing, back, ..Asked::default() };
     player.controls.choose(settings.swap_mouse_buttons, settings.reverse_scroll);
+    player.controls.pace(settings.game_mouse_speed);
     // Once connected, every key is the PC's, the system's shortcuts too
     // where the system lets go of them and the person did not choose
     // otherwise, while the window is in front and until the person takes
@@ -382,6 +384,8 @@ pub fn show(
     }
     window::keep_keyboard(keep);
     player.keyboard_kept = keep;
+    // A phone's bars, and its desktop's, leave the screen to the PC.
+    leto_system::bars::hide(view.connected);
     player.strokes.extend(window::keys().into_iter().map(KeyStroke::System));
 
     player.hole = None;

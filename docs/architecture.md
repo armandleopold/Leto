@@ -77,9 +77,12 @@ draws the native window, the Android app (`cargo xtask android` builds it
 into `dist/android/leto.apk`) and, compiled to WebAssembly, the web client
 (`cargo xtask web` builds it into `dist/web`).
 
-On Android the app runs in a NativeActivity with no Java of its own:
-`apps/leto-android` hands the activity to `leto::run_android`, which keeps
-the settings in the app's own folder. A finger is the mouse; two fingers
+On Android the app runs in a NativeActivity: `apps/leto-android` hands the
+activity to `leto::run_android`, which keeps the settings in the app's own
+folder. Its only Java is one small class
+(`apps/leto-android/android/java/re/leto/app/Screen.java`) for what Android
+takes on the thread that draws its windows alone: hiding its bars during a
+stream, and giving its own keyboard shortcuts to the window. A finger is the mouse; two fingers
 tapped are the right button and moved together are the wheel
 (`touch.rs`); the stream's bar has a button for the phone's keyboard.
 Pictures are decoded by OpenH264 in software for now, and the sound plays

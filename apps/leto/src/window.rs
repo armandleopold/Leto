@@ -53,6 +53,8 @@ mod desktop {
     pub fn keep_pointer(ctx: &Context, keep: bool) {
         let grab = if keep { KEEP_POINTER } else { CursorGrab::None };
         ctx.send_viewport_cmd(ViewportCommand::CursorGrab(grab));
+        // Android's window has no such command: its Java side is asked.
+        leto_system::bars::keep_mouse(keep);
     }
 
     /// Whether the pointer was taken back since it was last kept. A desktop
@@ -164,12 +166,11 @@ mod desktop {
     }
 
     /// The most pixels a second a phone is asked to show from a stream:
-    /// its own screen, 2856 by 1280 sixty times a second, plays well; a
-    /// monitor at 1440p and 144 Hz, more than twice that, froze the app.
-    /// Each picture is decoded on the video hardware, then copied by the
-    /// processor into what the window draws.
+    /// what the video hardware of phones is made to decode, 2160p sixty
+    /// times a second. A Pixel 9 Pro takes 5 ms over a 1080p picture, so a
+    /// 1080p monitor at 144 Hz is asked for whole.
     #[cfg(any(target_os = "android", test))]
-    const PHONE_PIXEL_RATE: u64 = 2560 * 1440 * 60;
+    const PHONE_PIXEL_RATE: u64 = 3840 * 2160 * 60;
 
     /// The pace a monitor is never asked below for the sake of
     /// [`PHONE_PIXEL_RATE`]: fewer pixels are asked for first.
@@ -229,16 +230,15 @@ mod desktop {
         #[test]
         fn a_monitor_too_fast_for_a_phone_is_asked_slower_then_smaller() {
             assert_eq!(within_phone((2856, 1280, 60)), (2856, 1280, 60));
-            assert_eq!(within_phone((1920, 1080, 60)), (1920, 1080, 60));
-            assert_eq!(within_phone((1920, 1080, 144)), (1920, 1080, 100));
-            assert_eq!(within_phone((1920, 1080, 120)), (1920, 1080, 100));
-            assert_eq!(within_phone((2560, 1440, 144)), (2560, 1440, 60));
-            assert_eq!(within_phone((2560, 1440, 60)), (2560, 1440, 60));
-            assert_eq!(within_phone((3840, 2160, 60)), (2560, 1440, 60));
-            assert_eq!(within_phone((3840, 2160, 30)), (3616, 2036, 30));
-            let (width, height, pace) = within_phone((3440, 1440, 100));
+            assert_eq!(within_phone((1920, 1080, 144)), (1920, 1080, 144));
+            assert_eq!(within_phone((2560, 1440, 120)), (2560, 1440, 120));
+            assert_eq!(within_phone((2560, 1440, 144)), (2560, 1440, 120));
+            assert_eq!(within_phone((3840, 2160, 60)), (3840, 2160, 60));
+            assert_eq!(within_phone((3840, 2160, 144)), (3840, 2160, 60));
+            assert_eq!(within_phone((7680, 4320, 30)), (5424, 3054, 30));
+            let (width, height, pace) = within_phone((5120, 2160, 100));
             assert_eq!(pace, 60);
-            assert!(u64::from(width * height) * 60 <= 2560 * 1440 * 60, "{width}x{height}");
+            assert!(u64::from(width * height) * 60 <= 3840 * 2160 * 60, "{width}x{height}");
             assert!(width % 8 == 0 && height % 2 == 0 && width > height * 2);
         }
 

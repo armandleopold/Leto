@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["apps/*", "crates/*", "xtask"]
 # Code of others, built as it is: Leto's lints and tests are not for it.
-exclude = ["vendor/moonlight-common", "vendor/cpal", "vendor/winit"]
+exclude = ["vendor/moonlight-common", "vendor/cpal", "vendor/winit", "vendor/android-activity"]
 
 [workspace.package]
 version = "0.0.3"
@@ -94,7 +94,9 @@ opt-level = 2
 [profile.dev.package.opus-decoder]
 overflow-checks = false
 
-# cpal and winit, each with a change for Android: see their LETO.md.
+# android-activity, cpal and winit, each with a change for Android: see
+# their LETO.md.
 [patch.crates-io]
+android-activity = { path = "vendor/android-activity" }
 cpal = { path = "vendor/cpal" }
 winit = { path = "vendor/winit" }

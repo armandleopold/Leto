@@ -20,6 +20,13 @@ pub const FRAME_RATES: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
 /// percent: the stream then has that many times fewer pixels each way.
 pub const SCALES: [u32; 7] = [100, 125, 150, 175, 200, 250, 300];
 
+/// How fast the game mouse is before anyone chose: as the mouse itself,
+/// but on Android, where a mouse told whole, as a PC's own is, was found a
+/// little fast on a Pixel 9 Pro's desktop next to Android's pointer.
+fn default_mouse_speed() -> u32 {
+    if cfg!(target_os = "android") { 75 } else { 100 }
+}
+
 /// The scale by default. A phone's screen is small and dense: at its own
 /// pixels, the PC's text is too small to read, and at 200% it is about
 /// the size it is on a laptop held further away. A television is large and
@@ -85,6 +92,10 @@ pub struct Settings {
     pub swap_mouse_buttons: bool,
     /// The wheel scrolls the other way on the PC.
     pub reverse_scroll: bool,
+    /// How far the game mouse moves on the PC for what the mouse moved
+    /// here, in percent: a PC and this device do not make a pointer go as
+    /// far for the same hand.
+    pub game_mouse_speed: u32,
     /// A and B change places, and X and Y, for gamepads labelled the other
     /// way round.
     pub swap_gamepad_buttons: bool,
@@ -191,6 +202,7 @@ impl Default for Settings {
             pointers_left_out: Vec::new(),
             swap_mouse_buttons: false,
             reverse_scroll: false,
+            game_mouse_speed: default_mouse_speed(),
             swap_gamepad_buttons: false,
             decoder: Decoder::Automatic,
             codec: None,
