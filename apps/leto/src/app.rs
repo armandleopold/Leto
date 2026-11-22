@@ -249,6 +249,11 @@ impl eframe::App for LetoApp {
             for press in self.backend.gamepad_presses() {
                 gamepad_press(ctx, raw_input, press, nothing_chosen);
             }
+            if nothing_chosen {
+                for press in remote_presses(raw_input) {
+                    gamepad_press(ctx, raw_input, press, nothing_chosen);
+                }
+            }
         }
         // Gamepads say nothing to a stream that is connected: they go to
         // the PC, on their own way.
@@ -709,6 +714,33 @@ fn gamepad_press(
     raw_input.events.extend(pressed(key));
 }
 
+/// Takes out of `raw_input` the arrows and Enter pressed while nothing is
+/// chosen, for [`gamepad_press`] to start from the first choice of the
+/// screen, as a gamepad does: a television's remote has only those, and
+/// egui moves from a choice to the next but starts from none.
+fn remote_presses(raw_input: &mut egui::RawInput) -> Vec<Press> {
+    let mut presses = Vec::new();
+    raw_input.events.retain(|event| {
+        let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = event else {
+            return true;
+        };
+        if !modifiers.is_none() {
+            return true;
+        }
+        let press = match key {
+            egui::Key::Enter => Press::Choose,
+            egui::Key::ArrowUp => Press::Up,
+            egui::Key::ArrowDown => Press::Down,
+            egui::Key::ArrowLeft => Press::Left,
+            egui::Key::ArrowRight => Press::Right,
+            _ => return true,
+        };
+        presses.push(press);
+        false
+    });
+    presses
+}
+
 /// The name of the screen under the settings, for their back button.
 fn back_to(screen: &Screen) -> &str {
     match screen {
@@ -747,6 +779,29 @@ fn build_line() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remotes_arrows_and_enter_start_from_the_first_choice() {
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let mut raw = egui::RawInput {
+            events: vec![
+                key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+                key(egui::Key::ArrowLeft, egui::Modifiers::ALT),
+                key(egui::Key::A, egui::Modifiers::NONE),
+            ],
+            ..egui::RawInput::default()
+        };
+        assert_eq!(remote_presses(&mut raw), [Press::Down, Press::Choose]);
+        // Alt+Left goes back, and a letter is no remote's.
+        assert_eq!(raw.events.len(), 2);
+    }
 
     /// Runs one frame with what a gamepad pressed, over two buttons, the
     /// first of which is the screen's first choice. Returns which button

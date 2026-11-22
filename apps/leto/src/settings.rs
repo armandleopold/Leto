@@ -22,8 +22,11 @@ pub const SCALES: [u32; 7] = [100, 125, 150, 175, 200, 250, 300];
 
 /// The scale by default. A phone's screen is small and dense: at its own
 /// pixels, the PC's text is too small to read, and at 200% it is about
-/// the size it is on a laptop held further away.
-pub const DEFAULT_SCALE: u32 = if cfg!(target_os = "android") { 200 } else { 100 };
+/// the size it is on a laptop held further away. A television is large and
+/// seen from afar, as the PC's own screen is: it keeps its own pixels.
+fn default_scale() -> u32 {
+    if cfg!(target_os = "android") && !leto_system::television::is_television() { 200 } else { 100 }
+}
 
 /// A screen as a PC makes one when the window does not know its own.
 const PLAIN: ScreenMode = ScreenMode { width: 1920, height: 1080, refresh_hz: 60 };
@@ -169,7 +172,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             resolution: None,
-            scale: DEFAULT_SCALE,
+            scale: default_scale(),
             frame_rate: None,
             bitrate_kbps: None,
             full_screen: true,
