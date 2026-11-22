@@ -315,6 +315,8 @@ impl Client {
                     running_app: None,
                     wakeable: card.is_some(),
                     tunnel: false,
+                    tunnel_address: None,
+                    lan: false,
                 };
                 let entry = Entry {
                     summary,
@@ -1080,6 +1082,18 @@ impl Client {
                     entry.addresses.len()
                 );
             }
+            // Through the tunnel, the PC's own address inside it, if Leto
+            // knows one: the person reads it in their WireGuard server.
+            summary.tunnel_address = if summary.tunnel {
+                entry
+                    .addresses
+                    .iter()
+                    .map(|(address, _)| address)
+                    .find(|address| self.ways.inside(address))
+                    .cloned()
+            } else {
+                None
+            };
             entry.summary = summary.clone();
             if !outdated || entry.handle.is_none() {
                 entry.door = door;
@@ -1232,6 +1246,8 @@ impl Asker {
             // Known once recorded.
             wakeable: false,
             tunnel: door.is_some(),
+            tunnel_address: None,
+            lan: door.is_none() && discovery::on_this_network(address),
         };
         // Only to a device it is paired with: the others get zeros.
         let card =

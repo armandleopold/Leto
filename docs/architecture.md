@@ -855,7 +855,12 @@ derived from its base port as Sunshine and Apollo do: what connects to
 [the race for the nearest](#the-ways-to-a-pc), and starts 150 ms after the
 direct ways: at home the local network still wins, and with the system's
 WireGuard connected the PC is still reached through it. A PC reached
-through Leto's tunnel says "WireGuard" in the list, and its stream asks for
+through Leto's tunnel has WireGuard's logo beside its name in the list,
+with its own address inside the tunnel when Leto knows one (an address of
+the PC in a range of `AllowedIPs` that also holds this device's, as
+`10.8.0.3` beside `10.8.0.2`), else the address the tunnel led to. A PC
+reached directly on a network this device is on too shows "LAN" and its
+address there; any other way, the address alone. Its stream asks for
 video packets of 1024 bytes, as Moonlight does for a PC far away, so that
 each fits in a WireGuard packet.
 

@@ -80,6 +80,40 @@ pub struct HostSummary {
     /// directly.
     #[serde(default)]
     pub tunnel: bool,
+    /// The host's own address inside that tunnel, as `10.8.0.3`, when Leto
+    /// knows it. `address` is where the tunnel led, which can be the host's
+    /// address at home when the other end of the tunnel leads there too.
+    #[serde(default)]
+    pub tunnel_address: Option<String>,
+    /// Leto reaches the host directly on a local network this device is on
+    /// too, as at home.
+    #[serde(default)]
+    pub lan: bool,
+}
+
+/// How Leto reaches a host, to show beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way<'a> {
+    /// Through Leto's own WireGuard tunnel, at this address.
+    WireGuard(&'a str),
+    /// Directly, at this address on the local network.
+    Lan(&'a str),
+    /// Directly, at this address elsewhere: on the internet, or through a
+    /// VPN Leto does not run.
+    Other(&'a str),
+}
+
+impl HostSummary {
+    /// How Leto reaches the host, and at which address.
+    pub fn way(&self) -> Way<'_> {
+        if self.tunnel {
+            Way::WireGuard(self.tunnel_address.as_deref().unwrap_or(&self.address))
+        } else if self.lan {
+            Way::Lan(&self.address)
+        } else {
+            Way::Other(&self.address)
+        }
+    }
 }
 
 /// The WireGuard tunnel Leto runs itself, from a file the person gave it.
@@ -200,6 +234,35 @@ pub fn join_address(address: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_is_shown_with_the_way_leto_reaches_it() {
+        let host = HostSummary {
+            id: HostId("id".into()),
+            name: "armand-desktop".into(),
+            address: "192.168.1.15".into(),
+            port: DEFAULT_HOST_PORT,
+            kind: HostKind::Apollo,
+            paired: true,
+            reachability: Reachability::Online,
+            busy: false,
+            running_app: None,
+            wakeable: false,
+            tunnel: false,
+            tunnel_address: None,
+            lan: true,
+        };
+        assert_eq!(host.way(), Way::Lan("192.168.1.15"));
+        let elsewhere = HostSummary { lan: false, ..host.clone() };
+        assert_eq!(elsewhere.way(), Way::Other("192.168.1.15"));
+
+        // Through the tunnel to the PC's address at home, until Leto knows
+        // its address inside the tunnel.
+        let tunnel = HostSummary { tunnel: true, lan: false, ..host };
+        assert_eq!(tunnel.way(), Way::WireGuard("192.168.1.15"));
+        let known = HostSummary { tunnel_address: Some("10.8.0.3".into()), ..tunnel };
+        assert_eq!(known.way(), Way::WireGuard("10.8.0.3"));
+    }
 
     #[test]
     fn address_without_port_gets_the_default() {
