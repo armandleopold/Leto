@@ -132,25 +132,11 @@ mod desktop {
     /// screen the app has the whole screen already.
     #[cfg(target_os = "android")]
     mod android {
-        use std::sync::{
-            OnceLock,
-            atomic::{AtomicBool, Ordering},
-        };
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         use leto_system::{desktop_mode, display};
-        use winit::platform::android::activity::{AndroidApp, WindowManagerFlags};
-
-        /// The app's activity, whose window's flags are set through it.
-        static ACTIVITY: OnceLock<AndroidApp> = OnceLock::new();
-
         /// Whether the window was made to fill its screen.
         static FILLED: AtomicBool = AtomicBool::new(false);
-
-        /// Keeps the activity, for the window's flags. Called once, when
-        /// the app starts.
-        pub fn remember(activity: &AndroidApp) {
-            let _ = ACTIVITY.set(activity.clone());
-        }
 
         pub fn fills_screen() -> bool {
             FILLED.load(Ordering::Relaxed)
@@ -163,22 +149,12 @@ mod desktop {
             if FILLED.swap(fill, Ordering::Relaxed) == fill {
                 return;
             }
-            // The desktop's window becomes the whole screen, and the bar
-            // of the system's at its top goes away, as in a video player.
+            // The desktop's window becomes the whole screen. The window's
+            // own flag for it (`FLAG_FULLSCREEN`) is left alone: setting it
+            // from here froze the app on a Pixel 9 Pro's desktop.
             desktop_mode::fill_screen(fill);
-            if let Some(activity) = ACTIVITY.get() {
-                let (add, remove) = if fill {
-                    (WindowManagerFlags::FULLSCREEN, WindowManagerFlags::empty())
-                } else {
-                    (WindowManagerFlags::empty(), WindowManagerFlags::FULLSCREEN)
-                };
-                activity.set_window_flags(add, remove);
-            }
         }
     }
-
-    #[cfg(target_os = "android")]
-    pub use android::remember;
 
     /// Whether this phone decodes H.264 on its video hardware, which keeps
     /// up with pictures of its whole screen.
