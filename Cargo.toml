@@ -18,6 +18,7 @@ publish = false
 leto-bridge = { path = "crates/leto-bridge" }
 leto-client = { path = "crates/leto-client" }
 leto-core = { path = "crates/leto-core" }
+leto-host = { path = "crates/leto-host" }
 leto-media = { path = "crates/leto-media" }
 leto-protocol = { path = "crates/leto-protocol" }
 leto-return = { path = "crates/leto-return" }

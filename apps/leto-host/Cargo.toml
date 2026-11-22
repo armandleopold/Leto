@@ -1,0 +1,24 @@
+[package]
+name = "leto-host-app"
+description = "Leto on the PC that is shared: for now, the companion that takes a client's camera beside Apollo."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "leto-host"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
+# `--save` writes what a camera sees as a PNG, to look at.
+image = { workspace = true }
+leto-host = { workspace = true }
+log = { workspace = true }

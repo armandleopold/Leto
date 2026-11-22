@@ -18,14 +18,20 @@
 // Test support: a failed assumption should stop the test loudly.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod camera;
+mod camera {
+    //! The camera of a client, taken as Leto's own host takes it: with the
+    //! host's own code.
+    pub use leto_host::camera::{CameraReport, Cameras, Seen};
+}
 mod media;
 mod stream;
 
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    fs,
+    io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, TcpListener, TcpStream},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -39,6 +45,7 @@ use leto_core::{
     input::Input,
     model::Pin,
 };
+use leto_host::camera::Access;
 use moonlight_common::{
     crypto::rustcrypto::RustCryptoBackend,
     http::{
@@ -439,6 +446,47 @@ impl FakeHost {
         self.shared.playing.lock().unwrap().end_stream(true);
     }
 
+    /// Writes into `folder` what an Apollo keeps in its settings folder, as
+    /// Apollo writes it: its certificate and private key, its port, and the
+    /// devices it is paired with, each with these `permissions`
+    /// ([`permission`]) or, without any, with none said, as on a Sunshine.
+    /// It is what a Leto host started beside an Apollo reads to take the
+    /// same devices.
+    pub fn write_apollo_folder(&self, folder: &Path, permissions: Option<u32>) -> io::Result<()> {
+        let credentials = folder.join("credentials");
+        fs::create_dir_all(&credentials)?;
+        {
+            let identity = self.shared.identity.lock().unwrap();
+            fs::write(credentials.join("cacert.pem"), &identity.certificate_pem)?;
+            fs::write(credentials.join("cakey.pem"), identity.key.to_pem().to_string())?;
+        }
+        fs::write(folder.join("sunshine.conf"), format!("port = {}\n", self.shared.http_port))?;
+        let devices: Vec<_> = self
+            .shared
+            .paired
+            .lock()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(number, certificate)| {
+                let certificate = pem::Pem::new("CERTIFICATE", certificate.clone());
+                let mut device = serde_json::json!({
+                    "name": format!("Device {}", number + 1),
+                    "cert": pem::encode(&certificate),
+                    "uuid": format!("00000000-0000-4000-8000-{number:012}"),
+                });
+                if let Some(permissions) = permissions {
+                    device["perm"] = permissions.into();
+                }
+                device
+            })
+            .collect();
+        let state = serde_json::json!({
+            "root": { "uniqueid": self.shared.options.id, "named_devices": devices }
+        });
+        fs::write(folder.join("sunshine_state.json"), state.to_string())
+    }
+
     /// The port a client asks on to send its camera, when the host takes
     /// one. See [`Options::camera`].
     pub fn camera_port(&self) -> Option<u16> {
@@ -631,7 +679,18 @@ fn serve(listener: TcpListener, shared: Arc<Shared>, service: Service) -> thread
                             (Service::Plain, _) => handle_plain(stream, &shared),
                             (Service::Secure, _) => handle_secure(stream, &shared),
                             (Service::LetoApi, Some(cameras)) => {
-                                camera::handle(stream, &shared, cameras);
+                                let tls = Arc::clone(&shared.identity.lock().unwrap().tls);
+                                // Like the rest of the host, only for a
+                                // device it is paired with.
+                                let access = |device: &[u8]| {
+                                    let paired = shared.paired.lock().unwrap();
+                                    if paired.iter().any(|known| known == device) {
+                                        Access::Paired { camera: true }
+                                    } else {
+                                        Access::Stranger
+                                    }
+                                };
+                                leto_host::camera::handle(stream, tls, access, cameras);
                             }
                             (Service::LetoApi, None) => {}
                         }

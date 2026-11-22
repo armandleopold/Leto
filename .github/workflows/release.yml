@@ -139,7 +139,7 @@ jobs:
           choco install nasm --yes --no-progress
           Add-Content $env:GITHUB_PATH "C:\Program Files\NASM"
       - name: Build
-        run: cargo build --locked --release --package leto --package leto-cli
+        run: cargo build --locked --release --package leto --package leto-cli --package leto-host-app
       - uses: actions/download-artifact@v8
         with:
           name: web
@@ -147,7 +147,7 @@ jobs:
       - name: Gather the files
         shell: bash
         run: |
-          cp "target/release/leto${{ matrix.exe }}" "target/release/leto-cli${{ matrix.exe }}" "$ARCHIVE/"
+          cp "target/release/leto${{ matrix.exe }}" "target/release/leto-cli${{ matrix.exe }}" "target/release/leto-host${{ matrix.exe }}" "$ARCHIVE/"
           cp LICENSE "$ARCHIVE/LICENSE.txt"
           cp .github/release/README.txt "$ARCHIVE/"
       - name: Pack (zip)

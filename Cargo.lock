@@ -2402,6 +2402,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "leto-host"
+version = "0.0.2"
+dependencies = [
+ "leto-client",
+ "leto-media",
+ "leto-return",
+ "leto-testhost",
+ "log",
+ "openh264",
+ "pem 3.0.6",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "leto-host-app"
+version = "0.0.2"
+dependencies = [
+ "clap",
+ "image",
+ "leto-host",
+ "log",
+]
+
+[[package]]
 name = "leto-media"
 version = "0.0.2"
 dependencies = [
@@ -2455,7 +2482,7 @@ version = "0.0.2"
 dependencies = [
  "image",
  "leto-core",
- "leto-return",
+ "leto-host",
  "mdns-sd",
  "moonlight-common",
  "openh264",

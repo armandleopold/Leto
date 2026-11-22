@@ -31,6 +31,7 @@ apps/
   leto/           The graphical app (egui), a library with a thin `main.rs`: desktop, and the browser through WebAssembly
   leto-android/   The same app on Android, in a NativeActivity: its entry, its log, its Wi-Fi lock, its manifest
   leto-cli/       The command line: the same engine, for scripts and diagnostics
+  leto-host/      Leto on the PC that is shared. For now the companion: beside an Apollo, it takes the camera of the devices Apollo is paired with
 crates/
   leto-core/      Shared types: brand, platforms, what the interface shows. No platform code
   leto-protocol/  Wire-level facts of the GameStream protocol. No networking
@@ -40,6 +41,7 @@ crates/
   leto-tunnel/    A WireGuard tunnel inside Leto, for its own connections to a PC (boringtun and smoltcp). No administrator rights
   leto-return/    The part of the return channel that is Leto's own: the packets of the camera and the API it is asked on. No networking
   leto-bridge/    Lets browsers use the client engine: serves the web client and relays streams to it
+  leto-host/      The host side: what an Apollo on the PC knows (read, never written), Leto's API and the receiver of the camera
   leto-testhost/  A stand-in for a Sunshine or Apollo host, for tests and for trying a client
 xtask/            Project automation, run with `cargo xtask`
 assets/brand/     Logo, icons and colours
@@ -53,7 +55,7 @@ Crates planned by the [roadmap](roadmap.md). Names can still change:
 | Crate | Purpose | Step |
 |---|---|---|
 | `leto-vdevices` | The virtual microphone and camera on the host. Platform code, `unsafe` allowed | 4 |
-| `leto-host` | The host, ported from Apollo | 4 |
+| `leto-host` (begun) | The rest of the host, ported from Apollo: screen, sound, input, apps | 4 |
 
 ## Platforms
 

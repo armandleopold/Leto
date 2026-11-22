@@ -55,6 +55,13 @@ refuses new ones as an owner would, and `camera on` takes them again. With
 `--no-camera` it takes none, and with `--camera 640x360` none larger than
 that, which a client answers by halving its own.
 
+`leto-host companion` is the first piece of Leto's own host: beside an
+Apollo or a Sunshine, it takes the camera of the devices they are paired
+with (`crates/leto-host`). It reads their settings folder and never writes
+there. No Apollo at hand? `FakeHost::write_apollo_folder` writes the folder
+of one, as `crates/leto-host/tests/companion.rs` does, and `--apollo` names
+it. Never log what `apollo.rs` reads from `credentials`.
+
 To check a stream without the window, `leto-cli play` streams an app for a few
 seconds, decodes it and reports what arrived, and `leto-cli quit` closes it:
 
