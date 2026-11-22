@@ -42,7 +42,8 @@ use self::{
     speaker::Speaker,
 };
 use super::{
-    Chime, DeviceNames, Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, pads,
+    Chime, DeviceNames, Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover,
+    pads::{self, Press},
 };
 use crate::{
     state::{Event, Request},
@@ -499,6 +500,12 @@ impl Backend {
     /// Has A and B change places on the gamepads, and X and Y, or not.
     pub fn swap_gamepad_buttons(&self, swap: bool) {
         self.page.inner.borrow_mut().swapped = swap;
+    }
+
+    /// A browser's gamepads go to the PC only: the page is gone through
+    /// with a keyboard, a mouse or a finger.
+    pub const fn gamepad_presses(&self) -> Vec<Press> {
+        Vec::new()
     }
 
     /// What happened to the pictures of the stream so far.

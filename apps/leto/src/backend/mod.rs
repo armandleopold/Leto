@@ -28,6 +28,8 @@ pub use native::Backend;
 #[cfg(target_arch = "wasm32")]
 pub use web::Backend;
 
+pub use pads::Press;
+
 /// The cameras, microphones and sound outputs of this device, by the names
 /// the system gives them, for the person to choose from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

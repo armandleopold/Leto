@@ -3,7 +3,8 @@
 # APK on an Android emulator, against the stand-in PC on the runner, which
 # the emulator reaches at 10.0.2.2. It installs the app, adds the PC by its
 # address, pairs, starts Desktop, touches the picture, presses a gamepad's
-# A and asks the stand-in PC what it received. Screenshots go to shots/, the logs are printed.
+# A and asks the stand-in PC what it received, then goes back screen by
+# screen with Android's back. Screenshots go to shots/, the logs are printed.
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
 screen() { python3 apps/leto-android/ci/screen.py "$@"; }
@@ -81,6 +82,29 @@ cat host.log
 grep -q "Mouse" host.log || fail "the PC heard no touch"
 grep -q "GamepadArrived" host.log || fail "the PC heard of no gamepad"
 grep -q "buttons: GamepadButtons(1)" host.log || fail "the PC heard no A"
+done_
+
+step "Back"
+# Android's back, as the gesture or the button sends it: once in a stream
+# the bar says that once more leaves, twice leaves for the apps of the PC.
+adb shell input keyevent KEYCODE_BACK
+sleep 1
+screen see 10-back-once Back again || fail "the bar does not say that back again leaves"
+adb shell input keyevent KEYCODE_BACK
+sleep 6
+# The apps screen's own back button leads to the list of PCs.
+screen see 11-apps PCs || fail "back twice did not leave the stream for the apps"
+# A gamepad's B goes back too, outside a stream.
+adb shell input gamepad keyevent KEYCODE_BUTTON_B
+sleep 4
+screen see 12-pcs Your PCs || fail "the gamepad's B on the apps did not lead to the list of PCs"
+# On the list, back puts the app behind the others, still running.
+adb shell input keyevent KEYCODE_BACK
+sleep 4
+screen shot 13-behind
+adb shell pidof re.leto.app || fail "back on the list of PCs ended the app"
+adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | tee resumed.txt
+grep -q "re.leto.app" resumed.txt && fail "back on the list of PCs left the app in front"
 done_
 
 step "The app's log"

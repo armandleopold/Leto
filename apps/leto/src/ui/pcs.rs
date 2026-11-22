@@ -125,13 +125,15 @@ fn cards(ui: &mut Ui, hosts: &[HostSummary], waking: &[HostId], adding: bool) ->
     if !adding {
         slots.push(None);
     }
-    for row in slots.chunks(columns) {
+    for (index, row) in slots.chunks(columns).enumerate() {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = GAP;
-            for slot in row {
+            for (column, slot) in row.iter().enumerate() {
+                // A gamepad starts from the first card.
+                let first = index == 0 && column == 0;
                 let clicked = match slot {
-                    Some(host) => host_card(ui, host, waking.contains(&host.id), size),
-                    None => add_card(ui, size).then_some(Chosen::Add),
+                    Some(host) => host_card(ui, host, waking.contains(&host.id), size, first),
+                    None => add_card(ui, size, first).then_some(Chosen::Add),
                 };
                 chosen = chosen.take().or(clicked);
             }
@@ -141,8 +143,15 @@ fn cards(ui: &mut Ui, hosts: &[HostSummary], waking: &[HostId], adding: bool) ->
     chosen
 }
 
-fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Option<Chosen> {
+fn host_card(
+    ui: &mut Ui,
+    host: &HostSummary,
+    waking: bool,
+    size: Vec2,
+    first: bool,
+) -> Option<Chosen> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let started = first && widgets::first_choice(ui, &response);
     let (dot, state_text) = status(host, waking);
     response.widget_info(|| {
         WidgetInfo::labeled(Role::Button, true, format!("{}, {state_text}", host.name))
@@ -194,15 +203,16 @@ fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Optio
 
     if forget {
         Some(Chosen::Forget(host.id.clone()))
-    } else if response.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+    } else if response.on_hover_cursor(CursorIcon::PointingHand).clicked() || started {
         Some(Chosen::Open(host.id.clone()))
     } else {
         None
     }
 }
 
-fn add_card(ui: &mut Ui, size: Vec2) -> bool {
+fn add_card(ui: &mut Ui, size: Vec2, first: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let started = first && widgets::first_choice(ui, &response);
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a PC"));
     let lit = response.hovered() || response.has_focus();
     let painter = ui.painter();
@@ -225,7 +235,7 @@ fn add_card(ui: &mut Ui, size: Vec2) -> bool {
     let hint = "by its address";
     painter.text(center + vec2(0.0, 33.0), egui::Align2::CENTER_CENTER, hint, font, theme::dim());
 
-    response.on_hover_cursor(CursorIcon::PointingHand).clicked()
+    response.on_hover_cursor(CursorIcon::PointingHand).clicked() || started
 }
 
 /// Shown instead of the grid when there is no PC at all.
@@ -303,7 +313,7 @@ fn add_form(ui: &mut Ui, state: &mut State) {
             ui.add_space(8.0);
 
             let mut submit = false;
-            let mut cancel = ui.input(|input| input.key_pressed(Key::Escape));
+            let mut cancel = widgets::back_asked(ui);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
                 let field = ui.add_enabled(
