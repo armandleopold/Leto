@@ -20,12 +20,14 @@ pub mod clock;
 #[cfg(target_os = "android")]
 pub mod decoder;
 pub mod display;
+pub mod elevate;
 #[cfg(target_os = "android")]
 pub mod gamepad;
 pub mod keyboard;
 pub mod orientation;
 pub mod pane;
 pub mod permission;
+pub mod shown;
 pub mod task;
 
 #[cfg(target_os = "android")]

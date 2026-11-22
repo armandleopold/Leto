@@ -210,6 +210,25 @@ Questions settled in this step:
 
 ## 4. The host
 
+Progress:
+
+- Leto stays one program: the app that reaches a PC also shares the one it
+  runs on, from its "This PC" screen. On Windows it goes on beside the
+  clock, behind an icon, once its window is closed.
+- Done: the companion takes a camera. "Share this PC" in the app, or
+  `leto-cli companion`, on the PC beside Apollo or Sunshine, reads their
+  certificate, key and paired devices from their settings folder, without writing there, and answers
+  Leto's API thirteen ports above theirs. A paired device that Apollo lets
+  use the keyboard and the mouse may send its camera; every paired device of
+  a Sunshine may. The pictures are decoded and shown on "This PC", and
+  `--save` keeps the last one in a file. They are not a camera of the PC yet: that is next, with the
+  microphone. Checked against the stand-in host set up as an Apollo, with a
+  folder written the way Apollo's source writes it. Never run beside a real
+  Apollo: whether Windows lets an ordinary program read Apollo's folder,
+  and what its firewall does with the new port, are not known.
+
+The plan:
+
 - Port Apollo to Rust, Windows first, in the order listed in the
   [inventory](inventory.md): pairing, session negotiation, streams, audio,
   video, input, apps, virtual display.

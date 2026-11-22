@@ -14,8 +14,8 @@ workspace = true
 
 [dependencies]
 leto-core = { workspace = true }
-# The camera of a client arrives as Leto's own host will take it.
-leto-return = { workspace = true }
+# The camera of a client arrives as Leto's own host takes it.
+leto-host = { workspace = true }
 moonlight-common = { workspace = true }
 # The test card and the melody are encoded for real.
 openh264 = { workspace = true }

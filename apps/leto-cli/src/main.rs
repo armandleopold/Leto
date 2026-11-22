@@ -5,6 +5,7 @@
 //! prints plain text by default and JSON with `--json`.
 
 mod bridge;
+mod companion;
 mod pcs;
 mod stream;
 mod tunnel;
@@ -136,6 +137,22 @@ enum Command {
         /// Name, address or id of the PC.
         pc: String,
     },
+    /// On the PC that is shared: take the camera of your devices, beside
+    /// the Apollo or the Sunshine of this PC, until Ctrl+C. The Leto app
+    /// does the same behind "This PC".
+    Companion {
+        /// The folder where Apollo keeps its settings, when it is not where
+        /// Apollo usually installs itself.
+        #[arg(long, value_name = "FOLDER")]
+        apollo: Option<PathBuf>,
+        /// Keep what the camera sees in this PNG file, written again every
+        /// two seconds, to look at.
+        #[arg(long, value_name = "FILE")]
+        save: Option<PathBuf>,
+        /// Answer this computer alone, not the network.
+        #[arg(long)]
+        local: bool,
+    },
     /// Serve the web client to browsers and reach the PCs for them, until
     /// stopped. Shows the address to open and the code a new browser needs.
     Bridge {
@@ -258,6 +275,9 @@ fn run(cli: &Cli) -> Result<String, String> {
             stream::play(&client, pc, app, *seconds, asked, back, json)
         }
         Command::Quit { pc } => stream::quit(&client(cli)?, pc, json),
+        Command::Companion { apollo, save, local } => {
+            companion::run(apollo.as_deref(), save.as_deref(), *local)
+        }
         Command::Bridge { port, web, local, forget_browsers } => {
             let asked = bridge::Asked {
                 port: *port,
