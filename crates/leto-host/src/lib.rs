@@ -89,6 +89,11 @@ impl Companion {
         &self.cameras
     }
 
+    /// The same, to keep and to watch from another thread.
+    pub fn watch(&self) -> Arc<Cameras> {
+        Arc::clone(&self.cameras)
+    }
+
     /// The Apollo this companion stands beside.
     pub fn apollo(&self) -> &Apollo {
         &self.apollo

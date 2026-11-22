@@ -251,6 +251,13 @@ This is the riskiest piece of the whole return channel: a custom media source
 is unusual code, it runs inside a Windows service, and it has to be written
 with `unsafe` COM calls. It gets its own crate and an early prototype.
 
+Until that exists, the app borrows the camera OBS Studio installs: it writes
+the decoded pictures, as NV12, in the shared memory OBS's own virtual camera
+reads (`OBSVirtualCamVideo`, `leto-system::vcam`). Apps then see them as "OBS
+Virtual Camera". It needs OBS installed, and only one program can feed that
+camera at a time: while OBS's own virtual camera is started, Leto waits and
+tries again every two seconds.
+
 Windows 10 does not have this API and is not a target for the camera. On Linux
 the equivalent is a PipeWire camera node or `v4l2loopback`. macOS needs a
 signed camera extension and is out of scope until someone can test it.
