@@ -738,12 +738,10 @@ fn out_of_order(ui: &mut egui::Ui, problem: &Unavailable) {
     });
 }
 
-/// The small line at the bottom: version, platform and role.
+/// The small line at the bottom: version and platform.
 fn build_line() -> String {
-    let platform = Platform::current();
-    let name = platform.map_or("unsupported platform", Platform::name);
-    let role = if platform.is_some_and(Platform::can_host) { "host and client" } else { "client" };
-    format!("{} {} · {name} · {role}", brand::NAME, leto_core::VERSION)
+    let name = Platform::current().map_or("unsupported platform", Platform::name);
+    format!("{} {} · {name}", brand::NAME, leto_core::VERSION)
 }
 
 #[cfg(test)]
