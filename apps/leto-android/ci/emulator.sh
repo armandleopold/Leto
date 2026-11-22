@@ -88,7 +88,7 @@ step "Back"
 # Android's back, as the gesture or the button sends it: once in a stream
 # the bar says that once more leaves, twice leaves for the apps of the PC.
 adb shell input keyevent KEYCODE_BACK
-sleep 2
+sleep 1
 screen see 10-back-once Back again || fail "the bar does not say that back again leaves"
 adb shell input keyevent KEYCODE_BACK
 sleep 6

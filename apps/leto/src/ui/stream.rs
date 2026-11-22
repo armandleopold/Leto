@@ -28,6 +28,9 @@ use crate::{
 const BAR_STAYS: f64 = 6.0;
 /// Seconds the bar comes back for when it has something new to say.
 const BAR_RETURNS: f64 = 4.0;
+/// Seconds a second back leaves the stream for, after the first: the bar
+/// says so for as long.
+const BACK_WAITS: f64 = 8.0;
 /// Seconds the grip that opens the bar stays after the pointer last moved.
 const GRIP_STAYS: f32 = 2.5;
 /// Resting the pointer here, at the top of the window, opens the bar.
@@ -580,7 +583,7 @@ pub fn show(
         if said {
             asked.leave = true;
         } else {
-            player.bar_until = Some(now + BAR_RETURNS);
+            player.bar_until = Some(now + BACK_WAITS);
             player.talks_of = Some(Told::Back);
         }
     }
