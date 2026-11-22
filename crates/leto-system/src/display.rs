@@ -89,7 +89,32 @@ mod android {
                 env.call_method(&display, "getMode", "()Landroid/view/Display$Mode;", &[])?.l()?;
             let width = env.call_method(&mode, "getPhysicalWidth", "()I", &[])?.i()?;
             let height = env.call_method(&mode, "getPhysicalHeight", "()I", &[])?.i()?;
-            let hz = env.call_method(&mode, "getRefreshRate", "()F", &[])?.f()?;
+            let mut hz = env.call_method(&mode, "getRefreshRate", "()F", &[])?.f()?;
+            // A monitor is often left at 60 pictures a second when it shows
+            // more: the fastest of its modes with these pixels is the one
+            // a stream asks Android for (`Screen.pace`), so the one to ask
+            // the PC for.
+            if id != OWN_SCREEN {
+                let modes = env
+                    .call_method(
+                        &display,
+                        "getSupportedModes",
+                        "()[Landroid/view/Display$Mode;",
+                        &[],
+                    )?
+                    .l()?;
+                let modes = jni::objects::JObjectArray::from(modes);
+                for at in 0..env.get_array_length(&modes)? {
+                    let other = env.get_object_array_element(&modes, at)?;
+                    let same = env.call_method(&other, "getPhysicalWidth", "()I", &[])?.i()?
+                        == width
+                        && env.call_method(&other, "getPhysicalHeight", "()I", &[])?.i()? == height;
+                    if same {
+                        hz = hz.max(env.call_method(&other, "getRefreshRate", "()F", &[])?.f()?);
+                    }
+                    env.delete_local_ref(other)?;
+                }
+            }
             Ok(Some((width, height, hz, id)))
         });
         match read {
@@ -101,7 +126,17 @@ mod android {
                     height: height as u32,
                     refresh_hz: pace(hz).max(24),
                 };
-                Some((mode, id != OWN_SCREEN))
+                static TOLD: Mutex<Option<Said>> = Mutex::new(None);
+                let said = (mode, id != OWN_SCREEN);
+                let mut told = TOLD.lock().unwrap_or_else(PoisonError::into_inner);
+                if *told != Some(said) {
+                    *told = Some(said);
+                    log::info!(
+                        "the window is on screen {id}, {width} by {height}, at most {} pictures a second",
+                        mode.refresh_hz
+                    );
+                }
+                Some(said)
             }
             Ok(_) => None,
             Err(error) => {

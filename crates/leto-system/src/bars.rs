@@ -34,6 +34,11 @@ pub fn hide(hide: bool) {
         if let Err(error) = crate::java::screen("bars", hide) {
             log::warn!("Android was not asked about its bars: {error}");
         }
+        // A monitor left at 60 pictures a second shows its fastest mode
+        // for the stream, which was asked of the PC at that pace.
+        if let Err(error) = crate::java::screen("pace", hide) {
+            log::warn!("Android was not asked for the screen's fastest mode: {error}");
+        }
     }
     #[cfg(not(target_os = "android"))]
     let _ = hide;

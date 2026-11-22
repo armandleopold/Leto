@@ -3,6 +3,7 @@ package re.leto.app;
 import android.app.Activity;
 import android.os.Build;
 import android.util.Log;
+import android.view.Display;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -120,6 +121,59 @@ public final class Screen {
                     Log.i(TAG, keep ? "the mouse is asked for the window" : "the mouse is given back");
                 } catch (RuntimeException error) {
                     Log.w(TAG, "Android keeps its pointer: " + error);
+                }
+            }
+        });
+    }
+
+    /**
+     * Asks Android, while {@code fastest}, to show the window's screen in
+     * the fastest of its modes that has the pixels of the one it is in: a
+     * monitor that shows 144 pictures a second is often left at 60. Android
+     * goes back to its own choice when not, and may not listen at all.
+     */
+    public static void pace(final Activity activity, final boolean fastest) {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Window window = activity.getWindow();
+                    WindowManager.LayoutParams attributes = window.getAttributes();
+                    if (!fastest) {
+                        if (attributes.preferredDisplayModeId == 0) {
+                            return;
+                        }
+                        attributes.preferredDisplayModeId = 0;
+                        window.setAttributes(attributes);
+                        Log.i(TAG, "the screen's mode is Android's choice again");
+                        return;
+                    }
+                    // Before Android 11 an activity does not say which
+                    // screen it is on, and was on the phone's own.
+                    Display display = Build.VERSION.SDK_INT >= 30 ? activity.getDisplay() : null;
+                    if (display == null) {
+                        return;
+                    }
+                    Display.Mode now = display.getMode();
+                    Display.Mode best = now;
+                    StringBuilder all = new StringBuilder();
+                    for (Display.Mode mode : display.getSupportedModes()) {
+                        all.append(' ').append(mode.getPhysicalWidth()).append('x')
+                                .append(mode.getPhysicalHeight()).append('@')
+                                .append(mode.getRefreshRate());
+                        if (mode.getPhysicalWidth() == now.getPhysicalWidth()
+                                && mode.getPhysicalHeight() == now.getPhysicalHeight()
+                                && mode.getRefreshRate() > best.getRefreshRate()) {
+                            best = mode;
+                        }
+                    }
+                    attributes.preferredDisplayModeId = best.getModeId();
+                    window.setAttributes(attributes);
+                    Log.i(TAG, "screen " + display.getDisplayId() + " is at "
+                            + now.getRefreshRate() + " pictures a second and asked for "
+                            + best.getRefreshRate() + "; its modes:" + all);
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "the screen keeps its mode: " + error);
                 }
             }
         });
