@@ -735,13 +735,15 @@ mod tests {
             repeat: false,
             modifiers,
         };
-        let mut raw = egui::RawInput::default();
-        raw.events = vec![
-            key(egui::Key::ArrowDown, egui::Modifiers::NONE),
-            key(egui::Key::Enter, egui::Modifiers::NONE),
-            key(egui::Key::ArrowLeft, egui::Modifiers::ALT),
-            key(egui::Key::A, egui::Modifiers::NONE),
-        ];
+        let mut raw = egui::RawInput {
+            events: vec![
+                key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+                key(egui::Key::ArrowLeft, egui::Modifiers::ALT),
+                key(egui::Key::A, egui::Modifiers::NONE),
+            ],
+            ..egui::RawInput::default()
+        };
         assert_eq!(remote_presses(&mut raw), [Press::Down, Press::Choose]);
         // Alt+Left goes back, and a letter is no remote's.
         assert_eq!(raw.events.len(), 2);
