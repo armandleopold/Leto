@@ -2,7 +2,8 @@
 //!
 //! For now it is the companion of `docs/return-channel.md`: beside an
 //! Apollo or a Sunshine that streams the screen as before, Leto takes the
-//! camera of the devices they are paired with. See the `leto-host` crate.
+//! camera and the microphone of the devices they are paired with. See the
+//! `leto-host` crate.
 //!
 //! While this PC is shared, closing the window puts it away and Leto goes
 //! on beside the clock, on Windows, where an icon brings it back.
@@ -41,7 +42,7 @@ enum State {
     Off,
     /// Beside an Apollo, taking cameras, and handing them to the apps of
     /// this PC.
-    Beside(Companion, apps::Handing),
+    Beside(Companion, apps::Handing, voice::Voicing),
     /// Asked to, and could not: why, in words for the person, and whether
     /// it is the system that keeps Apollo's settings from Leto.
     Stopped(String, bool),
@@ -135,7 +136,8 @@ impl Sharing {
             Ok(apollo) => match Companion::start(apollo, &Options::default()) {
                 Ok(companion) => {
                     let handing = apps::Handing::start(companion.watch());
-                    State::Beside(companion, handing)
+                    let voicing = voice::Voicing::start(companion.watch());
+                    State::Beside(companion, handing, voicing)
                 }
                 Err(error) => State::Stopped(
                     format!(
@@ -159,7 +161,7 @@ impl Sharing {
 
     fn read_devices(&mut self) {
         self.devices_read = Instant::now();
-        if let State::Beside(companion, _) = &self.state {
+        if let State::Beside(companion, ..) = &self.state {
             // A file Apollo is writing at this moment keeps the last list.
             if let Ok(devices) = companion.apollo().devices() {
                 self.devices = devices;
@@ -185,7 +187,8 @@ impl Sharing {
                         egui::Label::new(widgets::dim(
                             "Your devices reach this PC through Leto. For now Leto works \
                              beside Apollo or Sunshine, which stream the screen, and takes \
-                             what they do not: the camera of your devices.",
+                             what they do not: the camera and the microphone of your \
+                             devices.",
                         ))
                         .wrap(),
                     );
@@ -229,7 +232,7 @@ impl Sharing {
                     }
                 });
             }),
-            State::Beside(companion, handing) => {
+            State::Beside(companion, handing, voicing) => {
                 card(ui, "Running", |ui| {
                     ui.horizontal(|ui| {
                         dot(ui, theme::ready());
@@ -245,8 +248,10 @@ impl Sharing {
                     );
                 });
                 let sender = companion.sender();
-                devices(ui, &self.devices, sender.as_deref());
+                let speaker = companion.speaker();
+                devices(ui, &self.devices, sender.as_deref(), speaker.as_deref());
                 camera(ui, companion, sender.as_deref(), handing.given(), &mut self.camera);
+                microphone(ui, companion, voicing);
                 if cfg!(windows) {
                     ui.add(
                         egui::Label::new(
@@ -262,7 +267,10 @@ impl Sharing {
                 }
                 // A camera that is being sent moves: its pictures are
                 // shown as they come, not four times a second.
-                let pace = if companion.cameras().report().open { PICTURE } else { GLANCE };
+                // So does the meter of a microphone.
+                let cameras = companion.cameras();
+                let moving = cameras.report().open || cameras.voice_report().open;
+                let pace = if moving { PICTURE } else { GLANCE };
                 ui.ctx().request_repaint_after(pace);
             }
         }
@@ -284,8 +292,9 @@ fn is_here(address: &str) -> bool {
         .is_ok_and(|address| !address.is_loopback() && UdpSocket::bind((address, 0)).is_ok())
 }
 
-/// The devices Apollo is paired with, and which may send a camera.
-fn devices(ui: &mut Ui, devices: &[Device], sender: Option<&str>) {
+/// The devices Apollo is paired with, and which may send a camera and a
+/// microphone.
+fn devices(ui: &mut Ui, devices: &[Device], sender: Option<&str>, speaker: Option<&str>) {
     card(ui, "Devices", |ui| {
         if devices.is_empty() {
             ui.label(widgets::dim("Apollo is paired with no device yet. Pair one from Leto."));
@@ -295,12 +304,19 @@ fn devices(ui: &mut Ui, devices: &[Device], sender: Option<&str>) {
             ui.horizontal(|ui| {
                 ui.label(name);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if sender == Some(device.name.as_str()) {
-                        ui.label(RichText::new("Sending its camera").color(theme::sun()));
+                    let name = Some(device.name.as_str());
+                    let sending = match (sender == name, speaker == name) {
+                        (true, true) => Some("Sending its camera and its microphone"),
+                        (true, false) => Some("Sending its camera"),
+                        (false, true) => Some("Sending its microphone"),
+                        (false, false) => None,
+                    };
+                    if let Some(sending) = sending {
+                        ui.label(RichText::new(sending).color(theme::sun()));
                     } else if device.trusted() {
-                        ui.label(widgets::dim("May send its camera"));
+                        ui.label(widgets::dim("May send its camera and its microphone"));
                     } else {
-                        ui.label(widgets::dim("No camera")).on_hover_text(
+                        ui.label(widgets::dim("No camera, no microphone")).on_hover_text(
                             "Apollo does not let this device use the keyboard and the mouse.",
                         );
                     }
@@ -312,8 +328,9 @@ fn devices(ui: &mut Ui, devices: &[Device], sender: Option<&str>) {
             ui.add(
                 egui::Label::new(
                     widgets::dim(
-                        "A device may send its camera once Apollo lets it use the keyboard \
-                         and the mouse: tick both for it on Apollo's page, under PIN.",
+                        "A device may send its camera and its microphone once Apollo lets it \
+                         use the keyboard and the mouse: tick both for it on Apollo's page, \
+                         under PIN.",
                     )
                     .size(theme::SMALL),
                 )
@@ -397,6 +414,188 @@ fn camera(
         };
         ui.add(egui::Label::new(widgets::dim(said).size(theme::SMALL)).wrap());
     });
+}
+
+/// The microphone that is being sent, and where the apps of this PC hear
+/// it.
+fn microphone(ui: &mut Ui, companion: &Companion, voicing: &voice::Voicing) {
+    card(ui, "Microphone", |ui| {
+        let Some(heard_as) = voicing.heard_as() else {
+            ui.add(
+                egui::Label::new(widgets::dim(
+                    "Not taken yet: Windows needs a virtual cable for the apps of this PC to \
+                     hear a device as a microphone. Install VB-CABLE, which is free, and Leto \
+                     finds it by itself.",
+                ))
+                .wrap(),
+            );
+            ui.hyperlink_to("vb-audio.com/Cable", "https://vb-audio.com/Cable/");
+            return;
+        };
+        let report = companion.cameras().voice_report();
+        let talking = report.heard.is_some_and(|heard| heard.elapsed() < Duration::from_secs(1));
+        if report.open && talking {
+            let from = companion.speaker().filter(|name| !name.is_empty());
+            ui.horizontal(|ui| {
+                dot(ui, theme::sun());
+                ui.label(format!("From {}", from.as_deref().unwrap_or("a device")));
+                ui.add(
+                    egui::ProgressBar::new(voicing.level())
+                        .desired_width(120.0)
+                        .desired_height(6.0),
+                );
+            });
+        } else {
+            ui.add(
+                egui::Label::new(widgets::dim(
+                    "No device is sending its microphone. In Leto, on the device, turn the \
+                     microphone on during a stream.",
+                ))
+                .wrap(),
+            );
+        }
+        ui.add(
+            egui::Label::new(
+                widgets::dim(format!(
+                    "The apps of this PC hear it as \"{}\": choose that microphone in Teams.",
+                    heard_as
+                ))
+                .size(theme::SMALL),
+            )
+            .wrap(),
+        );
+    });
+}
+
+/// The microphone that is sent, played where the apps of this PC hear a
+/// microphone.
+mod voice {
+    use std::{
+        sync::{
+            Arc, Mutex, PoisonError,
+            atomic::{AtomicBool, AtomicU32, Ordering},
+            mpsc::{Receiver, RecvTimeoutError},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use leto_host::camera::Cameras;
+    use leto_media::cable::{self, Cable, Found};
+
+    /// The name of a sound output to play the microphone on, for a cable
+    /// Leto does not know and for trying this out where there is none.
+    const CABLE: &str = "LETO_CABLE";
+
+    /// How long without a frame before the meter falls back to nothing.
+    const QUIET: Duration = Duration::from_millis(200);
+
+    /// How often a virtual cable is looked for while this PC has none, or
+    /// lost the one it had: the person may be installing one.
+    const SEEK_EVERY: Duration = Duration::from_secs(5);
+
+    /// What the thread tells whoever draws.
+    #[derive(Default)]
+    struct Told {
+        /// The cable the microphone plays on, while there is one.
+        cable: Mutex<Option<Found>>,
+        /// How loud the last frame was, as the bits of an `f32`.
+        level: AtomicU32,
+        stop: AtomicBool,
+    }
+
+    /// A thread that plays what arrives of a microphone into a virtual
+    /// cable, for as long as this lives. The PC takes a microphone while
+    /// it has such a cable.
+    pub struct Voicing {
+        told: Arc<Told>,
+    }
+
+    impl Voicing {
+        pub fn start(cameras: Arc<Cameras>) -> Self {
+            let told = Arc::new(Told::default());
+            let spawned = thread::Builder::new().name("microphone to apps".to_owned()).spawn({
+                let told = Arc::clone(&told);
+                move || run(&cameras, &told)
+            });
+            if let Err(error) = spawned {
+                log::warn!("no thread for the microphone: {error}");
+            }
+            Self { told }
+        }
+
+        /// The name of the microphone the apps of this PC pick, while this
+        /// PC has a cable.
+        pub fn heard_as(&self) -> Option<String> {
+            let cable = self.told.cable.lock().unwrap_or_else(PoisonError::into_inner);
+            cable.as_ref().map(|cable| cable.microphone.clone())
+        }
+
+        /// How loud the microphone is at this moment, from 0 to 1.
+        pub fn level(&self) -> f32 {
+            f32::from_bits(self.told.level.load(Ordering::Relaxed))
+        }
+    }
+
+    impl Drop for Voicing {
+        fn drop(&mut self) {
+            self.told.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn run(cameras: &Cameras, told: &Told) {
+        let stopped = || told.stop.load(Ordering::SeqCst);
+        let tell = |cable: Option<Found>| {
+            *told.cable.lock().unwrap_or_else(PoisonError::into_inner) = cable;
+        };
+        while !stopped() {
+            let found = match std::env::var(CABLE) {
+                Ok(output) => cable::named(&output),
+                Err(_) => cable::find(),
+            };
+            // Opened here: on some systems a sound output stays on the
+            // thread that opened it.
+            let opened = found.and_then(|found| match Cable::open(&found.output) {
+                Ok(cable) => Some((found, cable)),
+                Err(error) => {
+                    log::warn!("the cable for the microphone did not open: {error}");
+                    None
+                }
+            });
+            if let Some((found, mut cable)) = opened {
+                log::info!("a device's microphone plays on \"{}\"", found.output);
+                tell(Some(found));
+                // From here on the PC takes a microphone, until `frames`
+                // goes.
+                let frames = cameras.hear();
+                play(&frames, &mut cable, told);
+                tell(None);
+                told.level.store(0, Ordering::Relaxed);
+            }
+            let sought = Instant::now();
+            while !stopped() && sought.elapsed() < SEEK_EVERY {
+                thread::sleep(QUIET);
+            }
+        }
+    }
+
+    /// Plays what arrives until the cable is gone or nobody wants it.
+    fn play(frames: &Receiver<Vec<u8>>, cable: &mut Cable, told: &Told) {
+        while !told.stop.load(Ordering::SeqCst) {
+            let loud = match frames.recv_timeout(QUIET) {
+                Ok(frame) => match cable.play(&frame) {
+                    Some(loud) => loud,
+                    None => {
+                        log::warn!("the cable for the microphone is gone");
+                        return;
+                    }
+                },
+                Err(RecvTimeoutError::Timeout) => 0.0,
+                Err(RecvTimeoutError::Disconnected) => return,
+            };
+            told.level.store(loud.to_bits(), Ordering::Relaxed);
+        }
+    }
 }
 
 /// The camera that is sent, handed to the apps of this PC.

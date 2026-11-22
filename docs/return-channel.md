@@ -110,10 +110,12 @@ come from a driver. Options:
 | VB-CABLE or another virtual cable | Separate installer | Works the same way: write to its playback side, apps record from its capture side |
 | A Leto audio driver | Shipped with Leto | Best experience, but a kernel driver needs an EV certificate and Microsoft attestation signing |
 
-Version 1: Leto decodes Opus and writes the sound with WASAPI into a virtual
-cable. It detects Steam Streaming Microphone and VB-CABLE on its own, and the
-interface explains in one screen what to install when neither is found. A Leto
-driver is an open question for later.
+Version 1, in the companion: the app decodes Opus and plays the voice on the
+output side of a virtual cable (`leto_media::cable`). It finds VB-CABLE
+("CABLE Input") and Steam Streaming Microphone by name, looks again every
+five seconds while there is none, and "This PC" says what to install and
+which microphone to pick in the apps of the PC. A PC without a cable takes no
+microphone. A Leto driver is an open question for later.
 
 On Linux the target is a PipeWire or PulseAudio virtual source, which needs no
 driver. macOS needs a virtual audio driver too and is out of scope until
@@ -163,7 +165,9 @@ that either side can say more later.
   packets go and what seals them:
   `{"camera":{"port":48002,"key":"<32 hexadecimal digits>","keyId":7}}`. The
   key is a fresh AES-128 key, made for this camera, and the packets go to the
-  address that answered.
+  address that answered. An ask with `"microphone":true` is answered the same
+  way under `microphone`, with a key of its own. The two are asked for
+  apart: an ask that names one leaves the other as it is.
 - `DELETE /leto/v1/return-channel?keyId=7`: the client stopped sending what
   the key of that number sealed. The host leaves alone what it agreed to
   since: a camera turned off and on again at once sends its goodbye and its
@@ -184,11 +188,34 @@ agreed, with a new key. A host that hears nothing from a camera for five
 seconds takes the device to be gone and lets another one in, so a client that
 vanished without a goodbye does not keep the place.
 
-The microphone is asked for on the same API by a Leto client that reaches it,
-and its packets keep the format above, so the host has a single microphone
-receiver for Leto clients and for Super Artemis style clients. This part is
-not written yet: the client still asks for the microphone inside the RTSP
-session.
+### The microphone on Leto's API
+
+A host that takes the microphone inside the RTSP session is sent it there, as
+above. A stock Apollo does not, and the companion beside it cannot add a
+section to Apollo's session. So a Leto client that found no microphone in the
+session asks the API: `info` says `"microphone":true` when the PC has
+somewhere to play a voice (see "On the host" above), and the client asks for
+the way when the person turns the microphone on.
+
+The packets go to the port of the answer, the same as the camera's. They keep
+the first eight bytes of the packets above, and are sealed as the camera's
+are rather than with the session's input key, which the companion does not
+have:
+
+| Offset | Size | Field | Value |
+|---|---|---|---|
+| 0 | 1 | flags | 0 |
+| 1 | 1 | packet type | `0x61` |
+| 2 | 2 | sequence number | wraps |
+| 4 | 4 | timestamp | on a clock of 48 kHz |
+| 8 | 4 | frame number | from 0, never wraps |
+| 12 | n | one Opus frame, sealed | 48 kHz, mono, 20 ms |
+| 12 + n | 16 | seal | AES-128-GCM over header and frame |
+
+The nonce is the key id, the frame number and four zero bytes. A frame that
+arrives after a later one is left out, so a packet somebody recorded is never
+heard twice. One device sends its microphone at a time, with the same rules
+as the camera (403, 409, five seconds of silence).
 
 ### Camera packets
 

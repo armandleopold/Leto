@@ -224,8 +224,14 @@ Progress:
   `--save` keeps the last one in a file. On Windows, where OBS Studio is
   installed, the app also hands them to OBS's virtual camera, so Teams and
   other apps see them as "OBS Virtual Camera" while OBS itself is not
-  using it; written from OBS's source and never run on Windows. A camera
-  under Leto's own name, and the microphone, are next. Checked against the stand-in host set up as an Apollo, with a
+  using it; written from OBS's source and never run on Windows.
+- Done: the companion takes a microphone. A device whose PC takes none
+  inside the stream asks Leto's API, and the app on the PC plays the voice
+  into a virtual cable (VB-CABLE, or Steam Streaming Microphone), whose
+  microphone the apps of the PC pick. Checked in the container from the
+  microphone of one Leto to a recording of what the other played. Never run
+  on Windows, nor with a real cable. `leto-cli companion` takes the camera
+  only. A camera under Leto's own name is next. Checked against the stand-in host set up as an Apollo, with a
   folder written the way Apollo's source writes it. Never run beside a real
   Apollo: whether Windows lets an ordinary program read Apollo's folder,
   and what its firewall does with the new port, are not known.

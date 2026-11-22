@@ -615,10 +615,24 @@ impl State {
                     view.connected = true;
                     view.input = input;
                     view.microphone = match &view.microphone {
-                        Mic::On if back && microphone => Mic::On,
+                        // Without `microphone`, the PC may still take it
+                        // beside the stream: that news follows.
+                        Mic::On if back => Mic::On,
                         _ if microphone => Mic::Off,
                         _ => Mic::NotTaken,
                     };
+                }
+            }
+            Event::Microphone { attempt, taken } => {
+                if let Screen::Stream(view) = &mut self.screen
+                    && view.attempt == attempt
+                {
+                    match (taken, &view.microphone) {
+                        (false, _) => view.microphone = Mic::NotTaken,
+                        (true, Mic::NotTaken) => view.microphone = Mic::Off,
+                        // As the person left it, in a stream that came back.
+                        (true, _) => {}
+                    }
                 }
             }
             Event::Reconnecting { attempt } => {
@@ -1019,6 +1033,36 @@ mod tests {
         state.play(&app(1, "Desktop"), None, Choices::default());
         state.apply(playing(1, false), 3.0);
         state.switch_microphone();
+        assert_eq!(microphone(&state), &Mic::NotTaken);
+    }
+
+    #[test]
+    fn a_pc_that_takes_the_microphone_beside_the_stream_says_so_a_moment_later() {
+        let salon = host("Salon", true, Reachability::Online);
+        let mut state = state_with_apps(&salon);
+        state.play(&app(1, "Desktop"), None, Choices::default());
+        state.apply(playing(1, false), 3.0);
+        assert_eq!(microphone(&state), &Mic::NotTaken);
+
+        // News about another stream changes nothing.
+        state.apply(Event::Microphone { attempt: 9, taken: true }, 3.1);
+        assert_eq!(microphone(&state), &Mic::NotTaken);
+        state.apply(Event::Microphone { attempt: 1, taken: true }, 3.2);
+        assert_eq!(microphone(&state), &Mic::Off);
+        state.switch_microphone();
+        assert_eq!(microphone(&state), &Mic::On);
+
+        // A stream that comes back keeps it on, when the PC still takes it.
+        state.apply(Event::Reconnecting { attempt: 1 }, 5.0);
+        state.apply(playing(1, false), 6.0);
+        assert_eq!(microphone(&state), &Mic::On);
+        state.apply(Event::Microphone { attempt: 1, taken: true }, 6.1);
+        assert_eq!(microphone(&state), &Mic::On);
+
+        // And loses it when the PC stopped taking one meanwhile.
+        state.apply(Event::Reconnecting { attempt: 1 }, 8.0);
+        state.apply(playing(1, false), 9.0);
+        state.apply(Event::Microphone { attempt: 1, taken: false }, 9.1);
         assert_eq!(microphone(&state), &Mic::NotTaken);
     }
 

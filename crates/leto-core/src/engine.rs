@@ -112,6 +112,13 @@ pub enum Event<Image = ImageFile> {
         input: InputAllowed,
         microphone: bool,
     },
+    /// Whether the PC takes this device's microphone after all, beside the
+    /// stream, when [`Event::Playing`] said that it takes none inside it.
+    /// Told a moment later: finding out must not keep the pictures waiting.
+    Microphone {
+        attempt: u64,
+        taken: bool,
+    },
     /// Whether the PC takes this device's camera, and what it takes. Told
     /// a moment after [`Event::Playing`], to a shell that has a camera to
     /// send: finding out must not keep the pictures waiting.
@@ -173,6 +180,7 @@ impl<Image> Event<Image> {
             Self::Playing { attempt, input, microphone } => {
                 Event::Playing { attempt, input, microphone }
             }
+            Self::Microphone { attempt, taken } => Event::Microphone { attempt, taken },
             Self::Camera { attempt, offer } => Event::Camera { attempt, offer },
             Self::PlayFailed { attempt, message } => Event::PlayFailed { attempt, message },
             Self::Reconnecting { attempt } => Event::Reconnecting { attempt },

@@ -2,9 +2,9 @@
 //!
 //! It starts small, as the companion of `docs/return-channel.md`: beside an
 //! Apollo or a Sunshine that streams the screen as before, it takes what
-//! neither of them takes. Today that is the camera of a client; its
-//! microphone is next. Screen, sound and input come after, until nothing is
-//! left for Apollo to do: see `docs/roadmap.md`.
+//! neither of them takes. Today that is the camera of a client and its
+//! microphone. Screen, sound and input come after, until nothing is left
+//! for Apollo to do: see `docs/roadmap.md`.
 //!
 //! - [`apollo`] reads what the Apollo installed on the PC knows, so that the
 //!   companion shows the same certificate and takes the same devices.
@@ -20,6 +20,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
     time::Duration,
@@ -101,9 +102,24 @@ impl Companion {
 
     /// The name Apollo's owner gave the device whose camera is being sent.
     pub fn sender(&self) -> Option<String> {
-        let certificate = self.cameras.sender()?;
+        self.named(&self.cameras.sender()?)
+    }
+
+    /// The name Apollo's owner gave the device whose microphone is being
+    /// sent.
+    pub fn speaker(&self) -> Option<String> {
+        self.named(&self.cameras.speaker()?)
+    }
+
+    fn named(&self, certificate: &[u8]) -> Option<String> {
         let devices = self.apollo.devices().ok()?;
         devices.into_iter().find(|device| device.certificate == certificate).map(|d| d.name)
+    }
+
+    /// From now on the companion takes a microphone too, and hands its Opus
+    /// frames to whoever holds what this returns: see [`Cameras::hear`].
+    pub fn hear(&self) -> mpsc::Receiver<Vec<u8>> {
+        self.cameras.hear()
     }
 }
 
