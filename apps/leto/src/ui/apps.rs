@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use egui::{
-    Align, Align2, Color32, CursorIcon, FontId, Key, Layout, Rect, RichText, Sense, Stroke,
-    StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
+    Align, Align2, Color32, CursorIcon, FontId, Layout, Rect, RichText, Sense, Stroke, StrokeKind,
+    TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
 };
 use leto_core::{
     engine::Decodable,
@@ -74,7 +74,7 @@ pub fn show(
     now: f64,
 ) {
     let host = &view.host;
-    let mut leave = ui.input(|input| input.key_pressed(Key::Escape));
+    let mut leave = widgets::back_asked(ui);
     let mut forget = false;
 
     ui.horizontal(|ui| {
@@ -209,12 +209,14 @@ fn grid<'a>(
     let columns = (((available + GAP) / (TILE_MIN_WIDTH + GAP)).floor() as usize).clamp(2, 7);
     let width = ((available - GAP * (columns as f32 - 1.0)) / columns as f32).min(210.0);
     let mut chosen = None;
-    for row in apps.chunks(columns) {
+    for (index, row) in apps.chunks(columns).enumerate() {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = GAP;
-            for app in row {
+            for (column, app) in row.iter().enumerate() {
                 let running = view.host.running_app == Some(app.id);
-                if tile(ui, app, covers.of(&view.host.id, app.id), width, running) {
+                // A gamepad starts from the first app.
+                let first = index == 0 && column == 0;
+                if tile(ui, app, covers.of(&view.host.id, app.id), width, running, first) {
                     chosen = Some(app);
                 }
             }
@@ -225,14 +227,21 @@ fn grid<'a>(
 }
 
 /// One app: its cover and its title. Returns true when the person chose it.
-fn tile(ui: &mut Ui, app: &AppSummary, cover: Cover<'_>, width: f32, running: bool) -> bool {
+fn tile(
+    ui: &mut Ui,
+    app: &AppSummary,
+    cover: Cover<'_>,
+    width: f32,
+    running: bool,
+    first: bool,
+) -> bool {
     let cover_size = vec2(width, (width * COVER_SHAPE).round());
     let (rect, response) = ui.allocate_exact_size(cover_size + vec2(0.0, 30.0), Sense::click());
     response.widget_info(|| {
         let name = if running { format!("Resume {}", app.title) } else { app.title.clone() };
         egui::WidgetInfo::labeled(egui::Role::Button, true, name)
     });
-    let chosen = response.clicked();
+    let chosen = response.clicked() || (first && widgets::first_choice(ui, &response));
     if !ui.is_rect_visible(rect) {
         return chosen;
     }

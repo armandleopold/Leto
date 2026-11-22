@@ -287,8 +287,8 @@ What this first version does, and what it leaves for later:
   otherwise queue two or three, each a refresh later.
 - A picture decoded on the graphics card still goes from the card to memory
   and back that way, and reading it waits until the card has finished it,
-  which is most of what "decoding" takes. Behind a setting, off by default
-  and being tried, it stays on the card instead (`leto-media/src/kept.rs`).
+  which is most of what "decoding" takes. On Windows it stays on the card
+  instead, with no setting to turn it off since 0.0.3 (`leto-media/src/kept.rs`).
   The decoder's pictures are Direct3D's and the window draws with OpenGL.
   The decoder has the card copy each picture into a texture of Leto's, as
   Moonlight does, and waits for nothing. When the window is about to draw,
@@ -298,15 +298,18 @@ What this first version does, and what it leaves for later:
   same texture to draw from (`WGL_NV_DX_interop2`). The planes then say
   where the picture is and hold nothing (`Planes::kept`). The log says every
   ten seconds what a drawing costs the window. The app asks for it each
-  frame, only when the setting is on and the window's card says it shares
+  frame, when the window's card says it shares
   (`Card::keeps`, `Outlet::set_kept`, `VideoDecoder::keep_on_card`). It
   falls back by itself, with one line in the log: a decoder that cannot
   leave a picture there reads it as before, and a window that cannot draw
   one (a laptop that decodes on one card and draws on the other) says so,
-  after which pictures come through memory until Leto starts again. Nothing
-  of this has run on a real graphics card yet: no test here has one.
-- Behind another setting, off by default and being tried, the window does
-  not draw the pictures at all: the card that decoded one draws it itself
+  after which pictures come through memory until Leto starts again. The log
+  says at the first picture of every stream which way its pictures go. It
+  has run on Armand's two Windows laptops: 0.5 ms for a picture to leave
+  the decoder, against 6 to 17 ms through memory. The settings
+  `keep_on_card` and `straight_to_screen` that older Leto saved are no
+  longer read.
+- On Windows, the window does not draw the pictures at all: the card that decoded one draws it itself
   and shows it at once, with Direct3D 11 and no OpenGL, the way Moonlight
   does on Windows (`leto-media/src/straight.rs`; `d3d11va.cpp` of
   moonlight-qt was read for it, not copied). The app opens a pane over the
@@ -323,8 +326,7 @@ What this first version does, and what it leaves for later:
   draws only when it has something of its own to show. What it shows over
   the pictures (the bar, its grip, the statistics, the signs) shows through
   holes cut in the pane, on black (`Player::over`, `LetoApp::place_pane`).
-  The app asks for it each frame of a stream, only when the setting is on
-  (`Outlet::set_pane`, `VideoDecoder::show_on`), and it falls back by
+  The app asks for it each frame of a stream (`Outlet::set_pane`, `VideoDecoder::show_on`), and it falls back by
   itself with one line in the log: a card that makes no such program or
   shows no picture there leaves the pictures to the paths above. Only
   pictures of eight bits a colour in NV12 go that way. The tests on Windows

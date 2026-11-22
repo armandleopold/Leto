@@ -188,10 +188,14 @@ def main():
         return 0
     found = words(path)
     print("read:", " ".join(word for word, _, _ in found))
-    # tap: the first of the words, where the others follow it.
+    # tap: the first of the words, where the others follow it. see: the
+    # same, without the tap.
     for index, (word, x, y) in enumerate(found):
         following = [w for w, _, _ in found[index : index + len(wanted)]]
         if [w.lower() for w in following] == [w.lower() for w in wanted]:
+            if command == "see":
+                print(f"saw {' '.join(wanted)} at {x},{y}")
+                return 0
             subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=True)
             print(f"tapped {' '.join(wanted)} at {x},{y}")
             return 0

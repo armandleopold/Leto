@@ -25,7 +25,7 @@ use leto_system::permission::Need;
 use super::{
     Chime, DeviceNames, Door, Filming, Pace, Picture, Seen, Unavailable, decode_cover, gamepad,
     leave::{Answer, Leave},
-    pads,
+    pads::{self, Press},
     stream::{Outlet, Screen, Sound},
 };
 use crate::{
@@ -45,6 +45,8 @@ pub struct Backend {
     leaves: RefCell<Leaves>,
     /// The person has A and B change places on the gamepads, and X and Y.
     swapped: Arc<AtomicBool>,
+    /// What the gamepads pressed outside a stream, for the screens.
+    presses: Arc<Mutex<Vec<Press>>>,
     /// The camera, microphone and speakers the person chose.
     chosen: Arc<Mutex<DeviceChoices>>,
     /// The microphones and sound outputs of this device, as last looked at.
@@ -351,16 +353,22 @@ impl Backend {
             .map(|client| Arc::new(Service::new(Arc::new(client), desk)))
             .map_err(|error| explain(&error));
         let swapped = Arc::new(AtomicBool::new(false));
+        let presses = Arc::new(Mutex::new(Vec::new()));
         match &service {
             Ok(service) => {
                 // Gamepads go to the stream that is connected, whichever it
                 // is, as the person chose.
                 let (asked, sent) = (Arc::clone(service), Arc::clone(service));
                 let chosen = Arc::clone(&swapped);
+                let (pressed, woken) = (Arc::clone(&presses), ctx.clone());
                 gamepad::watch(
                     move || asked.streaming(),
                     move |input| {
                         sent.input([pads::as_chosen(input, chosen.load(Ordering::Relaxed))]);
+                    },
+                    move |press| {
+                        pressed.lock().unwrap_or_else(PoisonError::into_inner).push(press);
+                        woken.request_repaint();
                     },
                 );
             }
@@ -373,6 +381,7 @@ impl Backend {
             tried: RefCell::default(),
             leaves: RefCell::default(),
             swapped,
+            presses,
             chosen,
             names: Arc::default(),
             looking: Arc::default(),
@@ -464,6 +473,11 @@ impl Backend {
     /// Has A and B change places on the gamepads, and X and Y, or not.
     pub fn swap_gamepad_buttons(&self, swap: bool) {
         self.swapped.store(swap, Ordering::Relaxed);
+    }
+
+    /// What the gamepads pressed for Leto's own screens since last asked.
+    pub fn gamepad_presses(&self) -> Vec<Press> {
+        std::mem::take(&mut *self.presses.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// The codecs this device decodes, on its graphics card and at all.

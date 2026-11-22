@@ -28,6 +28,9 @@ use crate::{
 const BAR_STAYS: f64 = 6.0;
 /// Seconds the bar comes back for when it has something new to say.
 const BAR_RETURNS: f64 = 4.0;
+/// Seconds a second back leaves the stream for, after the first: the bar
+/// says so for as long.
+const BACK_WAITS: f64 = 8.0;
 /// Seconds the grip that opens the bar stays after the pointer last moved.
 const GRIP_STAYS: f32 = 2.5;
 /// Resting the pointer here, at the top of the window, opens the bar.
@@ -38,6 +41,11 @@ const BAR_MARGIN: f32 = 10.0;
 /// The system shows a keyboard on the screen only when asked, and the bar
 /// has a button for it: a phone or a tablet has no other.
 const ON_SCREEN_KEYBOARD: bool = cfg!(target_os = "android");
+
+/// Android's back gesture and button are the system's, not a key of the
+/// PC: during a stream they ask to leave it. A keyboard's back key, on a
+/// computer, is the PC's like every other key.
+const SYSTEM_BACK: bool = cfg!(target_os = "android");
 
 /// A browser fills the screen with F11 on its own, without telling the
 /// page: there, F11 is not Leto's to act on.
@@ -156,6 +164,9 @@ pub struct Player {
     /// The window is closing: the stream is left without closing the app
     /// on the PC, whatever the settings say.
     closing: bool,
+    /// Android's back gesture or button, since the last frame: it is
+    /// Leto's, never the PC's.
+    went_back: bool,
 }
 
 /// What the statistics show, and what they were worked out from.
@@ -186,6 +197,8 @@ enum Told {
     Camera,
     /// Whose pointer shows on the pictures.
     Pointer,
+    /// Back was asked once: once more leaves.
+    Back,
 }
 
 impl Player {
@@ -260,6 +273,12 @@ impl Player {
     /// there, not here.
     pub fn take_keyboard(&mut self, raw: &mut egui::RawInput) {
         raw.events.retain(|event| match event {
+            // Android's back leaves the stream, once asked twice: it is
+            // the way out for whoever has no keyboard.
+            Event::Key { key: Key::BrowserBack, pressed, .. } if SYSTEM_BACK => {
+                self.went_back |= *pressed;
+                false
+            }
             Event::Key { key, physical_key, pressed, repeat, .. } => {
                 self.slipped |= self.keyboard_kept && *pressed && !*repeat;
                 self.strokes.push(KeyStroke::Window {
@@ -341,7 +360,8 @@ pub fn show(
     let (now, focused) = ui.input(|input| (input.time, input.focused));
     let fills_screen = window::fills_screen(ui.ctx());
     let closing = std::mem::take(&mut player.closing);
-    let mut asked = Asked { leave: closing, ..Asked::default() };
+    let back = std::mem::take(&mut player.went_back);
+    let mut asked = Asked { leave: closing, back, ..Asked::default() };
     player.controls.choose(settings.swap_mouse_buttons, settings.reverse_scroll);
     // Once connected, every key is the PC's, the system's shortcuts too
     // where the system lets go of them and the person did not choose
@@ -481,11 +501,10 @@ pub fn show(
     } else {
         // Nothing to play with yet: the keys are still Leto's.
         player.strokes.clear();
-        let (escape, f11) =
-            ui.input(|input| (input.key_pressed(Key::Escape), input.key_pressed(Key::F11)));
+        let f11 = ui.input(|input| input.key_pressed(Key::F11));
         asked.fill |= f11 && F11_FILLS;
         // The way out of the full screen first, then out of the stream.
-        if escape {
+        if widgets::back_asked(ui) || std::mem::take(&mut asked.back) {
             if fills_screen { asked.fill = true } else { asked.leave = true }
         }
     }
@@ -556,6 +575,17 @@ pub fn show(
         settings.local_pointer = !settings.local_pointer;
         player.bar_until = Some(now + BAR_RETURNS);
         player.talks_of = Some(Told::Pointer);
+    }
+    if asked.back {
+        // Asked once more while the bar still says so, back leaves.
+        let said = player.talks_of == Some(Told::Back)
+            && player.bar_until.is_some_and(|until| now < until);
+        if said {
+            asked.leave = true;
+        } else {
+            player.bar_until = Some(now + BACK_WAITS);
+            player.talks_of = Some(Told::Back);
+        }
     }
     if asked.statistics {
         player.statistics = match player.statistics {
@@ -641,6 +671,8 @@ struct Asked {
     release: bool,
     /// Show the other pointer: this device's, or the PC's own.
     pointer: bool,
+    /// Go back: the bar says that once more leaves, and once more does.
+    back: bool,
     /// Show the keyboard on the screen, or hide it.
     keyboard: bool,
 }
@@ -780,6 +812,7 @@ fn overlay(
                     Told::Microphone => Some(News::Microphone(status.voice.is_some())),
                     Told::Camera => Some(News::Camera(status.film)),
                     Told::Pointer => whose.map(News::Pointer),
+                    Told::Back => Some(News::Back),
                 }),
             ),
             opacity,
@@ -1288,6 +1321,8 @@ enum News {
     Camera(Option<Filming>),
     /// The pointer on the pictures, and whether it is this device's.
     Pointer(bool),
+    /// Back was asked once.
+    Back,
 }
 
 /// The app and the PC on one line, cut short if the window is narrow.
@@ -1372,6 +1407,12 @@ fn bar_note(view: &StreamView, hands: Hands, timed: bool, news: Option<News>) ->
                  device's pointer. No pointer at all? {PC_POINTER_KEYS} brings that of {host} \
                  back.",
                 Shortcut::Pointer.keys()
+            ));
+        }
+        Some(News::Back) => {
+            return said(format!(
+                "Back again to leave {}. The app keeps running on {host}.",
+                view.app.title
             ));
         }
         None => {}
@@ -1494,6 +1535,7 @@ mod tests {
 
     use super::*;
     use crate::settings::Capture;
+    use crate::state::Screen;
 
     #[test]
     fn a_key_pressed_that_reaches_the_window_while_the_stream_keeps_them_slipped_past() {
@@ -1628,6 +1670,53 @@ mod tests {
         });
         output.textures_delta.clear();
         (heard, output.platform_output.cursor_icon)
+    }
+
+    #[test]
+    fn back_asked_twice_leaves_the_stream_and_once_only_says_so() {
+        let ctx = egui::Context::default();
+        let mut settings = quiet(false);
+        let view = view(InputAllowed::ALL);
+        let mut player = Player::default();
+        player.picture(&ctx, Picture::Behind([1920, 1080]), None);
+        let mut state = State::new();
+        state.screen = Screen::Stream(view.clone());
+        let mut draw = |player: &mut Player, state: &mut State| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(960.0, 540.0))),
+                ..Default::default()
+            };
+            let status = Status {
+                sound_problem: None,
+                picture_problem: None,
+                voice: None,
+                film: None,
+                counts: None,
+                round_trip: None,
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                show(ui, state, &view, player, &mut settings, status);
+            });
+            output.textures_delta.clear();
+        };
+        draw(&mut player, &mut state);
+
+        // Once: the bar says how to leave, and the stream goes on.
+        player.went_back = true;
+        draw(&mut player, &mut state);
+        assert_eq!(player.talks_of, Some(Told::Back));
+        assert!(matches!(state.screen, Screen::Stream(_)), "{:?}", state.screen);
+        let note = bar_note(&view, Hands::Pointer, true, Some(News::Back)).map(|note| note.text);
+        assert_eq!(
+            note.as_deref(),
+            Some("Back again to leave Desktop. The app keeps running on Salon.")
+        );
+
+        // Twice, while the bar still says so: the stream is left, for the
+        // apps of the PC.
+        player.went_back = true;
+        draw(&mut player, &mut state);
+        assert!(matches!(state.screen, Screen::Apps(_)), "{:?}", state.screen);
     }
 
     /// How many times the PC was asked to switch its pointer.

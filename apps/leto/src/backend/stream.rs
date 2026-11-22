@@ -288,8 +288,10 @@ pub struct Screen {
     left: Option<Instant>,
     /// Pictures went undecoded: the next ones are no use until a keyframe.
     stale: bool,
-    /// The pictures stay on the graphics card, as the log was told.
-    kept: bool,
+    /// The pictures stay on the graphics card, as the log was told: `None`
+    /// before the first picture, so that every stream's log says which way
+    /// its pictures go.
+    kept: Option<bool>,
     /// How large the pictures are that the graphics card shows itself, as
     /// the interface was told.
     straight: Option<[usize; 2]>,
@@ -306,7 +308,7 @@ impl Screen {
             last: None,
             left: None,
             stale: false,
-            kept: false,
+            kept: None,
             straight: None,
         }
     }
@@ -372,8 +374,8 @@ impl VideoSink for Screen {
         decoder.show_on(*self.outlet.pane.lock().unwrap_or_else(PoisonError::into_inner));
         decoder.keep_on_card(self.outlet.kept.load(Ordering::Relaxed));
         let kept = decoder.keeps_on_card();
-        if self.kept != kept {
-            self.kept = kept;
+        if self.kept != Some(kept) {
+            self.kept = Some(kept);
             log::info!(
                 "pictures {}",
                 if kept {
