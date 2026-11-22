@@ -7,7 +7,7 @@ use leto_core::{brand, platform::Platform};
 use leto_system::pane::Pane;
 
 use crate::{
-    backend::{Backend, Door, Pace, Unavailable},
+    backend::{Backend, Door, Pace, Press, Unavailable},
     settings::{self, Settings},
     state::{Cam, Device, Devices, Event, Mic, Screen, State, Trial},
     stats::{self, Counts, Rates, TOLD_EVERY},
@@ -65,6 +65,10 @@ pub struct LetoApp {
     closes_at: Option<f64>,
     /// When the log was last told how the stream does, and the counts then.
     told: Option<(f64, Counts)>,
+    /// A gamepad asked for something while nothing on screen was chosen,
+    /// and the screen offered no first choice: the next frame chooses the
+    /// first of what it shows, as Tab does.
+    choose_first: bool,
 }
 
 impl LetoApp {
@@ -90,6 +94,7 @@ impl LetoApp {
             settings_open: false,
             closes_at: None,
             told: None,
+            choose_first: false,
         }
     }
 
@@ -199,7 +204,7 @@ impl LetoApp {
 }
 
 impl eframe::App for LetoApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         // While a stream is connected the keyboard is the PC's: the
         // interface must not act on Tab, Enter or Escape itself.
         if matches!(&self.state.screen, Screen::Stream(view) if view.connected) {
@@ -213,6 +218,18 @@ impl eframe::App for LetoApp {
         } else {
             #[cfg(not(target_arch = "wasm32"))]
             crate::clipboard::shortcuts(raw_input);
+            let nothing_chosen = ctx.memory(|memory| memory.focused().is_none());
+            if std::mem::take(&mut self.choose_first) && nothing_chosen {
+                raw_input.events.extend(pressed(egui::Key::Tab));
+            }
+            for press in self.backend.gamepad_presses() {
+                gamepad_press(ctx, raw_input, press, nothing_chosen);
+            }
+        }
+        // Gamepads say nothing to a stream that is connected: they go to
+        // the PC, on their own way.
+        if matches!(&self.state.screen, Screen::Stream(view) if view.connected) {
+            let _ = self.backend.gamepad_presses();
         }
     }
 
@@ -384,9 +401,9 @@ impl eframe::App for LetoApp {
                 });
                 egui::CentralPanel::default().frame(ground).show(ui, |ui| {
                     top_bar(ui);
-                    // Escape closes the settings, as their back button does.
-                    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
-                    if self.settings_open && escape {
+                    // Going back closes the settings, as their back button
+                    // does, and only them: the screen under them stays.
+                    if self.settings_open && widgets::back_asked(ui) {
                         self.settings_open = false;
                     }
                     let scroll = egui::ScrollArea::vertical().auto_shrink(false);
@@ -479,6 +496,13 @@ impl eframe::App for LetoApp {
                             (Door::Open, Screen::Stream(_)) => {}
                         });
                     });
+                    // A back that no screen took was asked on the first
+                    // one, where Android's back puts the app behind the
+                    // others, as it does any app's first screen.
+                    let system = ui.input(|input| input.key_pressed(egui::Key::BrowserBack));
+                    if system && widgets::back_asked(ui) {
+                        leto_system::task::go_behind();
+                    }
                 });
             }
         }
@@ -507,6 +531,13 @@ impl eframe::App for LetoApp {
             // A change is kept at once: a crash loses none.
             self.saved = self.settings.clone();
             settings::save(self.settings.clone());
+        }
+        // What a gamepad asked that no first choice took goes to the first
+        // of what the screen shows, at the next frame.
+        let start = Id::unique(widgets::GAMEPAD_START);
+        if ui.ctx().data_mut(|data| data.remove_temp::<bool>(start)).is_some() {
+            self.choose_first = true;
+            ui.ctx().request_repaint();
         }
         if open && self.state.screen == Screen::Pcs {
             // Wake up for the next search even if nobody touches the app.
@@ -577,6 +608,47 @@ fn top_bar(ui: &mut egui::Ui) {
     ui.advance_cursor_after_rect(bar);
 }
 
+/// A key pressed and let go of, as a keyboard sends it.
+fn pressed(key: egui::Key) -> [egui::Event; 2] {
+    [true, false].map(|pressed| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    })
+}
+
+/// What a gamepad pressed outside a stream, as the keyboard would ask it:
+/// the arrows go from one choice to the next, A opens what is chosen, B
+/// goes back. While `nothing_chosen`, pointing or choosing starts from the
+/// first choice of the screen instead, which A opens at once.
+fn gamepad_press(
+    ctx: &egui::Context,
+    raw_input: &mut egui::RawInput,
+    press: Press,
+    nothing_chosen: bool,
+) {
+    let key = match press {
+        Press::Back => egui::Key::Escape,
+        _ if nothing_chosen => {
+            let open = press == Press::Choose;
+            let start = Id::unique(widgets::GAMEPAD_START);
+            ctx.data_mut(|data| {
+                let open = open || data.get_temp::<bool>(start).unwrap_or(false);
+                data.insert_temp(start, open);
+            });
+            return;
+        }
+        Press::Choose => egui::Key::Enter,
+        Press::Up => egui::Key::ArrowUp,
+        Press::Down => egui::Key::ArrowDown,
+        Press::Left => egui::Key::ArrowLeft,
+        Press::Right => egui::Key::ArrowRight,
+    };
+    raw_input.events.extend(pressed(key));
+}
+
 /// The name of the screen under the settings, for their back button.
 fn back_to(screen: &Screen) -> &str {
     match screen {
@@ -617,6 +689,47 @@ fn build_line() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs one frame with what a gamepad pressed, over two buttons, the
+    /// first of which is the screen's first choice. Returns which button
+    /// was clicked, and which is chosen after the frame.
+    fn pads_frame(ctx: &egui::Context, presses: &[Press]) -> (Option<usize>, Option<usize>) {
+        let mut raw = egui::RawInput::default();
+        let nothing_chosen = ctx.memory(|memory| memory.focused().is_none());
+        for press in presses {
+            gamepad_press(ctx, &mut raw, *press, nothing_chosen);
+        }
+        let (mut clicked, mut ids) = (None, Vec::new());
+        let mut output = ctx.run_ui(raw, |ui| {
+            for index in 0..2 {
+                let button = ui.button(format!("Choice {index}"));
+                let open = index == 0 && widgets::first_choice(ui, &button);
+                if button.clicked() || open {
+                    clicked = Some(index);
+                }
+                ids.push(button.id);
+            }
+        });
+        output.textures_delta.clear();
+        let chosen = ctx.memory(|memory| memory.focused());
+        (clicked, ids.iter().position(|id| Some(*id) == chosen))
+    }
+
+    #[test]
+    fn a_gamepad_chooses_and_opens_as_a_keyboard_would() {
+        let ctx = egui::Context::default();
+        pads_frame(&ctx, &[]);
+        // Nothing chosen yet: A opens the first choice at once.
+        assert_eq!(pads_frame(&ctx, &[Press::Choose]), (Some(0), Some(0)));
+        // Then the arrows go from one choice to the next, and A opens it.
+        assert_eq!(pads_frame(&ctx, &[Press::Down]), (None, Some(1)));
+        assert_eq!(pads_frame(&ctx, &[Press::Choose]), (Some(1), Some(1)));
+        // B is Escape: back, and nothing chosen any more.
+        assert_eq!(pads_frame(&ctx, &[Press::Back]), (None, None));
+        // Pointing while nothing is chosen chooses the first, and opens
+        // nothing.
+        assert_eq!(pads_frame(&ctx, &[Press::Right]), (None, Some(0)));
+    }
 
     #[test]
     fn a_place_in_points_is_the_same_place_in_pixels() {

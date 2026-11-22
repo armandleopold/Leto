@@ -1,6 +1,6 @@
 //! The pairing screen: the PIN to type on the PC.
 
-use egui::{Align2, FontId, Key, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, vec2};
+use egui::{Align2, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, vec2};
 use leto_core::model::{HostKind, HostSummary, Pin, join_address};
 use leto_protocol::ports::{PortMap, Service};
 
@@ -16,8 +16,7 @@ const PATIENCE: f64 = 90.0;
 
 pub fn show(ui: &mut Ui, state: &mut State, pairing: &Pairing, now: f64) {
     let host = &pairing.host;
-    let mut leave = widgets::back_button(ui, "PCs").clicked()
-        || ui.input(|input| input.key_pressed(Key::Escape));
+    let mut leave = widgets::back_button(ui, "PCs").clicked() || widgets::back_asked(ui);
 
     ui.add_space((ui.available_height() * 0.08).clamp(8.0, 64.0));
     ui.vertical_centered(|ui| {

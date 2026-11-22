@@ -87,7 +87,7 @@ pub fn show(
     now: f64,
 ) -> Asked {
     let mut asked = Asked::default();
-    if widgets::back_button(ui, "PCs").clicked() {
+    if widgets::back_button(ui, "PCs").clicked() || widgets::back_asked(ui) {
         state.back(now);
         return asked;
     }

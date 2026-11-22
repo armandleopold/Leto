@@ -84,6 +84,80 @@ impl Pads {
     }
 }
 
+/// What a gamepad asks of Leto's own screens, outside a stream: the
+/// interface is gone through with it as with a keyboard.
+// A browser's gamepads go to the PC only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Press {
+    /// A or X: what is chosen on screen is opened, as a tap would.
+    Choose,
+    /// B: back to the screen before, as a back button would.
+    Back,
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// How far a stick goes for its direction to count, of the whole way.
+// A browser's gamepads go to the PC only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const STICK_COUNTS: f32 = 0.5;
+
+/// What each gamepad held when last looked at, to tell a press, which
+/// counts once, from a button held down.
+// A browser's gamepads go to the PC only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Default)]
+pub struct Menu {
+    held: Vec<(usize, Vec<Press>)>,
+}
+
+// A browser's gamepads go to the PC only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl Menu {
+    /// The gamepad `id` is in `state`: returns what it just pressed.
+    pub fn presses(&mut self, id: usize, state: &GamepadState) -> Vec<Press> {
+        let now = held(state);
+        // Android tells of a gamepad when it is first used: what it holds
+        // then was just pressed.
+        let before = match self.held.iter_mut().find(|(pad, _)| *pad == id) {
+            Some((_, before)) => std::mem::replace(before, now.clone()),
+            None => {
+                self.held.push((id, now.clone()));
+                Vec::new()
+            }
+        };
+        now.into_iter().filter(|press| !before.contains(press)).collect()
+    }
+
+    /// The gamepad `id` was unplugged.
+    pub fn unplugged(&mut self, id: usize) {
+        self.held.retain(|(pad, _)| *pad != id);
+    }
+}
+
+/// What `state` holds, for the interface: the arrows and the left stick
+/// both point.
+// A browser's gamepads go to the PC only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn held(state: &GamepadState) -> Vec<Press> {
+    let buttons = state.buttons;
+    let [x, y] = state.left_stick;
+    [
+        (buttons.contains(GamepadButtons::A) || buttons.contains(GamepadButtons::X), Press::Choose),
+        (buttons.contains(GamepadButtons::B), Press::Back),
+        (buttons.contains(GamepadButtons::UP) || y > STICK_COUNTS, Press::Up),
+        (buttons.contains(GamepadButtons::DOWN) || y < -STICK_COUNTS, Press::Down),
+        (buttons.contains(GamepadButtons::LEFT) || x < -STICK_COUNTS, Press::Left),
+        (buttons.contains(GamepadButtons::RIGHT) || x > STICK_COUNTS, Press::Right),
+    ]
+    .into_iter()
+    .filter_map(|(held, press)| held.then_some(press))
+    .collect()
+}
+
 /// `input` as the person chose to have it: with `swap` the buttons A and B
 /// change places, and X and Y, for gamepads labelled the other way round.
 pub fn as_chosen(input: Input, swap: bool) -> Input {
@@ -203,6 +277,27 @@ pub fn standard(buttons: &[(bool, f32)], axes: &[f32]) -> GamepadState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gamepad_goes_through_the_screens_with_a_press_at_a_time() {
+        let mut menu = Menu::default();
+        let state =
+            |buttons, left_stick| GamepadState { buttons, left_stick, ..GamepadState::default() };
+        // Android tells of a gamepad when it is first used: that is a press.
+        assert_eq!(menu.presses(1, &state(GamepadButtons::A, [0.0; 2])), [Press::Choose]);
+        assert!(menu.presses(1, &state(GamepadButtons::NONE, [0.0; 2])).is_empty());
+        assert_eq!(menu.presses(1, &state(GamepadButtons::X, [0.0; 2])), [Press::Choose]);
+        // Held, it counts once.
+        assert!(menu.presses(1, &state(GamepadButtons::X, [0.0; 2])).is_empty());
+        assert_eq!(menu.presses(1, &state(GamepadButtons::B, [0.0; 2])), [Press::Back]);
+        // The stick points as the arrows do, once it is well on its way.
+        assert!(menu.presses(1, &state(GamepadButtons::NONE, [0.3, 0.0])).is_empty());
+        assert_eq!(menu.presses(1, &state(GamepadButtons::NONE, [0.9, 0.0])), [Press::Right]);
+        assert_eq!(menu.presses(1, &state(GamepadButtons::DOWN, [0.9, 0.0])), [Press::Down]);
+        assert_eq!(menu.presses(1, &state(GamepadButtons::NONE, [0.0, 1.0])), [Press::Up]);
+        // Each gamepad on its own.
+        assert_eq!(menu.presses(2, &state(GamepadButtons::LEFT, [0.0; 2])), [Press::Left]);
+    }
 
     const REST: GamepadState = GamepadState {
         buttons: GamepadButtons::NONE,
