@@ -9,14 +9,20 @@ use std::{
     ffi::{CStr, CString, c_char, c_void},
     ptr,
     sync::OnceLock,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ndk_sys as sys;
 
-/// How long a picture is waited for, once its data went in. A decoder that
-/// keeps pictures longer gives them out with the next ones.
-const OUT_PATIENCE: Duration = Duration::from_millis(4);
+/// How much of the time between two pictures a picture is waited for, once
+/// its data went in. A decoder that keeps it longer gives it out with the
+/// next one, and only the newer of the two is shown: a Fire TV Stick takes
+/// about 8 ms, and waiting 4 ms lost 6 to 9 pictures of 60 each second.
+/// Three quarters still leave the rest of the time for the next picture's
+/// data to arrive.
+const OUT_PATIENCE: f32 = 0.75;
+/// How often the pictures given out together are told in the log.
+const TELL_EVERY: Duration = Duration::from_secs(5);
 /// How long a free input buffer is waited for.
 const IN_PATIENCE: Duration = Duration::from_millis(20);
 
@@ -57,6 +63,11 @@ pub struct Decoder {
     count: u64,
     /// The decoder's layout, once it said.
     shape: Option<Shape>,
+    /// How long a picture is waited for: see `OUT_PATIENCE`.
+    patience: Duration,
+    /// Pictures given out behind a newer one and so never shown, since the
+    /// log was last told, and when that was.
+    passed_over: (u64, Instant),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -85,7 +96,15 @@ impl Decoder {
         if codec.is_null() {
             return Err(format!("this phone has no {mime} decoder"));
         }
-        let decoder = Self { codec, name: name(codec), count: 0, shape: None };
+        let patience = Duration::from_secs_f32(OUT_PATIENCE / fps.max(1) as f32);
+        let decoder = Self {
+            codec,
+            name: name(codec),
+            count: 0,
+            shape: None,
+            patience,
+            passed_over: (0, Instant::now()),
+        };
         // SAFETY: a new format, freed below.
         let format = unsafe { sys::AMediaFormat_new() };
         let int = |key: &CStr, value: i32| {
@@ -175,7 +194,7 @@ impl Decoder {
     fn take(&mut self, show: Option<&mut dyn FnMut(Picture<'_>)>) -> Result<bool, String> {
         // Only the newest picture is shown: older ones are only late.
         let mut newest: Option<(usize, sys::AMediaCodecBufferInfo)> = None;
-        let mut patience = OUT_PATIENCE;
+        let mut patience = self.patience;
         loop {
             let mut info =
                 sys::AMediaCodecBufferInfo { offset: 0, size: 0, presentationTimeUs: 0, flags: 0 };
@@ -187,6 +206,7 @@ impl Decoder {
                 if let Some((older, _)) = newest.replace((index, info)) {
                     // SAFETY: an index the codec gave, given back once.
                     unsafe { sys::AMediaCodec_releaseOutputBuffer(self.codec, older, false) };
+                    self.passed_over.0 += 1;
                 }
                 // The next one only if it is there already.
                 patience = Duration::ZERO;
@@ -196,6 +216,7 @@ impl Decoder {
                 break;
             }
         }
+        self.tell();
         let Some((index, info)) = newest else { return Ok(false) };
         let read = match show {
             Some(show) => self.read(index, &info, show),
@@ -204,6 +225,21 @@ impl Decoder {
         // SAFETY: an index the codec gave, given back once.
         unsafe { sys::AMediaCodec_releaseOutputBuffer(self.codec, index, false) };
         read.map(|()| true)
+    }
+
+    /// Tells the log, every few seconds, of pictures that were never shown
+    /// because the decoder gave them out together with newer ones.
+    fn tell(&mut self) {
+        let (count, since) = self.passed_over;
+        if since.elapsed() >= TELL_EVERY {
+            if count > 0 {
+                log::info!(
+                    "the decoder gave out {count} pictures behind newer ones in {} s, not shown",
+                    TELL_EVERY.as_secs()
+                );
+            }
+            self.passed_over = (0, Instant::now());
+        }
     }
 
     fn read(
