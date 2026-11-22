@@ -483,7 +483,13 @@ impl eframe::App for LetoApp {
                                 }
                             }
                             (Door::Open, Screen::Pcs) => {
-                                match ui::pcs::show(ui, &mut self.state, HOSTS, now) {
+                                #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+                                let (own, shared) =
+                                    (self.sharing.own(&self.state.hosts), self.sharing.shared());
+                                #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+                                let (own, shared) = (Vec::new(), false);
+                                let this_pc = ui::pcs::ThisPc { hosts: HOSTS, own: &own, shared };
+                                match ui::pcs::show(ui, &mut self.state, this_pc, now) {
                                     Some(ui::pcs::Asked::Settings) => self.settings_open = true,
                                     Some(ui::pcs::Asked::ThisPc) => self.host_open = true,
                                     None => {}

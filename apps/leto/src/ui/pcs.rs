@@ -16,6 +16,8 @@ const GAP: f32 = 16.0;
 /// What the person did to a card.
 enum Chosen {
     Open(HostId),
+    /// The card of the PC Leto runs on.
+    ThisPc,
     Forget(HostId),
     Add,
 }
@@ -31,10 +33,22 @@ pub enum Asked {
     ThisPc,
 }
 
-/// `hosts`: this device can be shared, and has a button for it. Returns
-/// the screen the person asked for, if any.
-pub fn show(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Option<Asked> {
-    let settings = header(ui, state, hosts, now);
+/// What the list knows of the device Leto runs on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ThisPc<'a> {
+    /// It can be shared, and has a button for it.
+    pub hosts: bool,
+    /// The PCs of the list that are this very one: nobody streams a PC to
+    /// itself, so their card leads to sharing and not to pairing.
+    pub own: &'a [HostId],
+    /// It is shared at this moment.
+    pub shared: bool,
+}
+
+/// Returns the screen the person asked for, if any.
+pub fn show(ui: &mut Ui, state: &mut State, this_pc: ThisPc<'_>, now: f64) -> Option<Asked> {
+    let hosts = this_pc.hosts;
+    let mut settings = header(ui, state, hosts, now);
     ui.add_space(14.0);
 
     if let Some(notice) = &state.notice {
@@ -47,7 +61,7 @@ pub fn show(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Option<Ask
         return settings;
     }
 
-    let chosen = cards(ui, &state.hosts, &state.waking, state.add.open);
+    let chosen = cards(ui, &state.hosts, &state.waking, state.add.open, this_pc);
     if state.add.open {
         add_form(ui, state);
     }
@@ -56,6 +70,7 @@ pub fn show(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Option<Ask
         Some(Chosen::Open(id)) => state.open(&id, now),
         Some(Chosen::Forget(id)) => state.forget(&id),
         Some(Chosen::Add) => state.open_add_form(),
+        Some(Chosen::ThisPc) => settings = settings.or(Some(Asked::ThisPc)),
         None => {}
     }
     settings
@@ -93,7 +108,7 @@ fn titles(ui: &mut Ui, state: &State) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
         widgets::title(ui, "Your PCs");
-        if state.searching {
+        if state.searching && state.search_asked {
             widgets::waiting(ui, "Looking on your network…");
         } else {
             let line = match state.hosts.len() {
@@ -113,7 +128,7 @@ fn header_buttons(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Opti
         widgets::icon_button(ui, icons::refresh, "Search again")
     });
     if again.inner.clicked() {
-        state.search(now);
+        state.search_by_hand(now);
     }
     if widgets::icon_button(ui, icons::camera, super::devices::NAME).clicked() {
         state.check_devices();
@@ -131,7 +146,13 @@ fn header_buttons(ui: &mut Ui, state: &mut State, hosts: bool, now: f64) -> Opti
 const NARROW: f32 = 520.0;
 
 /// The grid of PCs, ending with the card that adds one.
-fn cards(ui: &mut Ui, hosts: &[HostSummary], waking: &[HostId], adding: bool) -> Option<Chosen> {
+fn cards(
+    ui: &mut Ui,
+    hosts: &[HostSummary],
+    waking: &[HostId],
+    adding: bool,
+    this_pc: ThisPc<'_>,
+) -> Option<Chosen> {
     let available = ui.available_width();
     let columns = (((available + GAP) / (CARD_MIN_WIDTH + GAP)).floor() as usize).clamp(1, 4);
     let width = (available - GAP * (columns as f32 - 1.0)) / columns as f32;
@@ -147,6 +168,9 @@ fn cards(ui: &mut Ui, hosts: &[HostSummary], waking: &[HostId], adding: bool) ->
             ui.spacing_mut().item_spacing.x = GAP;
             for slot in row {
                 let clicked = match slot {
+                    Some(host) if this_pc.own.contains(&host.id) => {
+                        own_card(ui, host, this_pc.shared, size).then_some(Chosen::ThisPc)
+                    }
                     Some(host) => host_card(ui, host, waking.contains(&host.id), size),
                     None => add_card(ui, size).then_some(Chosen::Add),
                 };
@@ -218,6 +242,52 @@ fn host_card(ui: &mut Ui, host: &HostSummary, waking: bool, size: Vec2) -> Optio
     }
 }
 
+/// The card of the PC Leto runs on: it is not streamed to itself, it is
+/// shared. Returns whether it was clicked.
+fn own_card(ui: &mut Ui, host: &HostSummary, shared: bool, size: Vec2) -> bool {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let state_text = if shared { "Shared with your devices" } else { "Not shared" };
+    response.widget_info(|| {
+        WidgetInfo::labeled(Role::Button, true, format!("{}, {THIS_PC}, {state_text}", host.name))
+    });
+    let lit = response.hovered() || response.has_focus();
+
+    let painter = ui.painter();
+    let fill = if lit { theme::surface_hover() } else { theme::surface() };
+    let border = if lit { theme::sun().gamma_multiply(0.7) } else { theme::line() };
+    painter.rect(rect, theme::CARD_RADIUS, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+
+    let tile = Rect::from_min_size(rect.min + vec2(16.0, 16.0), Vec2::splat(42.0));
+    painter.rect_filled(tile, theme::CONTROL_RADIUS, theme::sun());
+    icons::home(painter, tile.shrink(10.0), theme::on_sun());
+
+    let text_width = size.x - 32.0;
+    widgets::line(
+        painter,
+        rect.min + vec2(16.0, 70.0),
+        &host.name,
+        19.0,
+        theme::text(),
+        text_width,
+    );
+
+    let dot_center = rect.min + vec2(21.0, 109.0);
+    if shared {
+        painter.circle_filled(dot_center, 4.0, theme::ready());
+    } else {
+        painter.circle_stroke(dot_center, 3.5, Stroke::new(1.5, theme::dim()));
+    }
+    let state_pos = rect.min + vec2(33.0, 100.0);
+    let size = theme::SMALL + 0.5;
+    widgets::line(painter, state_pos, state_text, size, theme::text(), text_width - 17.0);
+
+    let detail = format!("{THIS_PC} · {}", host.kind.name());
+    let detail_pos = rect.min + vec2(16.0, 122.0);
+    widgets::line(painter, detail_pos, &detail, theme::SMALL - 0.5, theme::dim(), text_width);
+
+    response.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
 fn add_card(ui: &mut Ui, size: Vec2) -> bool {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Add a PC"));
@@ -283,7 +353,7 @@ fn nothing_found(ui: &mut Ui, state: &mut State, now: f64) {
             ui.add_enabled_ui(!state.searching, |ui| {
                 let again = ui.add_sized([150.0, 40.0], quiet("Search again"));
                 if again.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                    state.search(now);
+                    state.search_by_hand(now);
                 }
             });
         });

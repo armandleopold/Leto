@@ -7,9 +7,14 @@
 //! While this PC is shared, closing the window puts it away and Leto goes
 //! on beside the clock, on Windows, where an icon brings it back.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, UdpSocket},
+    time::{Duration, Instant},
+};
 
 use egui::{Align, Color32, Layout, RichText, Stroke, TextureHandle, TextureOptions, Ui, vec2};
+use leto_core::model::{HostId, HostSummary};
 use leto_host::{
     Companion, Options,
     apollo::{Apollo, Device, Error},
@@ -45,7 +50,12 @@ pub struct Sharing {
     /// What the camera that is being sent sees, and how many pictures had
     /// arrived when it was last drawn.
     camera: Option<(TextureHandle, u64)>,
-    /// The icon beside the clock, while this PC is shared.
+    /// The person asked for this PC to be shared, running or not.
+    wanted: bool,
+    /// Whether an address of the list of PCs is one of this very PC, for
+    /// each one asked about.
+    own: HashMap<String, bool>,
+    /// The icon beside the clock, for as long as Leto runs.
     #[cfg(windows)]
     tray: Option<tray_icon::TrayIcon>,
 }
@@ -57,6 +67,8 @@ impl Default for Sharing {
             devices: Vec::new(),
             devices_read: Instant::now(),
             camera: None,
+            wanted: false,
+            own: HashMap::new(),
             #[cfg(windows)]
             tray: None,
         }
@@ -68,6 +80,7 @@ impl Sharing {
     /// and does something when the setting changed. `window` is the handle
     /// of Leto's window, for the icon beside the clock to bring it back.
     pub fn follow(&mut self, wanted: bool, window: Option<isize>, ctx: &egui::Context) {
+        self.wanted = wanted;
         match (&self.state, wanted) {
             (State::Off, true) => self.start(),
             (State::Beside(_) | State::Stopped(..), false) => {
@@ -77,25 +90,38 @@ impl Sharing {
             _ => {}
         }
         #[cfg(windows)]
-        {
-            let serving = matches!(self.state, State::Beside(_));
-            if serving && self.tray.is_none() {
-                self.tray = window.and_then(|window| tray::start(window, ctx));
-            } else if !serving {
-                self.tray = None;
-            }
+        if self.tray.is_none() {
+            self.tray = window.and_then(|window| tray::start(window, ctx));
         }
         #[cfg(not(windows))]
         let _ = (window, ctx);
     }
 
-    /// Whether Leto goes on once its window is closed: while this PC is
-    /// shared and an icon beside the clock can bring the window back.
+    /// Whether Leto goes on once its window is closed: while the person
+    /// wants this PC shared and an icon beside the clock can bring the
+    /// window back.
     pub fn stays(&self) -> bool {
         #[cfg(windows)]
-        return self.tray.is_some();
+        return self.wanted && self.tray.is_some();
         #[cfg(not(windows))]
         false
+    }
+
+    /// This PC is shared at this moment.
+    pub const fn shared(&self) -> bool {
+        matches!(self.state, State::Beside(_))
+    }
+
+    /// The PCs of the list that are this very one: those at an address of
+    /// this computer.
+    pub fn own(&mut self, hosts: &[HostSummary]) -> Vec<HostId> {
+        hosts
+            .iter()
+            .filter(|host| {
+                *self.own.entry(host.address.clone()).or_insert_with(|| is_here(&host.address))
+            })
+            .map(|host| host.id.clone())
+            .collect()
     }
 
     /// Reads what Apollo keeps and starts beside it.
@@ -213,7 +239,7 @@ impl Sharing {
                 let sender = companion.sender();
                 devices(ui, &self.devices, sender.as_deref());
                 camera(ui, companion, sender.as_deref(), &mut self.camera);
-                if self.stays() {
+                if cfg!(windows) {
                     ui.add(
                         egui::Label::new(
                             widgets::dim(
@@ -234,6 +260,17 @@ impl Sharing {
         }
         back
     }
+}
+
+/// Whether `address` is one of this computer: the system only lets a
+/// socket be opened on an address it has. A name is not looked up, which
+/// could take seconds: the search finds PCs by their numbers. Not the
+/// loopback addresses either, which the search never finds: whoever adds
+/// one by hand is trying Leto against a stand-in host on the same computer.
+fn is_here(address: &str) -> bool {
+    address
+        .parse::<IpAddr>()
+        .is_ok_and(|address| !address.is_loopback() && UdpSocket::bind((address, 0)).is_ok())
 }
 
 /// The devices Apollo is paired with, and which may send a camera.
@@ -394,7 +431,7 @@ mod tray {
         menu.append_items(&[&open, &quit]).ok()?;
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
-            .with_tooltip("Leto: this PC is shared")
+            .with_tooltip("Leto")
             .with_menu(Box::new(menu))
             // A click opens the window, and the other button the menu.
             .with_menu_on_left_click(false)
@@ -432,5 +469,27 @@ mod tray {
             }
         }));
         Some(tray)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_address_of_this_computer_is_here_and_not_the_loopback() {
+        // An address of this computer, as the network knows it.
+        let here = UdpSocket::bind("0.0.0.0:0")
+            .and_then(|socket| socket.connect("192.0.2.1:9").and_then(|()| socket.local_addr()))
+            .map(|address| address.ip());
+        if let Ok(here) = here
+            && !here.is_loopback()
+        {
+            assert!(is_here(&here.to_string()));
+        }
+        // An address kept for documentation, which no computer has.
+        assert!(!is_here("192.0.2.1"));
+        assert!(!is_here("127.0.0.1"));
+        assert!(!is_here("armand-desktop"));
     }
 }
