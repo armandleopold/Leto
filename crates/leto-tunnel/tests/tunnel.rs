@@ -190,4 +190,52 @@ fn a_peer_that_does_not_know_this_key_lets_nothing_through() {
     let refused = laptop.connect(SocketAddrV4::new(HOME, 80), Duration::from_secs(1));
     assert!(refused.is_err());
     assert!(laptop.status().handshake.is_none());
+    // Nothing came back: the handshakes are counted, and no refusal is
+    // made up.
+    let silence = laptop.status().silence;
+    assert!(silence.tries >= 1, "{silence:?}");
+    assert_eq!((silence.refused, silence.answered_once), (0, false));
+}
+
+#[test]
+fn a_peer_that_answers_is_not_silent() {
+    let (home, laptop) = ends();
+    let at_home = home.bind(Some(7)).unwrap();
+    laptop.bind(None).unwrap().send_to(b"ping", SocketAddrV4::new(HOME, 7)).unwrap();
+    at_home.recv_from(WAIT).expect("the datagram arrives");
+    let silence = laptop.status().silence;
+    assert!(silence.answered_once);
+    assert_eq!((silence.tries, silence.refused), (0, 0));
+    assert_eq!(silence.explain("127.0.0.1", None), None);
+}
+
+/// The home end answers, but with a preshared key the laptop does not have:
+/// the answer is refused, and that is told apart from no answer at all.
+#[test]
+fn an_answer_with_other_keys_is_told_apart_from_none() {
+    let home_key = [1; 32];
+    let laptop_key = [2; 32];
+    let config = |private_key, address, peer, preshared_key, endpoint| Config {
+        private_key,
+        address,
+        mtu: 1420,
+        listen_port: None,
+        peer_public_key: public(peer),
+        preshared_key,
+        endpoint,
+        allowed: vec![Range { address: Ipv4Addr::new(10, 66, 0, 0), prefix: 24 }],
+        keepalive: None,
+    };
+    let home = Tunnel::start(config(home_key, HOME, laptop_key, Some([7; 32]), None)).unwrap();
+    let port = home.local_address().unwrap().port();
+    let endpoint = Some(format!("127.0.0.1:{port}"));
+    let laptop =
+        Tunnel::start(config(laptop_key, LAPTOP, home_key, Some([8; 32]), endpoint)).unwrap();
+    let deadline = std::time::Instant::now() + WAIT;
+    while laptop.status().silence.refused == 0 && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let silence = laptop.status().silence;
+    assert!(silence.refused >= 1, "{silence:?}");
+    assert!(laptop.status().handshake.is_none());
 }

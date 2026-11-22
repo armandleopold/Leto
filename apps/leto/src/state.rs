@@ -1418,6 +1418,7 @@ mod tests {
             running: false,
             handshake: None,
             problem: None,
+            silence: None,
         }
     }
 
