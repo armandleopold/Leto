@@ -18,6 +18,26 @@ pub fn heights() -> [f32; 2] {
     })
 }
 
+/// Hides the system's bars while `hide`, and on a phone's desktop its
+/// taskbar and the window's header too, so that the whole screen is the
+/// stream's and a tap at its edge is not the system's. A swipe from an edge
+/// shows them for a moment. Only a change is told; nothing off Android.
+pub fn hide(hide: bool) {
+    #[cfg(target_os = "android")]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static HIDDEN: AtomicBool = AtomicBool::new(false);
+        if HIDDEN.swap(hide, Ordering::Relaxed) == hide {
+            return;
+        }
+        if let Err(error) = crate::java::screen("bars", hide) {
+            log::warn!("Android was not asked about its bars: {error}");
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = hide;
+}
+
 #[cfg(target_os = "android")]
 mod android {
     use jni::{

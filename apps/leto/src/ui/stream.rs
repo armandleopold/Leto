@@ -314,6 +314,7 @@ impl Player {
             window::keep_pointer(ctx, false);
         }
         window::keep_keyboard(false);
+        leto_system::bars::hide(false);
         *self = Self::default();
     }
 
@@ -382,6 +383,8 @@ pub fn show(
     }
     window::keep_keyboard(keep);
     player.keyboard_kept = keep;
+    // A phone's bars, and its desktop's, leave the screen to the PC.
+    leto_system::bars::hide(view.connected);
     player.strokes.extend(window::keys().into_iter().map(KeyStroke::System));
 
     player.hole = None;

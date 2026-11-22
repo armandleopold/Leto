@@ -38,12 +38,13 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:banner="@drawable/tv_banner"
-        android:hasCode="false"
         android:allowBackup="false"
         android:extractNativeLibs="false"
         android:appCategory="productivity">
 
-        <!-- The whole app is Rust, drawn by egui in a NativeActivity. A turn
+        <!-- The app is Rust, drawn by egui in a NativeActivity, with one
+             small Java class for what Android only takes on its own thread
+             (`java/re/leto/app/Screen.java`). A turn
              of the phone or a keyboard plugged in resizes the window rather
              than starting the app again. -->
         <activity

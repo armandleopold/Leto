@@ -1,7 +1,11 @@
 //! Android's Java side, which some of what the app asks of the system is
 //! only reached through.
 
-use jni::{JNIEnv, JavaVM, errors::Result, objects::JObject};
+use jni::{
+    JNIEnv, JavaVM,
+    errors::Result,
+    objects::{JClass, JObject, JValue},
+};
 
 /// Runs `work` with the app's Java side, and clears what Java threw so
 /// that the next call into Java does not fail for it.
@@ -30,5 +34,34 @@ pub fn sdk() -> i32 {
                 log::warn!("the version of Android is unknown: {error}");
                 0
             })
+    })
+}
+
+/// Asks the app's own Java class, `re.leto.app.Screen`, to turn something
+/// of the window on or off. Android only changes a window on the thread
+/// that draws it, which that class goes to: the answer comes in Android's
+/// log, not here.
+pub fn screen(what: &str, on: bool) -> Result<()> {
+    with_java(|env, activity| {
+        // The app's classes are the activity's to find: a thread Rust
+        // started only knows Android's own.
+        let loader =
+            env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+        let name = env.new_string("re.leto.app.Screen")?;
+        let class = env
+            .call_method(
+                &loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        env.call_static_method(
+            JClass::from(class),
+            what,
+            "(Landroid/app/Activity;Z)V",
+            &[JValue::Object(activity), JValue::Bool(u8::from(on))],
+        )?;
+        Ok(())
     })
 }
