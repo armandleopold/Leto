@@ -12,6 +12,22 @@ step() { echo "::group::$*"; }
 done_() { echo "::endgroup::"; }
 failed=0
 fail() { echo "::error::$*"; failed=1; }
+# Where each thread of the app is, and what Android said about it: for an
+# app that hangs, which no screenshot explains. Told once.
+stuck=0
+where() {
+  [ "$stuck" = 1 ] && return
+  stuck=1
+  echo "::group::Where the app is stuck ($*)"
+  pid=$(adb shell pidof re.leto.app | tr -d '\r')
+  if [ -n "$pid" ]; then
+    adb shell debuggerd -b "$pid" 2>&1 | head -1500
+  else
+    echo "the app is not running"
+  fi
+  adb logcat -d -t 400 2>&1 | grep -v " V " | tail -300
+  echo "::endgroup::"
+}
 
 mkfifo host-in
 ./target/release/examples/serve --port 47989 --announce < host-in > host.log 2>&1 &
@@ -31,7 +47,7 @@ step "Add the PC by its address"
 # translates the arm64 app, up to half a minute: wait for the first screen.
 for try in $(seq 12); do
   screen accent 2-pcs && break
-  [ "$try" = 12 ] && fail "no Add a PC button"
+  [ "$try" = 12 ] && { fail "no Add a PC button"; where "no first screen"; }
   sleep 5
 done
 sleep 3
@@ -114,7 +130,7 @@ step "The app's log"
 adb logcat -d -s RustStdoutStderr:* main:* AndroidRuntime:E DEBUG:* > app.log
 tail -400 app.log
 # The emulator's decoders stand in for a phone's video hardware.
-grep -E "is decoded (by|on the)" app.log || fail "the app never said who decodes"
+grep -E "is decoded (by|on the)" app.log || { fail "the app never said who decodes"; where "no decoder found"; }
 done_
 
 # The screenshots are kept by the workflow, and printed small too, for
