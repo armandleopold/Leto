@@ -1219,6 +1219,10 @@ mod tests {
         // Unless the PC that is back takes none.
         state.apply(Event::Reconnecting { attempt: 1 }, 40.0);
         state.apply(playing(1, false), 41.0);
+        // It may still take the microphone beside the stream: until that
+        // is known, the microphone stays as the person left it.
+        assert_eq!(microphone(&state), &Mic::On);
+        state.apply(Event::Microphone { attempt: 1, taken: false }, 41.1);
         state.apply(camera_news(1, false), 41.1);
         assert_eq!(microphone(&state), &Mic::NotTaken);
         assert_eq!(camera(&state), &Cam::NotTaken);
