@@ -71,7 +71,10 @@ fn said(tunnel: &TunnelSummary) -> String {
     let state = match (&tunnel.problem, tunnel.running, tunnel.handshake) {
         (Some(problem), ..) => format!("does not work: {problem}"),
         (None, true, Some(ago)) => format!("open, the other end answered {ago} s ago"),
-        (None, true, None) => "open, the other end has not answered yet".to_owned(),
+        (None, true, None) => match &tunnel.silence {
+            Some(why) => format!("does not open: {why}"),
+            None => "open, the other end has not answered yet".to_owned(),
+        },
         (None, false, _) => "opens when a PC it leads to is looked for".to_owned(),
     };
     lines.push(format!("State:        {state}"));

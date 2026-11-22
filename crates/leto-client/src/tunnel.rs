@@ -124,9 +124,18 @@ impl Ways {
                 running: false,
                 handshake: None,
                 problem: Some(problem.clone()),
+                silence: None,
             });
         };
         let status = state.tunnel.as_ref().map(|tunnel| tunnel.status());
+        let silence = status.as_ref().and_then(|status| {
+            let peer = config.endpoint.as_deref()?;
+            // Only without a session: one that works is not silent.
+            if status.handshake.is_some() {
+                return None;
+            }
+            status.silence.explain(peer, status.endpoint)
+        });
         Some(TunnelSummary {
             address: config.address.to_string(),
             endpoint: config.endpoint.clone(),
@@ -135,6 +144,7 @@ impl Ways {
             running: state.tunnel.is_some(),
             handshake: status.as_ref().and_then(|status| status.handshake).map(|ago| ago.as_secs()),
             problem: status.and_then(|status| status.problem).or_else(|| state.problem.clone()),
+            silence,
         })
     }
 

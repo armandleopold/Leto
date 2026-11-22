@@ -55,6 +55,13 @@ const SOCKET_BUFFER: usize = 4 * 1024 * 1024;
 /// How long without an answer before the peer's name is looked up again:
 /// its address at home may have changed.
 const LOOK_UP_AGAIN: Duration = Duration::from_secs(30);
+/// How long without an answer before the silence is explained: a handshake
+/// is tried again every 5 seconds, so by then three went unanswered.
+const SILENCE: Duration = Duration::from_secs(15);
+/// How often a silence is written to the log.
+const TELL_AGAIN: Duration = Duration::from_secs(30);
+/// The first bytes of a WireGuard handshake initiation, and its length.
+const INITIATION: ([u8; 4], usize) = ([1, 0, 0, 0], 148);
 
 /// How the tunnel is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -68,6 +75,70 @@ pub struct Status {
     pub received: usize,
     /// Why the peer cannot be reached, if it cannot.
     pub problem: Option<String>,
+    /// What this end saw while the peer did not answer, or since it last
+    /// did.
+    pub silence: Silence,
+}
+
+/// What this end saw since the peer last answered, or since the tunnel
+/// opened if it never did: what tells a network that drops WireGuard from a
+/// server that does not know this end.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Silence {
+    /// How long since the peer last answered, or since the tunnel opened.
+    pub since: Duration,
+    /// Whether the peer ever answered since the tunnel opened.
+    pub answered_once: bool,
+    /// Handshakes sent that got no answer.
+    pub tries: u32,
+    /// Datagrams that came back but were not the peer's, or not for these
+    /// keys, and why the last one was refused.
+    pub refused: u32,
+    pub refusal: Option<String>,
+    /// The system said nothing listens at the peer's port: an ICMP "port
+    /// unreachable" came back. Windows tells it, Linux does not here.
+    pub unreachable: bool,
+    /// Why the system would not send the last datagram, if it would not.
+    pub send_error: Option<String>,
+}
+
+impl Silence {
+    /// Why the peer does not answer, in words for the person, once it has
+    /// been silent long enough to say. `peer` is the peer as the file names
+    /// it; `endpoint` where it was looked for.
+    pub fn explain(&self, peer: &str, endpoint: Option<SocketAddr>) -> Option<String> {
+        if self.since < SILENCE {
+            return None;
+        }
+        let at = match endpoint {
+            Some(endpoint) if endpoint.to_string() != peer => format!("{peer} ({endpoint})"),
+            _ => peer.to_owned(),
+        };
+        let port =
+            endpoint.map_or_else(|| "its".to_owned(), |endpoint| endpoint.port().to_string());
+        let seconds = self.since.as_secs();
+        Some(if let Some(error) = &self.send_error {
+            format!("this device cannot send to {at}: {error}.")
+        } else if self.refused > 0 {
+            format!(
+                "{at} answers, but the answer does not match this file's keys ({}). Check the \
+                 server's public key and the preshared key in the file.",
+                self.refusal.as_deref().unwrap_or("refused"),
+            )
+        } else if self.unreachable {
+            format!(
+                "nothing listens on UDP port {port} at {at}. Check the port in the file, and \
+                 that the router at home forwards it to the WireGuard server."
+            )
+        } else {
+            format!(
+                "no answer from {at} after {} handshakes in {seconds} s. Either the server \
+                 does not know this device's public key below, or the address is out of date, \
+                 or this network or the router at home drops UDP port {port}.",
+                self.tries,
+            )
+        })
+    }
 }
 
 /// One end of a WireGuard tunnel. Stops when dropped.
@@ -91,6 +162,51 @@ struct Shared {
     next_id: AtomicU16,
     stopped: AtomicBool,
     problem: Mutex<Option<String>>,
+    watch: Mutex<Watch>,
+}
+
+/// What [`Silence`] is made from.
+struct Watch {
+    /// When the peer last answered, or when the tunnel opened.
+    since: Instant,
+    answered_once: bool,
+    /// Where the peer last answered from.
+    answered_from: Option<SocketAddr>,
+    tries: u32,
+    refused: u32,
+    refusal: Option<String>,
+    unreachable: bool,
+    send_error: Option<String>,
+    /// When the silence was last written to the log.
+    told: Option<Instant>,
+}
+
+impl Watch {
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            answered_once: false,
+            answered_from: None,
+            tries: 0,
+            refused: 0,
+            refusal: None,
+            unreachable: false,
+            send_error: None,
+            told: None,
+        }
+    }
+
+    fn silence(&self) -> Silence {
+        Silence {
+            since: self.since.elapsed(),
+            answered_once: self.answered_once,
+            tries: self.tries,
+            refused: self.refused,
+            refusal: self.refusal.clone(),
+            unreachable: self.unreachable,
+            send_error: self.send_error.clone(),
+        }
+    }
 }
 
 struct WireGuard {
@@ -146,7 +262,15 @@ impl Tunnel {
             next_id: AtomicU16::new(1),
             stopped: AtomicBool::new(false),
             problem: Mutex::new(None),
+            watch: Mutex::new(Watch::new()),
         });
+        match (&shared.config.endpoint, endpoint) {
+            (Some(name), Some(found)) => log::info!(
+                "the tunnel's peer {name} is at {found}; this end sends from {}",
+                describe_local(&shared.socket)
+            ),
+            _ => log::info!("the tunnel waits for its peer to come"),
+        }
         shared.greet();
 
         let mut threads = Vec::new();
@@ -179,6 +303,7 @@ impl Tunnel {
             sent,
             received,
             problem: lock(&self.shared.problem).clone(),
+            silence: lock(&self.shared.watch).silence(),
         }
     }
 
@@ -270,9 +395,40 @@ impl Shared {
     }
 
     fn send(&self, datagram: &[u8], to: SocketAddr) {
-        if let Err(error) = self.socket.send_to(datagram, to) {
-            log::debug!("the tunnel could not send to {to}: {error}");
+        let result = self.socket.send_to(datagram, to);
+        let mut watch = lock(&self.watch);
+        match result {
+            Ok(_) => {
+                watch.send_error = None;
+                if datagram.len() == INITIATION.1 && datagram.starts_with(&INITIATION.0) {
+                    watch.tries += 1;
+                    log::debug!("the tunnel sent handshake {} to {to}", watch.tries);
+                }
+            }
+            Err(error) => {
+                if watch.send_error.is_none() {
+                    log::warn!("the tunnel could not send to {to}: {error}");
+                }
+                watch.send_error = Some(error.to_string());
+            }
         }
+    }
+
+    /// The peer answered and proved who it is, from `from`.
+    fn answered(&self, from: SocketAddr) {
+        let mut watch = lock(&self.watch);
+        if watch.answered_from != Some(from) || watch.since.elapsed() >= SILENCE {
+            if watch.answered_once {
+                log::info!("the tunnel's peer answers again, from {from}");
+            } else {
+                log::info!(
+                    "the tunnel's peer answered from {from} after {} handshakes in {} ms",
+                    watch.tries,
+                    watch.since.elapsed().as_millis()
+                );
+            }
+        }
+        *watch = Watch { answered_once: true, answered_from: Some(from), ..Watch::new() };
     }
 
     /// Reads what the peer sends, until the tunnel stops.
@@ -282,7 +438,16 @@ impl Shared {
         while !self.stopped.load(Ordering::SeqCst) {
             let (length, from) = match self.socket.recv_from(&mut datagram) {
                 Ok(received) => received,
-                // Nothing came, or, on Windows, a peer said nobody listens.
+                // On Windows, a peer said nobody listens at its port.
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                    let mut watch = lock(&self.watch);
+                    if !watch.unreachable {
+                        log::warn!("the tunnel's peer says nothing listens at its port");
+                    }
+                    watch.unreachable = true;
+                    continue;
+                }
+                // Nothing came.
                 Err(error) if is_passing(&error) => continue,
                 Err(error) => {
                     log::debug!("the tunnel could not read: {error}");
@@ -290,9 +455,11 @@ impl Shared {
                     continue;
                 }
             };
-            {
+            let mut refused = None;
+            let (proved, session) = {
                 let mut wireguard = lock(&self.wireguard);
                 let WireGuard { tunnel, endpoint, out, .. } = &mut *wireguard;
+                let before = tunnel.stats().0;
                 let mut first = Some(&datagram[..length]);
                 loop {
                     let result = match first.take() {
@@ -311,11 +478,31 @@ impl Shared {
                             *endpoint = Some(from);
                             arrived.push(packet.to_vec());
                         }
-                        TunnResult::Err(error) => note_refusal(error, from),
+                        TunnResult::Err(error) => {
+                            note_refusal(&error, from);
+                            refused = Some(error);
+                        }
                         TunnResult::WriteToTunnelV6(..) | TunnResult::Done => {}
                     }
                     break;
                 }
+                // A handshake that just ended: the peer is there.
+                let after = tunnel.stats().0;
+                (
+                    after.is_some_and(|after| before.is_none_or(|before| after < before)),
+                    after.is_some(),
+                )
+            };
+            if proved {
+                self.answered(from);
+            } else if let Some(error) = refused
+                && !session
+            {
+                // Without a session: late or doubled datagrams of one are no
+                // news.
+                let mut watch = lock(&self.watch);
+                watch.refused += 1;
+                watch.refusal = Some(format!("{error:?}"));
             }
             for packet in arrived.drain(..) {
                 self.deliver(packet);
@@ -384,6 +571,7 @@ impl Shared {
     /// WireGuard's timers: a new handshake when the keys are old, signs of
     /// life, and a peer known by name looked up again when it is silent.
     fn keep_up(&self, out: &mut [u8]) {
+        self.tell_silence();
         let look_up_again = {
             let mut wireguard = lock(&self.wireguard);
             let WireGuard { tunnel, endpoint, looked_up, .. } = &mut *wireguard;
@@ -408,7 +596,10 @@ impl Shared {
             // Not while holding WireGuard: a look-up can take seconds.
             match look_up(name) {
                 Ok(found) => {
-                    lock(&self.wireguard).endpoint = Some(found);
+                    let before = lock(&self.wireguard).endpoint.replace(found);
+                    if before != Some(found) {
+                        log::info!("the tunnel's peer {name} is now at {found}");
+                    }
                     *lock(&self.problem) = None;
                     self.greet();
                 }
@@ -417,6 +608,36 @@ impl Shared {
                     *lock(&self.problem) = Some(format!("{name} cannot be found: {error}"));
                 }
             }
+        }
+    }
+
+    /// Writes to the log why the peer does not answer, now and then while it
+    /// does not.
+    fn tell_silence(&self) {
+        let (endpoint, session) = {
+            let wireguard = lock(&self.wireguard);
+            (wireguard.endpoint, wireguard.tunnel.stats().0.is_some())
+        };
+        if session {
+            return;
+        }
+        let silence = {
+            let mut watch = lock(&self.watch);
+            let silence = watch.silence();
+            if silence.since < SILENCE || watch.told.is_some_and(|told| told.elapsed() < TELL_AGAIN)
+            {
+                return;
+            }
+            watch.told = Some(Instant::now());
+            silence
+        };
+        let peer = self.config.endpoint.as_deref().unwrap_or("the peer");
+        if let Some(why) = silence.explain(peer, endpoint) {
+            log::warn!(
+                "the tunnel is silent: {why} ({} refused, unreachable: {})",
+                silence.refused,
+                silence.unreachable
+            );
         }
     }
 
@@ -707,7 +928,15 @@ fn look_up(name: &str) -> io::Result<SocketAddr> {
     let mut found: Vec<SocketAddr> = name.to_socket_addrs()?.collect();
     // IPv4 first: the most common way home, and what the socket is.
     found.sort_by_key(SocketAddr::is_ipv6);
+    if found.len() > 1 {
+        log::debug!("the tunnel's peer {name} has the addresses {found:?}");
+    }
     found.into_iter().next().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no address"))
+}
+
+/// Where this end's socket is, for the log.
+fn describe_local(socket: &UdpSocket) -> String {
+    socket.local_addr().map_or_else(|error| format!("an unknown port ({error})"), |a| a.to_string())
 }
 
 /// An error a receiving socket gives that only means to go on.
@@ -723,10 +952,46 @@ fn is_passing(error: &io::Error) -> bool {
 
 /// A datagram WireGuard refused: someone else's, a duplicate, or a peer with
 /// other keys.
-fn note_refusal(error: WireGuardError, from: SocketAddr) {
+fn note_refusal(error: &WireGuardError, from: SocketAddr) {
     log::debug!("the tunnel refused a datagram from {from}: {error:?}");
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn silent(seconds: u64) -> Silence {
+        Silence { since: Duration::from_secs(seconds), tries: 4, ..Silence::default() }
+    }
+
+    #[test]
+    fn a_silence_is_explained_only_once_it_lasted() {
+        let at = Some(SocketAddr::from(([203, 0, 113, 7], 51821)));
+        assert_eq!(silent(5).explain("home.example.org:51821", at), None);
+        let why = silent(20).explain("home.example.org:51821", at).unwrap();
+        assert!(why.contains("home.example.org:51821 (203.0.113.7:51821)"), "{why}");
+        assert!(why.contains("after 4 handshakes in 20 s"), "{why}");
+        assert!(why.contains("public key"), "{why}");
+        assert!(why.contains("UDP port 51821"), "{why}");
+    }
+
+    #[test]
+    fn what_came_back_says_more_than_nothing() {
+        let at = Some(SocketAddr::from(([203, 0, 113, 7], 51821)));
+        let refused = Silence { refused: 2, refusal: Some("InvalidAeadTag".into()), ..silent(20) };
+        assert!(refused.explain("x:51821", at).unwrap().contains("InvalidAeadTag"));
+        let closed = Silence { unreachable: true, ..silent(20) };
+        assert!(closed.explain("x:51821", at).unwrap().contains("nothing listens"));
+        let blocked = Silence { send_error: Some("access denied".into()), ..closed };
+        assert!(blocked.explain("x:51821", at).unwrap().contains("cannot send"));
+        // A peer written as an address is not repeated.
+        let plain = silent(20).explain("203.0.113.7:51821", at).unwrap();
+        assert!(!plain.contains("(203.0.113.7"), "{plain}");
+    }
 }

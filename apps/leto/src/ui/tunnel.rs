@@ -111,7 +111,10 @@ fn status(summary: &TunnelSummary) -> (Color32, String) {
         (None, true, Some(ago)) => {
             (theme::dim(), format!("Open. {end} last answered {} minutes ago.", ago / 60))
         }
-        (None, true, None) => (theme::sun(), format!("Waiting for {end} to answer…")),
+        (None, true, None) => match &summary.silence {
+            Some(why) => (theme::problem(), format!("The tunnel does not open: {why}")),
+            None => (theme::sun(), format!("Waiting for {end} to answer…")),
+        },
         (None, false, _) => {
             (theme::dim(), format!("To {end}. It opens when a PC it leads to is looked for."))
         }
@@ -225,6 +228,7 @@ mod tests {
             running: true,
             handshake: Some(12),
             problem: None,
+            silence: None,
         }
     }
 
@@ -237,6 +241,12 @@ mod tests {
         );
         let waiting = TunnelSummary { handshake: None, ..summary() };
         assert_eq!(status(&waiting).0, theme::sun());
+        let silent = TunnelSummary {
+            silence: Some("no answer from home.example.org:51820 after 4 handshakes".into()),
+            ..waiting
+        };
+        assert_eq!(status(&silent).0, theme::problem());
+        assert!(status(&silent).1.contains("after 4 handshakes"));
         let quiet = TunnelSummary { handshake: Some(600), ..summary() };
         assert!(status(&quiet).1.contains("10 minutes ago"));
         let closed = TunnelSummary { running: false, handshake: None, ..summary() };
@@ -257,6 +267,7 @@ mod tests {
             running: false,
             handshake: None,
             problem: Some("the file has no PrivateKey".to_owned()),
+            silence: None,
         };
         let forms = [
             TunnelForm::default(),

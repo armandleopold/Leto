@@ -137,6 +137,11 @@ pub struct TunnelSummary {
     pub handshake: Option<u64>,
     /// Why the tunnel does not work, if Leto knows.
     pub problem: Option<String>,
+    /// Why the other end does not answer, once it has been silent for a
+    /// while: where Leto looked for it, how many handshakes went
+    /// unanswered, and the likely cause.
+    #[serde(default)]
+    pub silence: Option<String>,
 }
 
 /// One app a host offers to stream.
