@@ -67,7 +67,7 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name.value=='leto' || @.name.value=='leto-android' || @.name.value=='leto-bridge' || @.name.value=='leto-cli' || @.name.value=='leto-client' || @.name.value=='leto-core' || @.name.value=='leto-media' || @.name.value=='leto-protocol' || @.name.value=='leto-return' || @.name.value=='leto-system' || @.name.value=='leto-testhost' || @.name.value=='leto-tunnel' || @.name.value=='xtask')].version"
+          "jsonpath": "$.package[?(@.name.value=='leto' || @.name.value=='leto-android' || @.name.value=='leto-bridge' || @.name.value=='leto-cli' || @.name.value=='leto-client' || @.name.value=='leto-host' || @.name.value=='leto-core' || @.name.value=='leto-media' || @.name.value=='leto-protocol' || @.name.value=='leto-return' || @.name.value=='leto-system' || @.name.value=='leto-testhost' || @.name.value=='leto-tunnel' || @.name.value=='xtask')].version"
         }
       ]
     }
