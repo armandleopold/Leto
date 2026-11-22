@@ -28,6 +28,10 @@ use crate::{
 /// How often the screen looks at what changed while nobody touches it.
 const GLANCE: Duration = Duration::from_millis(250);
 
+/// How often it looks for a new picture while a camera is being sent:
+/// more often than a camera sends them.
+const PICTURE: Duration = Duration::from_millis(16);
+
 /// How often Apollo's list of devices is read again.
 const DEVICES_EVERY: Duration = Duration::from_secs(2);
 
@@ -252,7 +256,10 @@ impl Sharing {
                         .wrap(),
                     );
                 }
-                ui.ctx().request_repaint_after(GLANCE);
+                // A camera that is being sent moves: its pictures are
+                // shown as they come, not four times a second.
+                let pace = if companion.cameras().report().open { PICTURE } else { GLANCE };
+                ui.ctx().request_repaint_after(pace);
             }
         }
         if again {
