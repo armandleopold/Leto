@@ -287,16 +287,6 @@ fn tile(
         painter.galley(text, label, on_picture.text);
     }
 
-    if app.hdr {
-        let badge = Rect::from_min_size(
-            pos2(picture.right() - 46.0, picture.top() + 8.0),
-            vec2(38.0, 20.0),
-        );
-        painter.rect_filled(badge, 6, Color32::from_black_alpha(190));
-        let font = FontId::proportional(11.5);
-        painter.text(badge.center(), Align2::CENTER_CENTER, "HDR", font, on_picture.text);
-    }
-
     let title = pos2(rect.left() + 2.0, picture.bottom() + 8.0);
     let drawn =
         widgets::line(painter, title, &app.title, theme::BODY - 0.5, theme::text(), width - 4.0);

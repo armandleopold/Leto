@@ -19,6 +19,7 @@ pub mod clipboard;
 pub mod clock;
 #[cfg(target_os = "android")]
 pub mod decoder;
+pub mod desktop_mode;
 pub mod display;
 pub mod elevate;
 #[cfg(target_os = "android")]
@@ -29,6 +30,7 @@ pub mod pane;
 pub mod permission;
 pub mod shown;
 pub mod task;
+pub mod television;
 pub mod vcam;
 
 #[cfg(target_os = "android")]
