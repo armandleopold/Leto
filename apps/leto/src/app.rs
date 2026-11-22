@@ -99,14 +99,10 @@ impl LetoApp {
     }
 
     /// During a stream: has the graphics card that decodes the pictures
-    /// show them itself, when the person asked for that, on a pane it keeps
-    /// over the place the window leaves them, less what the window shows
-    /// there.
+    /// show them itself, on a pane it keeps over the place the window leaves
+    /// them, less what the window shows there. Where no pane opens, or the
+    /// card cannot show pictures on it, the window draws them as before.
     fn place_pane(&mut self, ctx: &egui::Context, window: &eframe::Frame) {
-        if !self.settings.straight_to_screen {
-            self.close_pane();
-            return;
-        }
         if self.pane.is_none() && !self.pane_refused {
             self.pane = window_of(window).and_then(Pane::open);
             self.pane_refused = self.pane.is_none();
@@ -229,11 +225,14 @@ impl eframe::App for LetoApp {
             for press in self.backend.gamepad_presses() {
                 gamepad_press(ctx, raw_input, press, nothing_chosen);
             }
+<<<<<<< HEAD
             if nothing_chosen {
                 for press in remote_presses(raw_input) {
                     gamepad_press(ctx, raw_input, press, nothing_chosen);
                 }
             }
+=======
+>>>>>>> origin/main
         }
         // Gamepads say nothing to a stream that is connected: they go to
         // the PC, on their own way.
@@ -344,7 +343,7 @@ impl eframe::App for LetoApp {
                 self.backend.mute(self.settings.mute_in_background && pace != Pace::Full);
                 self.backend.allow_graphics_card(self.settings.decoder.hardware());
                 let keeps = self.card.as_ref().is_some_and(OnCard::keeps);
-                self.backend.keep_on_card(self.settings.keep_on_card && keeps);
+                self.backend.keep_on_card(keeps);
                 if let Some(picture) = self.backend.take_picture() {
                     self.player.picture(ui.ctx(), picture, self.card.as_ref());
                 }
@@ -658,6 +657,7 @@ fn gamepad_press(
     raw_input.events.extend(pressed(key));
 }
 
+<<<<<<< HEAD
 /// Takes out of `raw_input` the arrows and Enter pressed while nothing is
 /// chosen, for [`gamepad_press`] to start from the first choice of the
 /// screen, as a gamepad does: a television's remote has only those, and
@@ -685,6 +685,8 @@ fn remote_presses(raw_input: &mut egui::RawInput) -> Vec<Press> {
     presses
 }
 
+=======
+>>>>>>> origin/main
 /// The name of the screen under the settings, for their back button.
 fn back_to(screen: &Screen) -> &str {
     match screen {
@@ -725,6 +727,47 @@ fn build_line() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs one frame with what a gamepad pressed, over two buttons, the
+    /// first of which is the screen's first choice. Returns which button
+    /// was clicked, and which is chosen after the frame.
+    fn pads_frame(ctx: &egui::Context, presses: &[Press]) -> (Option<usize>, Option<usize>) {
+        let mut raw = egui::RawInput::default();
+        let nothing_chosen = ctx.memory(|memory| memory.focused().is_none());
+        for press in presses {
+            gamepad_press(ctx, &mut raw, *press, nothing_chosen);
+        }
+        let (mut clicked, mut ids) = (None, Vec::new());
+        let mut output = ctx.run_ui(raw, |ui| {
+            for index in 0..2 {
+                let button = ui.button(format!("Choice {index}"));
+                let open = index == 0 && widgets::first_choice(ui, &button);
+                if button.clicked() || open {
+                    clicked = Some(index);
+                }
+                ids.push(button.id);
+            }
+        });
+        output.textures_delta.clear();
+        let chosen = ctx.memory(|memory| memory.focused());
+        (clicked, ids.iter().position(|id| Some(*id) == chosen))
+    }
+
+    #[test]
+    fn a_gamepad_chooses_and_opens_as_a_keyboard_would() {
+        let ctx = egui::Context::default();
+        pads_frame(&ctx, &[]);
+        // Nothing chosen yet: A opens the first choice at once.
+        assert_eq!(pads_frame(&ctx, &[Press::Choose]), (Some(0), Some(0)));
+        // Then the arrows go from one choice to the next, and A opens it.
+        assert_eq!(pads_frame(&ctx, &[Press::Down]), (None, Some(1)));
+        assert_eq!(pads_frame(&ctx, &[Press::Choose]), (Some(1), Some(1)));
+        // B is Escape: back, and nothing chosen any more.
+        assert_eq!(pads_frame(&ctx, &[Press::Back]), (None, None));
+        // Pointing while nothing is chosen chooses the first, and opens
+        // nothing.
+        assert_eq!(pads_frame(&ctx, &[Press::Right]), (None, Some(0)));
+    }
 
     #[test]
     fn a_remotes_arrows_and_enter_start_from_the_first_choice() {
