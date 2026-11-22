@@ -108,6 +108,7 @@ mod desktop {
         // A monitor the phone is plugged into says its own pixels and pace;
         // the window may be smaller on it, in the system's desktop.
         if let Some(display::Mode { width, height, refresh_hz }) = display::plugged() {
+            let (width, height, refresh_hz) = within_phone((width, height, refresh_hz));
             return Some(ScreenMode { width, height, refresh_hz });
         }
         let size = monitor? * scale;
@@ -185,6 +186,45 @@ mod desktop {
         leto_media::decodable().hardware.contains(leto_core::engine::Codec::H264)
     }
 
+    /// The most pixels a second a phone is asked to show from a stream:
+    /// its own screen, 2856 by 1280 sixty times a second, plays well; a
+    /// monitor at 1440p and 144 Hz, more than twice that, froze the app.
+    /// Each picture is decoded on the video hardware, then copied by the
+    /// processor into what the window draws.
+    #[cfg(any(target_os = "android", test))]
+    const PHONE_PIXEL_RATE: u64 = 2560 * 1440 * 60;
+
+    /// The pace a monitor is never asked below for the sake of
+    /// [`PHONE_PIXEL_RATE`]: fewer pixels are asked for first.
+    #[cfg(any(target_os = "android", test))]
+    const PHONE_LEAST_PACE: u32 = 60;
+
+    /// A monitor's `(width, height, pace)` brought within
+    /// [`PHONE_PIXEL_RATE`]: a lower pace first, down to
+    /// [`PHONE_LEAST_PACE`], then fewer pixels in the same shape, with a
+    /// width the encoders take (a multiple of 8) and an even height.
+    #[cfg(any(target_os = "android", test))]
+    fn within_phone((width, height, pace): (u32, u32, u32)) -> (u32, u32, u32) {
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels == 0 || pixels * u64::from(pace) <= PHONE_PIXEL_RATE {
+            return (width, height, pace);
+        }
+        let least = PHONE_LEAST_PACE.min(pace);
+        let fits = u32::try_from(PHONE_PIXEL_RATE / pixels).unwrap_or(u32::MAX);
+        // The highest pace screens are sold with that fits, if any.
+        if let Some(fitting) = [120, 100, 90, 75, 60].into_iter().find(|&p| p < pace && p <= fits)
+            && fitting >= least
+        {
+            return (width, height, fitting);
+        }
+        let most = PHONE_PIXEL_RATE / u64::from(least);
+        // Width and height shrink alike: by the square root of the excess.
+        let shrink = (most as f64 / pixels as f64).sqrt();
+        let width = ((f64::from(width) * shrink) as u32 / 8 * 8).max(8);
+        let height = ((f64::from(height) * shrink) as u32 / 2 * 2).max(2);
+        (width, height, least)
+    }
+
     /// The most a phone without a hardware decoder asks for on its short
     /// side. OpenH264 on its processor falls behind at its whole screen
     /// (2400 by 1080 and the like): the first picture came and no other.
@@ -207,7 +247,23 @@ mod desktop {
 
     #[cfg(test)]
     mod tests {
-        use super::phone;
+        use super::{phone, within_phone};
+
+        #[test]
+        fn a_monitor_too_fast_for_a_phone_is_asked_slower_then_smaller() {
+            assert_eq!(within_phone((2856, 1280, 60)), (2856, 1280, 60));
+            assert_eq!(within_phone((1920, 1080, 60)), (1920, 1080, 60));
+            assert_eq!(within_phone((1920, 1080, 144)), (1920, 1080, 100));
+            assert_eq!(within_phone((1920, 1080, 120)), (1920, 1080, 100));
+            assert_eq!(within_phone((2560, 1440, 144)), (2560, 1440, 60));
+            assert_eq!(within_phone((2560, 1440, 60)), (2560, 1440, 60));
+            assert_eq!(within_phone((3840, 2160, 60)), (2560, 1440, 60));
+            assert_eq!(within_phone((3840, 2160, 30)), (3616, 2036, 30));
+            let (width, height, pace) = within_phone((3440, 1440, 100));
+            assert_eq!(pace, 60);
+            assert!(u64::from(width * height) * 60 <= 2560 * 1440 * 60, "{width}x{height}");
+            assert!(width % 8 == 0 && height % 2 == 0 && width > height * 2);
+        }
 
         #[test]
         fn a_phone_decoding_on_its_processor_asks_for_720_lines() {
