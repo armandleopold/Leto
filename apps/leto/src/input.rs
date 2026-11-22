@@ -33,6 +33,33 @@ pub const fn hides_its_pointer(kind: HostKind) -> bool {
 /// nothing then asks the pointer back.
 pub const HAS_POINTER: bool = !cfg!(target_os = "android");
 
+/// How wide the band along each edge of the picture is, in points, where a
+/// pointer counts as nearer the edge than it is: the half of it by the edge
+/// is the edge itself. A finger cannot touch the last row of a phone's
+/// screen, and the system keeps the edges of the screen for its own
+/// gestures and bars, on a phone as on its desktop on a monitor: the PC's
+/// taskbar that hides itself, and the buttons in the corner of a window
+/// that fills its screen, were out of reach. Nothing where a mouse reaches
+/// the edges of its window.
+const EDGE_BAND: f32 = if cfg!(target_os = "android") { 24.0 } else { 0.0 };
+
+/// Where a pointer at `at` along a picture `length` long counts as being,
+/// with a `band` along each end: the outer half of a band is the end
+/// itself, and the inner half stretches over the whole band, so that
+/// nothing jumps. A picture too short for two bands is left as it is.
+fn near_edge(at: f32, length: f32, band: f32) -> f32 {
+    if band <= 0.0 || length < band * 4.0 {
+        return at;
+    }
+    if at < band {
+        (at * 2.0 - band).max(0.0)
+    } else if at > length - band {
+        length - ((length - at) * 2.0 - band).max(0.0)
+    } else {
+        at
+    }
+}
+
 /// The letter of [`hides_its_pointer`]'s shortcut.
 const POINTER_SWITCH: char = 'N';
 
@@ -352,9 +379,11 @@ impl Controls {
         };
         let (last_x, last_y) = (width - 1, height - 1);
         let on = |points: f32, last: i16| (points * scale).round().clamp(0.0, f32::from(last));
+        let x = near_edge(pointer.x - place.left(), place.width(), EDGE_BAND);
+        let y = near_edge(pointer.y - place.top(), place.height(), EDGE_BAND);
         self.push(Input::MousePosition {
-            x: on(pointer.x - place.left(), last_x) as i16,
-            y: on(pointer.y - place.top(), last_y) as i16,
+            x: on(x, last_x) as i16,
+            y: on(y, last_y) as i16,
             width: last_x,
             height: last_y,
         });
@@ -509,6 +538,26 @@ fn whole(amount: &mut Vec2) -> [i16; 2] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pointer_near_an_edge_of_the_picture_counts_as_on_it() {
+        use super::near_edge;
+        // No band: where it is.
+        assert_eq!(near_edge(3.0, 800.0, 0.0), 3.0);
+        // The outer half of the band is the edge, at both ends.
+        assert_eq!(near_edge(0.0, 800.0, 24.0), 0.0);
+        assert_eq!(near_edge(12.0, 800.0, 24.0), 0.0);
+        assert_eq!(near_edge(790.0, 800.0, 24.0), 800.0);
+        // The inner half stretches, and meets the rest without a jump.
+        assert_eq!(near_edge(18.0, 800.0, 24.0), 12.0);
+        assert_eq!(near_edge(24.0, 800.0, 24.0), 24.0);
+        assert_eq!(near_edge(776.0, 800.0, 24.0), 776.0);
+        assert_eq!(near_edge(400.0, 800.0, 24.0), 400.0);
+        // Outside the picture is still its edge, once clamped.
+        assert!(near_edge(-5.0, 800.0, 24.0) <= 0.0);
+        // A picture too short is left alone.
+        assert_eq!(near_edge(5.0, 60.0, 24.0), 5.0);
+    }
+
     use egui::pos2;
 
     use super::*;

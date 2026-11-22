@@ -13,6 +13,8 @@
 
 use leto_core::input::Key;
 
+#[cfg(target_os = "android")]
+mod android;
 #[cfg(windows)]
 mod windows;
 
@@ -37,7 +39,14 @@ pub struct Stroke {
 pub fn capture(on: bool) -> bool {
     #[cfg(windows)]
     return windows::capture(on);
-    #[cfg(not(windows))]
+    // Android gives its own shortcuts to the window, where it gives them
+    // at all: the stream has what its window gets.
+    #[cfg(target_os = "android")]
+    {
+        android::capture(on);
+        false
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
     {
         let _ = on;
         false
