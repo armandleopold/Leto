@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.0.4](https://github.com/armandleopold/Leto/compare/v0.0.3...v0.0.4) (2026-11-22)
+
+
+### Features
+
+* **android:** a stream has the whole screen, without Android's bars, and its keyboard shortcuts ([#75](https://github.com/armandleopold/Leto/issues/75)) ([04a1632](https://github.com/armandleopold/Leto/commit/04a1632914e5b932f8637f283802791d0c09eecf))
+* **stream:** show whether the picture travels encrypted, and note it in the log ([#71](https://github.com/armandleopold/Leto/issues/71)) ([6adc85e](https://github.com/armandleopold/Leto/commit/6adc85ea466492dec9acbdae7957d41ada0a3fee))
+
+
+### Bug fixes
+
+* **android:** full screen on a monitor without the freeze, edges of the PC's screen within reach, and the Windows key sent to the PC ([#73](https://github.com/armandleopold/Leto/issues/73)) ([94dd7fd](https://github.com/armandleopold/Leto/commit/94dd7fd0dac4d719d11b9158ed8c992d056a0459))
+* **android:** smooth sound and pictures on a Fire TV ([#72](https://github.com/armandleopold/Leto/issues/72)) ([c927d1c](https://github.com/armandleopold/Leto/commit/c927d1cc12969b52481ea0bcf792380658863a77))
+
 ## [0.0.3](https://github.com/armandleopold/Leto/compare/v0.0.2...v0.0.3) (2026-11-22)
 
 
