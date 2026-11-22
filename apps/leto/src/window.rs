@@ -53,6 +53,8 @@ mod desktop {
     pub fn keep_pointer(ctx: &Context, keep: bool) {
         let grab = if keep { KEEP_POINTER } else { CursorGrab::None };
         ctx.send_viewport_cmd(ViewportCommand::CursorGrab(grab));
+        // Android's window has no such command: its Java side is asked.
+        leto_system::bars::keep_mouse(keep);
     }
 
     /// Whether the pointer was taken back since it was last kept. A desktop

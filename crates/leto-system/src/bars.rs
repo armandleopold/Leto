@@ -1,5 +1,6 @@
 //! The system's bars over the window: on Android the status bar at the top
-//! and the navigation bar at the bottom, which the app draws under.
+//! and the navigation bar at the bottom, which the app draws under. And its
+//! pointer, which a stream may ask it to take away with them.
 
 use std::sync::OnceLock;
 
@@ -36,6 +37,18 @@ pub fn hide(hide: bool) {
     }
     #[cfg(not(target_os = "android"))]
     let _ = hide;
+}
+
+/// Keeps the mouse for the window while `keep`, on Android: its pointer
+/// leaves the screen and the mouse tells how far it moved. Nothing
+/// elsewhere, where the window's own toolkit does it.
+pub fn keep_mouse(keep: bool) {
+    #[cfg(target_os = "android")]
+    if let Err(error) = crate::java::screen("pointer", keep) {
+        log::warn!("Android was not asked for the mouse: {error}");
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = keep;
 }
 
 #[cfg(target_os = "android")]

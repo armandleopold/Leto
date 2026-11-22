@@ -93,4 +93,35 @@ public final class Screen {
             }
         });
     }
+
+    /**
+     * Keeps the mouse for the window while {@code keep}: Android's pointer
+     * leaves the screen, and the mouse tells how far it moved rather than
+     * where a pointer is, which is what a game on the PC wants. Android
+     * lets go of it by itself when the window is no longer in front.
+     */
+    public static void pointer(final Activity activity, final boolean keep) {
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Window window = activity.getWindow();
+                    View view = window.getCurrentFocus();
+                    if (view == null) {
+                        view = window.getDecorView();
+                    }
+                    if (keep) {
+                        view.setFocusable(true);
+                        view.requestFocus();
+                        view.requestPointerCapture();
+                    } else {
+                        view.releasePointerCapture();
+                    }
+                    Log.i(TAG, keep ? "the mouse is asked for the window" : "the mouse is given back");
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "Android keeps its pointer: " + error);
+                }
+            }
+        });
+    }
 }
