@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/armandleopold/Leto/compare/v0.0.4...v0.0.5) (2026-11-22)
+
+
+### Bug fixes
+
+* **android:** draw a picture from its part of the decoder's buffer, without the green lines under it ([#77](https://github.com/armandleopold/Leto/issues/77)) ([01b3894](https://github.com/armandleopold/Leto/commit/01b389486197fbf8a91d39d86740267d7d5f37ce))
+
 ## [0.0.4](https://github.com/armandleopold/Leto/compare/v0.0.3...v0.0.4) (2026-11-22)
 
 
