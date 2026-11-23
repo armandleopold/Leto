@@ -404,7 +404,8 @@ impl eframe::App for LetoApp {
         // While this PC is shared, closing the window only puts it away:
         // Leto goes on beside the clock.
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-        self.sharing.follow(self.settings.share_this_pc, window_of(window), ui.ctx());
+        let (share, cable) = (self.settings.share_this_pc, self.settings.cable.as_deref());
+        self.sharing.follow(share, cable, window_of(window), ui.ctx());
         let put_away = self.put_away(window);
         let close = ui.input(|input| input.viewport().close_requested());
         if close

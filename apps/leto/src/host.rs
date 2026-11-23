@@ -66,6 +66,8 @@ pub struct Sharing {
     camera: Option<(TextureHandle, u64)>,
     /// The person asked for this PC to be shared, running or not.
     wanted: bool,
+    /// The sound output the person chose for a device's microphone.
+    cable: Option<String>,
     /// Whether an address of the list of PCs is one of this very PC, for
     /// each one asked about.
     own: HashMap<String, bool>,
@@ -83,6 +85,7 @@ impl Default for Sharing {
             registered: registered::Registered::default(),
             camera: None,
             wanted: false,
+            cable: None,
             own: HashMap::new(),
             #[cfg(windows)]
             tray: None,
@@ -92,10 +95,25 @@ impl Default for Sharing {
 
 impl Sharing {
     /// Shares this PC or stops, as the setting says: called every frame,
-    /// and does something when the setting changed. `window` is the handle
-    /// of Leto's window, for the icon beside the clock to bring it back.
-    pub fn follow(&mut self, wanted: bool, window: Option<isize>, ctx: &egui::Context) {
+    /// and does something when the setting changed. `cable` is the setting
+    /// of the sound output a device's microphone plays on. `window` is the
+    /// handle of Leto's window, for the icon beside the clock to bring it
+    /// back.
+    pub fn follow(
+        &mut self,
+        wanted: bool,
+        cable: Option<&str>,
+        window: Option<isize>,
+        ctx: &egui::Context,
+    ) {
         self.wanted = wanted;
+        if self.cable.as_deref() != cable {
+            self.cable = cable.map(str::to_owned);
+        }
+        // Whether or not the screen of this PC was ever opened.
+        if let State::Beside(_, _, voicing) = &self.state {
+            voicing.choose(cable);
+        }
         match (&self.state, wanted) {
             (State::Off, true) => self.start(),
             (State::Beside(..) | State::Stopped(..), false) => {
@@ -147,7 +165,7 @@ impl Sharing {
             Ok(apollo) => match Companion::start(apollo, &Options::default()) {
                 Ok(companion) => {
                     let handing = apps::Handing::start(companion.watch());
-                    let voicing = voice::Voicing::start(companion.watch());
+                    let voicing = voice::Voicing::start(companion.watch(), self.cable.clone());
                     State::Beside(companion, handing, voicing)
                 }
                 Err(error) => State::Stopped(
@@ -499,7 +517,6 @@ fn microphone(
     cable: &mut Option<String>,
 ) {
     card(ui, "Microphone", |ui| {
-        voicing.choose(cable.clone());
         let Some(heard_as) = voicing.heard_as() else {
             let said = match cable {
                 Some(output) => format!(
@@ -643,8 +660,9 @@ mod voice {
     }
 
     impl Voicing {
-        pub fn start(cameras: Arc<Cameras>) -> Self {
-            let told = Arc::new(Told::default());
+        /// `chosen` is the sound output the person chose, if any.
+        pub fn start(cameras: Arc<Cameras>, chosen: Option<String>) -> Self {
+            let told = Arc::new(Told { chosen: Mutex::new(chosen), ..Told::default() });
             let spawned = thread::Builder::new().name("microphone to apps".to_owned()).spawn({
                 let told = Arc::clone(&told);
                 move || run(&cameras, &told)
@@ -664,8 +682,11 @@ mod voice {
 
         /// Plays on this sound output from now on, or on the first cable
         /// Leto knows with `None`.
-        pub fn choose(&self, output: Option<String>) {
-            *self.told.chosen.lock().unwrap_or_else(PoisonError::into_inner) = output;
+        pub fn choose(&self, output: Option<&str>) {
+            let mut chosen = self.told.chosen.lock().unwrap_or_else(PoisonError::into_inner);
+            if chosen.as_deref() != output {
+                *chosen = output.map(str::to_owned);
+            }
         }
 
         /// The sound outputs of this PC, as last looked at.
