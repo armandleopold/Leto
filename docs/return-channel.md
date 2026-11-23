@@ -217,6 +217,16 @@ arrives after a later one is left out, so a packet somebody recorded is never
 heard twice. One device sends its microphone at a time, with the same rules
 as the camera (403, 409, five seconds of silence).
 
+A PC whose `info` also says `"losslessMicrophone":true` takes the voice with
+nothing compressed, and the desktop and Android clients then send it so:
+packets of type `0x63`, the same header and seal, whose frame is five
+milliseconds of samples (240 samples of 24 bits, little endian, mono, 48
+kHz: 720 bytes). The PC tells the two apart by the packet type, so a client
+may send either. About 1.2 Mbit/s with the headers, which every network that
+carries the pictures carries too. The browser keeps Opus, and so does a
+microphone sent inside the stream, which only Opus fits. Opus goes at 128
+kbit/s.
+
 ### Camera packets
 
 UDP from client to host, to the port of the answer (the base port + 13 by

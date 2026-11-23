@@ -18,6 +18,7 @@ use std::{
 use leto_core::{
     engine::{AppsProblem, Event, ImageFile, Request, StreamEnd},
     input::Input,
+    model::VoiceCoding,
 };
 
 use crate::{
@@ -93,6 +94,9 @@ struct Watching {
     cameras: u64,
     /// The way of this device's microphone to that PC, beside the stream.
     voice: Voice,
+    /// The PC takes the microphone beside the stream as samples too,
+    /// nothing compressed.
+    lossless: bool,
 }
 
 /// The microphone of this device on its way to a PC that takes none inside
@@ -266,16 +270,20 @@ impl<S: Shell> Service<S> {
     /// A PC that takes the microphone beside the stream (see
     /// [`Event::Microphone`]) is asked for the way there at the first frame,
     /// and the frames until it answered do not leave.
-    pub fn microphone(&self, at: Duration, frame: &[u8]) -> bool {
+    pub fn microphone(&self, at: Duration, frame: &[u8], coding: VoiceCoding) -> bool {
         let mut watching = lock(&self.watching);
         let Some(session) = watching.session.as_ref().filter(|session| !session.is_over()) else {
             return false;
         };
         if session.takes_microphone() {
-            return session.send_microphone(at, frame);
+            // Inside the stream, only Opus.
+            return coding == VoiceCoding::Opus && session.send_microphone(at, frame);
+        }
+        if coding == VoiceCoding::Pcm && !watching.lossless {
+            return false;
         }
         match &mut watching.voice {
-            Voice::Open(link) => link.send(at, frame),
+            Voice::Open(link) => link.send(at, frame, coding),
             Voice::Offered => {
                 watching.voice = Voice::Opening;
                 let (stream, attempt) = (watching.connected, watching.wanted);
@@ -287,6 +295,15 @@ impl<S: Shell> Service<S> {
             }
             Voice::No | Voice::Opening => false,
         }
+    }
+
+    /// How this device's microphone is best sent to the PC being watched:
+    /// as samples, nothing lost, to a PC that takes them beside the stream,
+    /// and in Opus otherwise.
+    pub fn microphone_coding(&self) -> VoiceCoding {
+        let watching = lock(&self.watching);
+        let inside = watching.session.as_ref().is_some_and(|session| session.takes_microphone());
+        if watching.lossless && !inside { VoiceCoding::Pcm } else { VoiceCoding::Opus }
     }
 
     /// Asks `host` for the way of the microphone, for the stream of this
@@ -541,6 +558,7 @@ fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
     let encrypted = session.encrypted();
     let before = now.session.replace(session);
     now.voice = Voice::No;
+    now.lossless = false;
     now.host = Some(host.clone());
     now.connected += 1;
     let number = now.connected;
@@ -561,6 +579,7 @@ fn start<S: Shell>(stream: &Arc<Stream<S>>) -> Result<(), NotStarted> {
             let still = watching.connected == number && watching.wanted == Some(attempt);
             if still && offer.microphone {
                 watching.voice = Voice::Offered;
+                watching.lossless = offer.lossless_microphone;
             }
             drop(watching);
             shell.tell(Event::Microphone { attempt, taken: offer.microphone });

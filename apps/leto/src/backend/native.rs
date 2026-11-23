@@ -18,7 +18,7 @@ use leto_client::{
 };
 use leto_media::{
     Camera, CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Sending, Speaker,
-    VOICE_FRAME,
+    VoiceCoding,
 };
 use leto_system::permission::Need;
 
@@ -527,9 +527,13 @@ impl Backend {
             voice.microphone = None;
             return Err("The microphone stopped. It may have been unplugged.".to_owned());
         }
-        // Another microphone chosen meanwhile is the one heard from now on.
+        // Another microphone chosen meanwhile is the one heard from now on,
+        // and one the PC takes otherwise coded is opened again.
         let chosen = self.chosen().microphone;
-        if voice.microphone.as_ref().is_some_and(|(_, opened_for)| *opened_for != chosen) {
+        let coding = service.microphone_coding();
+        if voice.microphone.as_ref().is_some_and(|(microphone, opened_for)| {
+            *opened_for != chosen || microphone.coding() != coding
+        }) {
             voice.microphone = None;
         }
         if voice.microphone.is_none() {
@@ -541,12 +545,10 @@ impl Backend {
             // The engine outlives no microphone: it must not be kept alive
             // by one.
             let listener = Arc::downgrade(service);
-            let mut frames = 0u32;
-            let opened = Microphone::open(chosen.as_deref(), move |frame| {
+            let opened = Microphone::open(chosen.as_deref(), coding, move |at, frame| {
                 if let Some(service) = listener.upgrade() {
-                    service.microphone(VOICE_FRAME * frames, frame);
+                    service.microphone(at, frame, coding);
                 }
-                frames = frames.wrapping_add(1);
             });
             let opened = opened.map_err(|error| sentence(&error.to_string()))?;
             voice.microphone = Some((opened, chosen));
@@ -679,7 +681,7 @@ impl Backend {
                 Answer::Waiting => return Ok(None),
                 Answer::Refused(why) => return Err(why),
             }
-            let opened = Microphone::open(chosen.as_deref(), |_| {});
+            let opened = Microphone::open(chosen.as_deref(), VoiceCoding::Opus, |_, _| {});
             let opened = opened.map_err(|error| sentence(&error.to_string()))?;
             tried.microphone = Some((opened, chosen));
         }

@@ -15,7 +15,7 @@ use std::{
 };
 
 use leto_client::{
-    AudioSink, CameraSettings, Client, Counter, Service, Shell, VideoSink,
+    AudioSink, CameraSettings, Client, Counter, Service, Shell, VideoSink, VoiceCoding,
     engine::{CameraOffer, Choices, Event, Request, ScreenMode, StreamEnd},
     input::{Input, InputAllowed, Key, Modifiers},
 };
@@ -305,14 +305,21 @@ fn a_stream_starts_takes_input_and_is_left() {
     let mut frames = 0;
     while host.stream_report().is_none_or(|report| report.microphone_packets == 0) {
         assert!(start.elapsed() < PATIENCE, "the microphone never reached the host");
-        assert!(desk.service.microphone(Duration::from_millis(20) * frames, &quiet));
+        assert!(desk.service.microphone(
+            Duration::from_millis(20) * frames,
+            &quiet,
+            VoiceCoding::Opus
+        ));
         frames += 1;
         std::thread::sleep(Duration::from_millis(10));
     }
 
     desk.service.ask(Request::Leave);
     assert_eq!(desk.service.streaming(), None);
-    assert!(!desk.service.microphone(Duration::ZERO, &quiet), "nobody is listening any more");
+    assert!(
+        !desk.service.microphone(Duration::ZERO, &quiet, VoiceCoding::Opus),
+        "nobody is listening any more"
+    );
     // Left, not ended: the app keeps running on the PC.
     assert_eq!(host.running_app(), Some(1));
 }
@@ -335,7 +342,7 @@ fn a_pc_that_takes_no_microphone_says_so_and_gets_none() {
         _ => None,
     });
     assert!(!microphone);
-    assert!(!desk.service.microphone(Duration::ZERO, &quiet_voice()));
+    assert!(!desk.service.microphone(Duration::ZERO, &quiet_voice(), VoiceCoding::Opus));
 }
 
 #[test]

@@ -19,7 +19,10 @@ use std::{
 };
 
 pub use leto_core::engine::CameraSettings;
-use leto_core::{engine::CameraOffer, model::join_address};
+use leto_core::{
+    engine::CameraOffer,
+    model::{VoiceCoding, join_address},
+};
 use leto_protocol::ports::Service as Port;
 use leto_return::{
     api,
@@ -123,7 +126,9 @@ impl LetoApi {
                 max_fps: camera.max_fps,
             })
         });
-        Some(ReturnOffer { microphone: info.return_channel.microphone, camera })
+        let (microphone, lossless) =
+            (info.return_channel.microphone, info.return_channel.lossless_microphone);
+        Some(ReturnOffer { microphone, lossless_microphone: microphone && lossless, camera })
     }
 
     /// Asks the PC to take the microphone, and opens the way there.
@@ -190,6 +195,8 @@ pub struct ReturnOffer {
     /// It takes the microphone here. A PC that takes it inside the stream
     /// does not say so here.
     pub microphone: bool,
+    /// And it takes it as samples too, nothing compressed.
+    pub lossless_microphone: bool,
     pub camera: Option<CameraOffer>,
 }
 
@@ -284,12 +291,18 @@ pub struct VoiceLink {
 }
 
 impl VoiceLink {
-    /// Sends one Opus frame (one channel at 48 kHz, twenty milliseconds)
-    /// captured `at` this long after the first one. Returns whether it left.
-    pub fn send(&mut self, at: Duration, frame: &[u8]) -> bool {
+    /// Sends one frame (one channel at 48 kHz) in `coding`, captured `at`
+    /// this long after the first one: twenty milliseconds of Opus, or five
+    /// of samples, which only a PC that said it takes them does. Returns
+    /// whether it left.
+    pub fn send(&mut self, at: Duration, frame: &[u8], coding: VoiceCoding) -> bool {
         // The clock of the frames wraps after a day, and may.
         let ticks = at.as_micros() * u128::from(voice::CLOCK) / 1_000_000;
-        let Some(packet) = self.sealer.seal(ticks as u32, frame) else { return false };
+        let coding = match coding {
+            VoiceCoding::Opus => voice::Coding::Opus,
+            VoiceCoding::Pcm => voice::Coding::Pcm,
+        };
+        let Some(packet) = self.sealer.seal_as(coding, ticks as u32, frame) else { return false };
         self.socket.send(packet).is_ok_and(|sent| sent == packet.len())
     }
 }

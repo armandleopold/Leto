@@ -7,7 +7,12 @@
 //! on that output. Leto plays the voice of a device on the output, and the
 //! apps of the PC pick the microphone.
 
-use crate::{Error, endpoints, sound::SoundDecoder, speaker::Speaker, voice::VOICE_RATE};
+use crate::{
+    Error, endpoints,
+    sound::SoundDecoder,
+    speaker::Speaker,
+    voice::{VOICE_RATE, VoiceCoding, pcm24_samples},
+};
 
 /// The cables Leto knows: part of the name of their sound output, and the
 /// microphone the apps of the PC pick to hear it.
@@ -82,17 +87,25 @@ impl Cable {
         })
     }
 
-    /// Plays one Opus frame of a voice: one channel at 48 kHz. Returns how
-    /// loud it was, from 0 to 1, or `None` once the cable is gone: it is
-    /// not looked for again, since what would be found by its name could be
-    /// the speakers.
-    pub fn play(&mut self, frame: &[u8]) -> Option<f32> {
+    /// Plays one frame of a voice, one channel at 48 kHz, in `coding`.
+    /// Returns how loud it was, from 0 to 1, or `None` once the cable is
+    /// gone: it is not looked for again, since what would be found by its
+    /// name could be the speakers.
+    pub fn play(&mut self, coding: VoiceCoding, frame: &[u8]) -> Option<f32> {
         if self.speaker.is_lost() {
             return None;
         }
-        let Ok(samples) = self.decoder.decode(frame) else {
-            // Damaged on the way: a moment of silence.
-            return Some(0.0);
+        let pcm: Vec<f32>;
+        let samples = match coding {
+            VoiceCoding::Opus => match self.decoder.decode(frame) {
+                Ok(samples) => samples,
+                // Damaged on the way: a moment of silence.
+                Err(_) => return Some(0.0),
+            },
+            VoiceCoding::Pcm => {
+                pcm = pcm24_samples(frame).collect();
+                &pcm
+            }
         };
         let loudest = samples.iter().fold(0.0f32, |loudest, sample| loudest.max(sample.abs()));
         self.stereo.clear();

@@ -8,7 +8,10 @@ use leto_client::{
     Client, Service, Shell,
     engine::{Choices, Codec, Codecs, Event, Request},
 };
-use leto_core::bridge::{Down, Frame, LONGEST_CAMERA_PICTURE, Up, VOICE_PACKET};
+use leto_core::{
+    bridge::{Down, Frame, LONGEST_CAMERA_PICTURE, Up, VOICE_PACKET},
+    model::VoiceCoding,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     time::{Instant, MissedTickBehavior, interval, sleep},
@@ -122,7 +125,7 @@ where
                         match Frame::parse(&bytes) {
                             Some(Frame::Voice(packet)) => {
                                 if (1..=LONGEST_VOICE).contains(&packet.len())
-                                    && service.microphone(VOICE_PACKET * voices, packet)
+                                    && service.microphone(VOICE_PACKET * voices, packet, VoiceCoding::Opus)
                                 {
                                     voices = voices.wrapping_add(1);
                                 }

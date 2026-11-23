@@ -121,7 +121,7 @@ struct State {
     seen: Option<Arc<Seen>>,
     /// Who takes the Opus frames of a microphone. Without anyone, the host
     /// takes no microphone.
-    listener: Option<mpsc::Sender<Vec<u8>>>,
+    listener: Option<mpsc::Sender<voice::Frame>>,
     hearing: Option<Hearing>,
     voice: VoiceReport,
 }
@@ -195,10 +195,10 @@ impl Cameras {
         self.state().hearing.as_ref().map(|hearing| hearing.device.clone())
     }
 
-    /// From now on the host takes a microphone, and hands its Opus frames
-    /// (one channel at 48 kHz, twenty milliseconds each) to whoever holds
-    /// what this returns. It stops taking one when that is dropped.
-    pub fn hear(&self) -> mpsc::Receiver<Vec<u8>> {
+    /// From now on the host takes a microphone, and hands its frames (one
+    /// channel at 48 kHz, Opus or samples) to whoever holds what this
+    /// returns. It stops taking one when that is dropped.
+    pub fn hear(&self) -> mpsc::Receiver<voice::Frame> {
         let (listener, frames) = mpsc::channel();
         self.state().listener = Some(listener);
         frames
@@ -217,10 +217,12 @@ impl Cameras {
     }
 
     fn info(&self) -> Info {
+        let hears = self.state().listener.is_some();
         Info {
             api: api::VERSION,
             return_channel: Offer {
-                microphone: self.state().listener.is_some(),
+                microphone: hears,
+                lossless_microphone: hears,
                 camera: Some(CameraOffer {
                     codecs: vec![api::H264.to_owned()],
                     max_width: self.largest.0,
@@ -433,8 +435,7 @@ impl State {
         hearing.heard = now;
         self.voice.frames += 1;
         self.voice.heard = Some(now);
-        let taken =
-            self.listener.as_ref().is_some_and(|listener| listener.send(frame.data).is_ok());
+        let taken = self.listener.as_ref().is_some_and(|listener| listener.send(frame).is_ok());
         if !taken {
             // Whoever listened is gone: so is the microphone.
             self.listener = None;

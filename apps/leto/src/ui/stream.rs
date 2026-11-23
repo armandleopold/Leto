@@ -1388,8 +1388,13 @@ fn microphone_switch(ui: &mut Ui, view: &StreamView, voice: Option<f32>) -> bool
         Mic::Failed(why) => (format!("{why} Press to try again."), theme::problem(), 0.0),
     };
     let usable = view.microphone != Mic::NotTaken;
+    // Crossed out unless it captures: off, not taken, or failed.
+    let off = view.microphone != Mic::On;
     let icon = |painter: &egui::Painter, rect: Rect, color: Color32| {
         icons::microphone(painter, rect, color, level);
+        if off {
+            icons::slash(painter, rect, color);
+        }
     };
     widgets::state_button(ui, icon, &name, color, usable).clicked()
 }
@@ -1421,7 +1426,15 @@ fn camera_switch(ui: &mut Ui, view: &StreamView, film: Option<Filming>) -> bool 
         (Cam::Failed(why), _) => (format!("{why} Press to try again."), theme::problem()),
     };
     let usable = view.camera != Cam::NotTaken;
-    widgets::state_button(ui, icons::camera, &name, color, usable).clicked()
+    // Crossed out unless it films: off, not taken, or failed.
+    let off = view.camera != Cam::On;
+    let icon = |painter: &egui::Painter, rect: Rect, color: Color32| {
+        icons::camera(painter, rect, color);
+        if off {
+            icons::slash(painter, rect, color);
+        }
+    };
+    widgets::state_button(ui, icon, &name, color, usable).clicked()
 }
 
 /// What the bar has news about, and how that is doing.

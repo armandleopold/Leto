@@ -274,6 +274,12 @@ pub fn camera(painter: &Painter, rect: Rect, color: Color32) {
     painter.add(egui::Shape::closed_line(lens, stroke));
 }
 
+/// A line across an icon drawn in `rect`, for something that is off: from
+/// its top left corner to its bottom right one.
+pub fn slash(painter: &Painter, rect: Rect, color: Color32) {
+    painter.line_segment([at(rect, 0.0, 0.0), at(rect, 1.0, 1.0)], stroke(rect, color));
+}
+
 /// A microphone on its stand. `level`, from 0 to 1, fills it from the bottom
 /// with what it hears.
 pub fn microphone(painter: &Painter, rect: Rect, color: Color32, level: f32) {

@@ -24,8 +24,8 @@ use leto_client::{
     VideoSink,
     engine::{CameraOffer, Choices, Event, Request},
 };
-use leto_host::{Companion, Options as CompanionOptions, apollo::Apollo};
-use leto_media::{Picture, PictureEncoder, Sending};
+use leto_host::{Companion, Options as CompanionOptions, apollo::Apollo, voice::Coding};
+use leto_media::{Picture, PictureEncoder, Sending, VoiceCoding};
 use leto_testhost::{FakeHost, Options, permission};
 
 const SMALL: CameraSettings =
@@ -253,6 +253,7 @@ fn a_device_sends_its_microphone_to_a_companion_that_has_someone_to_hand_it_to()
     let frames = companion.hear();
     let offer = client.return_offer(&paired.id).unwrap();
     assert!(offer.microphone);
+    assert!(offer.lossless_microphone);
     assert!(offer.camera.is_some());
 
     // The camera is asked for apart, and goes on beside the microphone.
@@ -263,11 +264,16 @@ fn a_device_sends_its_microphone_to_a_companion_that_has_someone_to_hand_it_to()
     assert_eq!(companion.speaker().as_deref(), Some("Device 1"));
 
     for number in 0..10u8 {
-        assert!(link.send(Duration::from_millis(20) * u32::from(number), &[number; 40]));
+        let at = Duration::from_millis(20) * u32::from(number);
+        // Opus, then samples: the PC takes both.
+        let coding = if number < 5 { VoiceCoding::Opus } else { VoiceCoding::Pcm };
+        assert!(link.send(at, &[number; 40], coding));
     }
     for number in 0..10u8 {
         let frame = frames.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert_eq!(frame, vec![number; 40], "frame {number}");
+        assert_eq!(frame.data, vec![number; 40], "frame {number}");
+        let coding = if number < 5 { Coding::Opus } else { Coding::Pcm };
+        assert_eq!(frame.coding, coding, "frame {number}");
     }
     let report = companion.cameras().voice_report();
     assert_eq!((report.frames, report.refused), (10, 0));
@@ -285,7 +291,7 @@ fn a_device_sends_its_microphone_to_a_companion_that_has_someone_to_hand_it_to()
     // Whoever listened is gone: the next frame ends the microphone.
     let mut link = client.send_microphone(&paired.id).unwrap();
     drop(frames);
-    assert!(link.send(Duration::ZERO, &[1; 40]));
+    assert!(link.send(Duration::ZERO, &[1; 40], VoiceCoding::Opus));
     wait_for("the companion to stop taking a microphone", || {
         !client.return_offer(&paired.id).unwrap().microphone
     });
@@ -396,18 +402,20 @@ fn an_interface_learns_that_the_companion_takes_the_microphone_and_sends_it() {
     assert!(beside);
     // Nothing was asked of the companion yet: the microphone is off.
     assert!(!companion.cameras().voice_report().open);
+    // And it takes it as samples, nothing compressed.
+    assert_eq!(service.microphone_coding(), VoiceCoding::Pcm);
 
     // The first frames ask for the way, and the ones after it arrive.
     let mut number = 0u32;
     wait_for("the microphone to arrive", || {
         number += 1;
-        service.microphone(Duration::from_millis(20) * number, &[7; 40]);
-        frames.try_recv().is_ok_and(|frame| frame == [7; 40])
+        service.microphone(Duration::from_millis(5) * number, &[7; 40], VoiceCoding::Pcm);
+        frames.try_recv().is_ok_and(|frame| frame.data == [7; 40] && frame.coding == Coding::Pcm)
     });
     assert!(companion.cameras().voice_report().open);
 
     // It stops with the stream.
     service.ask(Request::Leave);
     wait_for("the microphone to close", || !companion.cameras().voice_report().open);
-    assert!(!service.microphone(Duration::ZERO, &[7; 40]));
+    assert!(!service.microphone(Duration::ZERO, &[7; 40], VoiceCoding::Pcm));
 }

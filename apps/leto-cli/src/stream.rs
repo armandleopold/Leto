@@ -21,8 +21,8 @@ use leto_client::{
     engine::{CameraOffer, Codec},
 };
 use leto_media::{
-    CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Picture, Sending, VOICE_FRAME,
-    VideoDecoder,
+    CameraFeed, Carrier, Encoded, Feeding, Limits, Microphone, Picture, Sending, VideoDecoder,
+    VoiceCoding,
 };
 use serde::Serialize;
 
@@ -350,19 +350,20 @@ impl Listening {
             (false, true) => Some(client.send_microphone(host).map_err(|error| error.to_string())?),
             (false, false) => return Err("the PC takes no microphone".to_owned()),
         };
+        // Nothing compressed when the PC takes it beside the stream so.
+        let lossless = link.is_some()
+            && client.return_offer(host).is_ok_and(|offer| offer.lossless_microphone);
+        let coding = if lossless { VoiceCoding::Pcm } else { VoiceCoding::Opus };
         let frames = Arc::new(AtomicU64::new(0));
         let (session, sent) = (Arc::clone(session), Arc::clone(&frames));
-        let mut number = 0u32;
-        let microphone = Microphone::open(None, move |frame| {
-            let at = VOICE_FRAME * number;
+        let microphone = Microphone::open(None, coding, move |at, frame| {
             let left = match &mut link {
-                Some(link) => link.send(at, frame),
+                Some(link) => link.send(at, frame, coding),
                 None => session.send_microphone(at, frame),
             };
             if left {
                 sent.fetch_add(1, Ordering::Relaxed);
             }
-            number = number.wrapping_add(1);
         })
         .map_err(|error| error.to_string())?;
         Ok(Self { microphone, frames })

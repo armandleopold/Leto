@@ -265,6 +265,18 @@ pub fn join_address(address: &str, port: u16) -> String {
     if address.contains(':') { format!("[{address}]:{port}") } else { format!("{address}:{port}") }
 }
 
+/// How this device's microphone travels to a PC that takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VoiceCoding {
+    /// Opus frames of twenty milliseconds: what every PC that takes a
+    /// microphone understands, compressed.
+    #[default]
+    Opus,
+    /// The samples as captured, 24 bits each, in frames of five
+    /// milliseconds: nothing lost, for a PC with Leto beside it.
+    Pcm,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -69,6 +69,10 @@ pub struct Offer {
     /// The microphone can be asked for here too.
     #[serde(default)]
     pub microphone: bool,
+    /// And it may come as samples, nothing compressed (see
+    /// `crate::voice`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lossless_microphone: bool,
     /// The camera, when the host takes one.
     #[serde(default)]
     pub camera: Option<CameraOffer>,
@@ -172,6 +176,7 @@ mod tests {
             api: VERSION,
             return_channel: Offer {
                 microphone: true,
+                lossless_microphone: false,
                 camera: Some(CameraOffer {
                     codecs: vec![H264.to_owned()],
                     max_width: 1920,

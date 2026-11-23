@@ -29,8 +29,8 @@ const GATHERER: &str = "leto-microphone";
 /// Samples in one piece.
 const PIECE: u32 = VOICE_RATE / 1000 * VOICE_PACKET.as_millis() as u32;
 
-/// Bits per second, as in the desktop app: plenty for a voice.
-const BIT_RATE: u32 = 48_000;
+/// Bits per second, as in the desktop app: what a voice gains from.
+const BIT_RATE: u32 = 128_000;
 
 const NOT_ENCODED: &str = "The browser could not encode the microphone.";
 

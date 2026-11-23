@@ -11,12 +11,17 @@
 //! | Offset | Size | Field |
 //! |---|---|---|
 //! | 0 | 1 | flags, 0 |
-//! | 1 | 1 | packet type, `0x61` |
+//! | 1 | 1 | packet type, `0x61` for Opus, `0x63` for samples (`0x62` is the camera) |
 //! | 2 | 2 | number of the packet, which wraps |
 //! | 4 | 4 | when the frame was captured, on a clock of 48 kHz |
 //! | 8 | 4 | number of the frame, from 0, which never wraps |
 //! | 12 | n | the frame, sealed |
 //! | 12 + n | 16 | the seal |
+//!
+//! A host that says `losslessMicrophone` in its offer also takes the samples
+//! themselves, nothing compressed: packets of type `0x63`, whose frame is
+//! five milliseconds of samples of 24 bits, little endian, one channel at
+//! 48 kHz (720 bytes).
 //!
 //! Numbers are little endian. The start of the header is the one of the
 //! fork's packets; the frame number stands where they have a constant. The
@@ -35,8 +40,36 @@ use aes_gcm::{
 
 use crate::camera::Key;
 
-/// What marks a packet as one of the microphone's.
+/// What marks a packet as one of the microphone's, in Opus.
 pub const PACKET_TYPE: u8 = 0x61;
+/// What marks a packet as one of the microphone's, as samples.
+pub const PCM_PACKET_TYPE: u8 = 0x63;
+
+/// How the frame in a packet is coded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coding {
+    /// One Opus frame of twenty milliseconds.
+    Opus,
+    /// Five milliseconds of samples, 24 bits each, little endian.
+    Pcm,
+}
+
+impl Coding {
+    const fn packet_type(self) -> u8 {
+        match self {
+            Self::Opus => PACKET_TYPE,
+            Self::Pcm => PCM_PACKET_TYPE,
+        }
+    }
+
+    const fn of(packet_type: u8) -> Option<Self> {
+        match packet_type {
+            PACKET_TYPE => Some(Self::Opus),
+            PCM_PACKET_TYPE => Some(Self::Pcm),
+            _ => None,
+        }
+    }
+}
 
 /// How many times a second the clock of the frames ticks.
 pub const CLOCK: u32 = 48_000;
@@ -58,7 +91,7 @@ fn nonce(key_id: u32, frame: u32) -> [u8; 12] {
 /// Whether what arrived on a port says of itself that it is a packet of a
 /// microphone. Only its seal tells whether it is one.
 pub fn is_one(packet: &[u8]) -> bool {
-    packet.get(1) == Some(&PACKET_TYPE)
+    packet.get(1).is_some_and(|kind| Coding::of(*kind).is_some())
 }
 
 /// Makes the packets of a microphone, on the client.
@@ -87,6 +120,11 @@ impl Sealer {
     /// [`CLOCK`]. `None` for a frame that is empty or too large for one
     /// packet, and once every frame number was used.
     pub fn seal(&mut self, timestamp: u32, frame: &[u8]) -> Option<&[u8]> {
+        self.seal_as(Coding::Opus, timestamp, frame)
+    }
+
+    /// The same for a frame coded in `coding`.
+    pub fn seal_as(&mut self, coding: Coding, timestamp: u32, frame: &[u8]) -> Option<&[u8]> {
         if frame.is_empty() || frame.len() > MAX_FRAME {
             return None;
         }
@@ -95,7 +133,7 @@ impl Sealer {
         self.next = number.checked_add(1);
 
         self.packet.clear();
-        self.packet.extend_from_slice(&[0, PACKET_TYPE]);
+        self.packet.extend_from_slice(&[0, coding.packet_type()]);
         self.packet.extend_from_slice(&self.sequence.to_le_bytes());
         self.packet.extend_from_slice(&timestamp.to_le_bytes());
         self.packet.extend_from_slice(&number.to_le_bytes());
@@ -118,7 +156,8 @@ pub struct Frame {
     pub number: u32,
     /// When it was captured, in ticks of [`CLOCK`].
     pub timestamp: u32,
-    /// One Opus frame.
+    pub coding: Coding,
+    /// The frame, coded in `coding`.
     pub data: Vec<u8>,
 }
 
@@ -141,7 +180,8 @@ impl Opener {
     pub fn open(&mut self, packet: &[u8]) -> Option<Frame> {
         let (head, rest) = packet.split_at_checked(HEADER)?;
         let (sealed, seal) = rest.split_at_checked(rest.len().checked_sub(SEAL)?)?;
-        if head[1] != PACKET_TYPE || sealed.is_empty() {
+        let coding = Coding::of(head[1])?;
+        if sealed.is_empty() {
             return None;
         }
         let timestamp = u32::from_le_bytes([head[4], head[5], head[6], head[7]]);
@@ -160,7 +200,7 @@ impl Opener {
             )
             .ok()?;
         self.newest = Some(number);
-        Some(Frame { number, timestamp, data })
+        Some(Frame { number, timestamp, coding, data })
     }
 }
 
@@ -181,10 +221,22 @@ mod tests {
         assert!(!packet.windows(6).any(|window| window == b"moment"));
         assert_eq!(
             opener.open(&packet),
-            Some(Frame { number: 0, timestamp: 960, data: b"a moment of voice".to_vec() })
+            Some(Frame {
+                number: 0,
+                timestamp: 960,
+                coding: Coding::Opus,
+                data: b"a moment of voice".to_vec()
+            })
         );
         let next = sealer.seal(1920, b"more").map(<[u8]>::to_vec).unwrap_or_default();
         assert_eq!(opener.open(&next).map(|frame| frame.number), Some(1));
+        // Samples the same way, marked as such.
+        let samples = sealer.seal_as(Coding::Pcm, 2160, &[1, 2, 3]).map(<[u8]>::to_vec);
+        let samples = samples.unwrap_or_default();
+        assert!(is_one(&samples));
+        assert_eq!(samples[1], PCM_PACKET_TYPE);
+        let frame = opener.open(&samples).expect("it opens");
+        assert_eq!((frame.coding, frame.data), (Coding::Pcm, vec![1, 2, 3]));
     }
 
     #[test]

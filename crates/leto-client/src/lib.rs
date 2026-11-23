@@ -45,7 +45,7 @@ pub use leto_core::{
     engine, input,
     model::{
         AppSummary, Encrypted, HostId, HostKind, HostSummary, Pin, Reachability, TunnelSummary,
-        join_address, parse_address,
+        VoiceCoding, join_address, parse_address,
     },
 };
 use moonlight_common::{

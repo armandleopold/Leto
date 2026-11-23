@@ -618,7 +618,18 @@ mod voice {
     };
 
     use leto_host::camera::Cameras;
-    use leto_media::cable::{self, Cable, Found};
+    use leto_host::voice::{Coding, Frame};
+    use leto_media::{
+        VoiceCoding,
+        cable::{self, Cable, Found},
+    };
+
+    fn coding(coding: Coding) -> VoiceCoding {
+        match coding {
+            Coding::Opus => VoiceCoding::Opus,
+            Coding::Pcm => VoiceCoding::Pcm,
+        }
+    }
 
     /// The name of a sound output to play the microphone on, for a cable
     /// Leto does not know and for trying this out where there is none.
@@ -769,11 +780,11 @@ mod voice {
 
     /// Plays what arrives until the cable is gone or nobody wants it.
     /// Another output chosen meanwhile ends it too, for that one to open.
-    fn play(frames: &Receiver<Vec<u8>>, cable: &mut Cable, told: &Told) {
+    fn play(frames: &Receiver<Frame>, cable: &mut Cable, told: &Told) {
         let chosen = told.chosen();
         while !told.stop.load(Ordering::SeqCst) && told.chosen() == chosen {
             let loud = match frames.recv_timeout(QUIET) {
-                Ok(frame) => match cable.play(&frame) {
+                Ok(frame) => match cable.play(coding(frame.coding), &frame.data) {
                     Some(loud) => loud,
                     None => {
                         log::warn!("the cable for the microphone is gone");
