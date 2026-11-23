@@ -275,6 +275,11 @@ impl Shell for Desk {
             engine::Event::Playing { attempt, microphone: true, .. } => {
                 self.voice().stream = Some(*attempt);
             }
+            // A PC that takes it beside the stream, as Leto does beside
+            // Apollo, says so after the stream plays.
+            engine::Event::Microphone { attempt, taken: true } => {
+                self.voice().stream = Some(*attempt);
+            }
             // News of a stream the person left says nothing about the one
             // on screen.
             engine::Event::Camera { attempt, offer } => {

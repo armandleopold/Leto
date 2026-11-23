@@ -785,6 +785,13 @@ impl Page {
                         }
                     }));
                 }
+                // A PC that takes it beside the stream says so after.
+                if let engine::Event::Microphone { attempt, taken: true } = &event
+                    && let Some(stream) = &mut inner.stream
+                    && stream.attempt == *attempt
+                {
+                    stream.listens = true;
+                }
                 if let engine::Event::Camera { attempt, offer } = &event
                     && let Some(stream) = &mut inner.stream
                     && stream.attempt == *attempt
