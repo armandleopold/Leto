@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.7](https://github.com/armandleopold/Leto/compare/v0.0.6...v0.0.7) (2026-11-23)
+
+
+### Features
+
+* **host:** a device's microphone reaches the PC uncompressed, beside Apollo ([#81](https://github.com/armandleopold/Leto/issues/81)) ([5f68fac](https://github.com/armandleopold/Leto/commit/5f68faccf211c52f4396c87e9595db99239b968c))
+
 ## [0.0.6](https://github.com/armandleopold/Leto/compare/v0.0.5...v0.0.6) (2026-11-23)
 
 
