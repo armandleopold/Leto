@@ -1363,7 +1363,10 @@ fn microphone_switch(ui: &mut Ui, view: &StreamView, voice: Option<f32>) -> bool
     let keys = Shortcut::Microphone.keys();
     let (name, color, level) = match &view.microphone {
         Mic::NotTaken => (
-            format!("{host} takes no microphone. Apollo and Sunshine need a build that does."),
+            format!(
+                "{host} takes no microphone now. On that PC, open Leto, go to This PC and turn \
+                 on Share this PC: its Microphone card tells what is missing."
+            ),
             theme::line(),
             0.0,
         ),
@@ -1401,8 +1404,8 @@ fn camera_switch(ui: &mut Ui, view: &StreamView, film: Option<Filming>) -> bool 
         (Cam::Unknown, _) => return false,
         (Cam::NotTaken, _) => (
             format!(
-                "{host} takes no camera. No Apollo or Sunshine does: it takes Leto on the PC, \
-                 which comes later."
+                "{host} takes no camera now. On that PC, open Leto, go to This PC and turn on \
+                 Share this PC."
             ),
             theme::line(),
         ),

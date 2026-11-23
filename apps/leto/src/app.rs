@@ -572,8 +572,10 @@ impl eframe::App for LetoApp {
                             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
                             _ if self.host_open => {
                                 let back_to = back_to(&self.state.screen).to_owned();
-                                let share = &mut self.settings.share_this_pc;
-                                if self.sharing.show(ui, share, &back_to) {
+                                let settings = &mut self.settings;
+                                let (share, cable) =
+                                    (&mut settings.share_this_pc, &mut settings.cable);
+                                if self.sharing.show(ui, share, cable, &back_to) {
                                     self.host_open = false;
                                 }
                             }

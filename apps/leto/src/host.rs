@@ -245,9 +245,15 @@ impl Sharing {
         }
     }
 
-    /// The screen. `share` is the setting. Returns whether the person asked
-    /// to go back to `back_to`.
-    pub fn show(&mut self, ui: &mut Ui, share: &mut bool, back_to: &str) -> bool {
+    /// The screen. `share` and `cable` are the settings. Returns whether the
+    /// person asked to go back to `back_to`.
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        share: &mut bool,
+        cable: &mut Option<String>,
+        back_to: &str,
+    ) -> bool {
         if self.devices_read.elapsed() >= DEVICES_EVERY {
             self.read_devices();
         }
@@ -341,7 +347,7 @@ impl Sharing {
                     );
                 });
                 camera(ui, companion, sender.as_deref(), handing.given(), &mut self.camera);
-                microphone(ui, companion, voicing);
+                microphone(ui, companion, voicing, cable);
                 if cfg!(windows) {
                     ui.add(
                         egui::Label::new(
@@ -485,18 +491,30 @@ fn camera(
 
 /// The microphone that is being sent, and where the apps of this PC hear
 /// it.
-fn microphone(ui: &mut Ui, companion: &Companion, voicing: &voice::Voicing) {
+/// `cable` is the setting: the sound output it plays on, chosen here.
+fn microphone(
+    ui: &mut Ui,
+    companion: &Companion,
+    voicing: &voice::Voicing,
+    cable: &mut Option<String>,
+) {
     card(ui, "Microphone", |ui| {
+        voicing.choose(cable.clone());
         let Some(heard_as) = voicing.heard_as() else {
-            ui.add(
-                egui::Label::new(widgets::dim(
-                    "Not taken yet: Windows needs a virtual cable for the apps of this PC to \
-                     hear a device as a microphone. Install VB-CABLE, which is free, and Leto \
-                     finds it by itself.",
-                ))
-                .wrap(),
-            );
+            let said = match cable {
+                Some(output) => format!(
+                    "Not taken: the sound output \"{output}\" chosen below is not on this PC \
+                     now, or did not open. Devices see no microphone here meanwhile."
+                ),
+                None => "Not taken yet: Windows needs a virtual cable for the apps of this PC \
+                         to hear a device as a microphone, and Leto found none it knows. \
+                         Install VB-CABLE, which is free, and Leto finds it by itself, or \
+                         choose below the sound output of the cable you have."
+                    .to_owned(),
+            };
+            ui.add(egui::Label::new(RichText::new(said).color(theme::problem())).wrap());
             ui.hyperlink_to("vb-audio.com/Cable", "https://vb-audio.com/Cable/");
+            cable_picker(ui, voicing, cable);
             return;
         };
         let report = companion.cameras().voice_report();
@@ -531,7 +549,42 @@ fn microphone(ui: &mut Ui, companion: &Companion, voicing: &voice::Voicing) {
             )
             .wrap(),
         );
+        cable_picker(ui, voicing, cable);
     });
+}
+
+/// The list to choose the sound output a device's microphone plays on.
+fn cable_picker(ui: &mut Ui, voicing: &voice::Voicing, cable: &mut Option<String>) {
+    const AUTOMATIC: &str = "Automatic: the first virtual cable Leto knows";
+    let outputs = voicing.outputs();
+    ui.add_space(4.0);
+    ui.label(widgets::dim("Plays on").size(theme::SMALL));
+    let selected = cable.clone().unwrap_or_else(|| AUTOMATIC.to_owned());
+    let width = ui.available_width().min(420.0);
+    egui::ComboBox::from_id_salt("cable").width(width).truncate().selected_text(selected).show_ui(
+        ui,
+        |ui| {
+            ui.set_max_width(width);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            ui.selectable_value(cable, None, AUTOMATIC);
+            for output in &outputs {
+                ui.selectable_value(cable, Some(output.clone()), output).on_hover_text(output);
+            }
+            if let Some(gone) = cable.clone().filter(|output| !outputs.contains(output)) {
+                ui.selectable_value(cable, Some(gone.clone()), format!("{gone} (not there)"));
+            }
+        },
+    );
+    ui.add(
+        egui::Label::new(
+            widgets::dim(
+                "Not your speakers: whatever plays there is what the apps hear, and a voice \
+                 played on your speakers is heard by everyone in the room.",
+            )
+            .size(theme::SMALL),
+        )
+        .wrap(),
+    );
 }
 
 /// The microphone that is sent, played where the apps of this PC hear a
@@ -569,6 +622,17 @@ mod voice {
         /// How loud the last frame was, as the bits of an `f32`.
         level: AtomicU32,
         stop: AtomicBool,
+        /// The sound output the person chose for it: `None` for the first
+        /// cable Leto knows.
+        chosen: Mutex<Option<String>>,
+        /// The sound outputs of this PC, as last looked at.
+        outputs: Mutex<Vec<String>>,
+    }
+
+    impl Told {
+        fn chosen(&self) -> Option<String> {
+            self.chosen.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
     }
 
     /// A thread that plays what arrives of a microphone into a virtual
@@ -598,6 +662,17 @@ mod voice {
             cable.as_ref().map(|cable| cable.microphone.clone())
         }
 
+        /// Plays on this sound output from now on, or on the first cable
+        /// Leto knows with `None`.
+        pub fn choose(&self, output: Option<String>) {
+            *self.told.chosen.lock().unwrap_or_else(PoisonError::into_inner) = output;
+        }
+
+        /// The sound outputs of this PC, as last looked at.
+        pub fn outputs(&self) -> Vec<String> {
+            self.told.outputs.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
+
         /// How loud the microphone is at this moment, from 0 to 1.
         pub fn level(&self) -> f32 {
             f32::from_bits(self.told.level.load(Ordering::Relaxed))
@@ -615,11 +690,36 @@ mod voice {
         let tell = |cable: Option<Found>| {
             *told.cable.lock().unwrap_or_else(PoisonError::into_inner) = cable;
         };
+        // What was looked through the last time nothing was found, said
+        // once in the log: the names Windows gives are what tells why.
+        let mut reported: Option<(Option<String>, Vec<String>)> = None;
         while !stopped() {
-            let found = match std::env::var(CABLE) {
-                Ok(output) => cable::named(&output),
-                Err(_) => cable::find(),
+            let outputs = leto_media::speakers();
+            *told.outputs.lock().unwrap_or_else(PoisonError::into_inner) = outputs.clone();
+            let chosen_now = told.chosen();
+            let chosen = chosen_now.clone().or_else(|| std::env::var(CABLE).ok());
+            let found = match &chosen {
+                Some(output) => cable::named(output),
+                None => cable::among(&outputs),
             };
+            if found.is_none() {
+                let looked = (chosen.clone(), outputs.clone());
+                if reported.as_ref() != Some(&looked) {
+                    match &chosen {
+                        Some(output) => log::warn!(
+                            "no microphone for the apps of this PC: the chosen sound output \
+                             \"{output}\" is not among {outputs:?}"
+                        ),
+                        None => log::warn!(
+                            "no microphone for the apps of this PC: no virtual cable Leto \
+                             knows among the sound outputs {outputs:?}"
+                        ),
+                    }
+                    reported = Some(looked);
+                }
+            } else {
+                reported = None;
+            }
             // Opened here: on some systems a sound output stays on the
             // thread that opened it.
             let opened = found.and_then(|found| match Cable::open(&found.output) {
@@ -640,15 +740,17 @@ mod voice {
                 told.level.store(0, Ordering::Relaxed);
             }
             let sought = Instant::now();
-            while !stopped() && sought.elapsed() < SEEK_EVERY {
+            while !stopped() && sought.elapsed() < SEEK_EVERY && told.chosen() == chosen_now {
                 thread::sleep(QUIET);
             }
         }
     }
 
     /// Plays what arrives until the cable is gone or nobody wants it.
+    /// Another output chosen meanwhile ends it too, for that one to open.
     fn play(frames: &Receiver<Vec<u8>>, cable: &mut Cable, told: &Told) {
-        while !told.stop.load(Ordering::SeqCst) {
+        let chosen = told.chosen();
+        while !told.stop.load(Ordering::SeqCst) && told.chosen() == chosen {
             let loud = match frames.recv_timeout(QUIET) {
                 Ok(frame) => match cable.play(&frame) {
                     Some(loud) => loud,
