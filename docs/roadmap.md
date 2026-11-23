@@ -235,6 +235,25 @@ Progress:
   folder written the way Apollo's source writes it. Never run beside a real
   Apollo: whether Windows lets an ordinary program read Apollo's folder,
   and what its firewall does with the new port, are not known.
+- Done: while this PC is shared, the first screen has a card for each
+  device Apollo is paired with, under the PCs, with an icon its owner picks
+  (computer, laptop, phone, tablet, television, console). The card opens
+  the device's page, with what it may do, the way Apollo's own page does: list the apps, watch, start apps,
+  the clipboard, commands, gamepad, touch, pen, mouse, keyboard. Read from
+  Apollo's folder, it is there to look at. Once the owner signs in with the
+  name and the password of Apollo's page, a press gives or takes a right,
+  and a device can be renamed, unpaired, have its stream ended, or be
+  paired by its PIN: Apollo does each of these itself, asked through its
+  own pages, and Leto still writes nothing in its folder. Apollo knows one
+  sign-in at a time, so a browser on its page is signed out. Checked
+  against stand-in pages written from Apollo's source. Never run against a
+  real Apollo. A Sunshine keeps no rights for each device, and its pages
+  are not spoken to.
+- Started, then set aside: Leto's own host. The code that speaks to a
+  client (pairing, apps, the streams) is in `leto_host::server`, and a host
+  given a folder is the same host after a restart. Capturing the screen and
+  encoding it on Windows is written and was never run; it is not in the
+  tree. Apollo stays what streams the screen for now.
 
 The plan:
 

@@ -20,6 +20,7 @@ use openh264::{
 };
 use opus_rs::{Application, OpusEncoder};
 
+use super::source::{Packets, Picture, Pictures, SOUND_PACKET, Watching};
 use crate::camera::Seen;
 
 /// The largest picture the encoder accepts.
@@ -207,6 +208,36 @@ pub(crate) struct TestCard {
     canvas: Planes,
     number: u64,
     data: Vec<u8>,
+    /// When the picture before this one was due.
+    due: Option<Instant>,
+}
+
+impl Pictures for TestCard {
+    fn next(&mut self, keyframe: bool, watching: Watching<'_>) -> Option<Picture<'_>> {
+        // One picture every so often, as a screen has them.
+        let interval = Duration::from_secs_f64(1.0 / f64::from(self.fps));
+        self.due = Some(match self.due {
+            Some(due) => pace(due, interval),
+            None => Instant::now(),
+        });
+        let frame = self.draw(keyframe, watching.hands, watching.camera)?;
+        Some(Picture { keyframe: frame.keyframe, data: frame.data, took: None })
+    }
+}
+
+/// Sleeps until `due + interval` and returns that instant. After a stall it
+/// starts counting again from now instead of rushing to catch up.
+pub(crate) fn pace(due: Instant, interval: Duration) -> Instant {
+    let next = due + interval;
+    let now = Instant::now();
+    if next > now {
+        std::thread::sleep(next - now);
+        next
+    } else if now - next > interval * 4 {
+        now
+    } else {
+        next
+    }
 }
 
 impl TestCard {
@@ -270,13 +301,14 @@ impl TestCard {
             background,
             number: 0,
             data: Vec::new(),
+            due: None,
         })
     }
 
     /// Draws and encodes the next picture, with what the client's `hands` are
     /// doing and what its `camera` sees. `keyframe` asks for a picture that
     /// can be decoded on its own.
-    pub fn next(
+    pub fn draw(
         &mut self,
         keyframe: bool,
         hands: Hands,
@@ -427,6 +459,18 @@ pub(crate) struct Melody {
     position: u64,
     pcm: Vec<f32>,
     packet: Vec<u8>,
+    /// When the packet before this one was due.
+    due: Option<Instant>,
+}
+
+impl Packets for Melody {
+    fn next(&mut self) -> Option<&[u8]> {
+        self.due = Some(match self.due {
+            Some(due) => pace(due, SOUND_PACKET),
+            None => Instant::now(),
+        });
+        self.encode()
+    }
 }
 
 impl Melody {
@@ -442,11 +486,12 @@ impl Melody {
             position: 0,
             pcm: vec![0.0; samples * 2],
             packet: vec![0; 1500],
+            due: None,
         })
     }
 
     /// Encodes the next packet of sound.
-    pub fn next(&mut self) -> Option<&[u8]> {
+    pub fn encode(&mut self) -> Option<&[u8]> {
         for index in 0..self.samples {
             let time = (self.position + index as u64) as f32 / self.rate as f32;
             let note = (time / NOTE) as usize % NOTES.len();
@@ -488,9 +533,9 @@ mod tests {
     fn the_card_starts_with_a_keyframe_and_makes_one_on_request() {
         let mut card = TestCard::new(320, 180, 30, 2000).expect("the encoder starts");
         let hands = Hands::default();
-        assert!(card.next(false, hands, None).expect("a first picture").keyframe);
-        assert!(!card.next(false, hands, None).expect("a second picture").keyframe);
-        assert!(card.next(true, hands, None).expect("a requested picture").keyframe);
+        assert!(card.draw(false, hands, None).expect("a first picture").keyframe);
+        assert!(!card.draw(false, hands, None).expect("a second picture").keyframe);
+        assert!(card.draw(true, hands, None).expect("a requested picture").keyframe);
     }
 
     #[test]
@@ -505,7 +550,7 @@ mod tests {
         // Three quarters of the sun's way round.
         let last = 6 * 30 - 1;
         for number in 0..=last {
-            let data = card.next(false, Hands::default(), None).expect("a picture").data.to_vec();
+            let data = card.draw(false, Hands::default(), None).expect("a picture").data.to_vec();
             let decoded = decoder.decode(&data).expect("it decodes").expect("a picture comes out");
             if number < last {
                 continue;
@@ -539,7 +584,7 @@ mod tests {
     fn every_sound_packet_has_the_same_size() {
         let mut melody = Melody::new(48_000, 96_000, 240).expect("the encoder starts");
         for _ in 0..400 {
-            assert_eq!(melody.next().expect("a packet").len(), 60);
+            assert_eq!(melody.encode().expect("a packet").len(), 60);
         }
     }
 }

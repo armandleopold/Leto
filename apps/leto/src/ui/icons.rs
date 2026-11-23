@@ -24,6 +24,63 @@ pub fn monitor(painter: &Painter, rect: Rect, color: Color32) {
     painter.line_segment([at(rect, 0.28, 0.88), at(rect, 0.72, 0.88)], stroke);
 }
 
+/// A screen on its keyboard: a laptop.
+pub fn laptop(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let screen = Rect::from_min_max(at(rect, 0.14, 0.16), at(rect, 0.86, 0.68));
+    painter.rect_stroke(screen, rect.width() / 12.0, stroke, StrokeKind::Inside);
+    painter.line_segment([at(rect, 0.02, 0.84), at(rect, 0.98, 0.84)], stroke);
+}
+
+/// A tall screen with its line at the bottom: a phone.
+pub fn phone(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let body = Rect::from_min_max(at(rect, 0.27, 0.04), at(rect, 0.73, 0.96));
+    painter.rect_stroke(body, rect.width() / 8.0, stroke, StrokeKind::Inside);
+    painter.line_segment([at(rect, 0.43, 0.80), at(rect, 0.57, 0.80)], stroke);
+}
+
+/// A wide screen with its button: a tablet.
+pub fn tablet(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let body = Rect::from_min_max(at(rect, 0.04, 0.16), at(rect, 0.96, 0.84));
+    painter.rect_stroke(body, rect.width() / 9.0, stroke, StrokeKind::Inside);
+    painter.circle_filled(at(rect, 0.84, 0.5), stroke.width * 0.75, color);
+}
+
+/// A wide screen on two feet: a television.
+pub fn television(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let screen = Rect::from_min_max(at(rect, 0.02, 0.16), at(rect, 0.98, 0.74));
+    painter.rect_stroke(screen, rect.width() / 12.0, stroke, StrokeKind::Inside);
+    painter.line_segment([at(rect, 0.30, 0.74), at(rect, 0.22, 0.90)], stroke);
+    painter.line_segment([at(rect, 0.70, 0.74), at(rect, 0.78, 0.90)], stroke);
+}
+
+/// A gamepad, with its cross and two buttons: a console.
+pub fn gamepad(painter: &Painter, rect: Rect, color: Color32) {
+    let stroke = stroke(rect, color);
+    let body = Rect::from_min_max(at(rect, 0.02, 0.24), at(rect, 0.98, 0.78));
+    painter.rect_stroke(body, rect.height() * 0.27, stroke, StrokeKind::Inside);
+    painter.line_segment([at(rect, 0.20, 0.51), at(rect, 0.40, 0.51)], stroke);
+    painter.line_segment([at(rect, 0.30, 0.41), at(rect, 0.30, 0.61)], stroke);
+    painter.circle_filled(at(rect, 0.64, 0.57), stroke.width * 0.8, color);
+    painter.circle_filled(at(rect, 0.77, 0.45), stroke.width * 0.8, color);
+}
+
+/// The icon of a device that reaches this PC.
+pub fn client(icon: crate::settings::ClientIcon) -> Icon {
+    use crate::settings::ClientIcon;
+    match icon {
+        ClientIcon::Computer => monitor,
+        ClientIcon::Laptop => laptop,
+        ClientIcon::Phone => phone,
+        ClientIcon::Tablet => tablet,
+        ClientIcon::Television => television,
+        ClientIcon::Console => gamepad,
+    }
+}
+
 /// A house: the PC Leto runs on.
 pub fn home(painter: &Painter, rect: Rect, color: Color32) {
     let stroke = stroke(rect, color);

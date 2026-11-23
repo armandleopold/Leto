@@ -2427,11 +2427,15 @@ name = "leto-host"
 version = "0.0.5"
 dependencies = [
  "leto-client",
+ "leto-core",
  "leto-media",
  "leto-return",
  "leto-testhost",
  "log",
+ "moonlight-common",
  "openh264",
+ "opus-decoder",
+ "opus-rs",
  "pem 3.0.6",
  "ring",
  "rustls",
@@ -2495,13 +2499,9 @@ dependencies = [
  "leto-core",
  "leto-host",
  "mdns-sd",
- "moonlight-common",
- "openh264",
- "opus-decoder",
  "opus-rs",
  "pem 3.0.6",
  "rustls",
- "serde",
  "serde_json",
 ]
 

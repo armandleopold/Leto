@@ -9,7 +9,7 @@
 //! on beside the clock, on Windows, where an icon brings it back.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::{IpAddr, UdpSocket},
     time::{Duration, Instant},
 };
@@ -22,9 +22,15 @@ use leto_host::{
 };
 
 use crate::{
+    settings::ClientIcon,
     theme,
-    ui::{pcs::THIS_PC, widgets},
+    ui::{
+        pcs::{Client, Opened, THIS_PC},
+        widgets,
+    },
 };
+
+mod registered;
 
 /// How often the screen looks at what changed while nobody touches it.
 const GLANCE: Duration = Duration::from_millis(250);
@@ -53,6 +59,8 @@ pub struct Sharing {
     state: State,
     devices: Vec<Device>,
     devices_read: Instant,
+    /// Apollo's devices and what each may do, as the screen shows them.
+    registered: registered::Registered,
     /// What the camera that is being sent sees, and how many pictures had
     /// arrived when it was last drawn.
     camera: Option<(TextureHandle, u64)>,
@@ -72,6 +80,7 @@ impl Default for Sharing {
             state: State::Off,
             devices: Vec::new(),
             devices_read: Instant::now(),
+            registered: registered::Registered::default(),
             camera: None,
             wanted: false,
             own: HashMap::new(),
@@ -92,6 +101,8 @@ impl Sharing {
             (State::Beside(..) | State::Stopped(..), false) => {
                 self.state = State::Off;
                 self.camera = None;
+                // Signed out of Apollo's pages as well.
+                self.registered = registered::Registered::default();
             }
             _ => {}
         }
@@ -169,6 +180,71 @@ impl Sharing {
         }
     }
 
+    /// The devices that reach this PC, for their cards on the first screen:
+    /// the ones Apollo is paired with. `None` while this PC is not shared,
+    /// when nothing is read of Apollo.
+    pub fn clients(&mut self, icons: &BTreeMap<String, ClientIcon>) -> Option<Vec<Client>> {
+        if self.devices_read.elapsed() >= DEVICES_EVERY {
+            self.read_devices();
+        }
+        let State::Beside(companion, ..) = &self.state else { return None };
+        let (sender, speaker) = (companion.sender(), companion.speaker());
+        let listed = self.registered.listed(&self.devices);
+        Some(
+            listed
+                .iter()
+                .map(|known| Client {
+                    key: known.key().to_owned(),
+                    name: known.name.clone(),
+                    icon: icons
+                        .get(known.key())
+                        .copied()
+                        .unwrap_or_else(|| ClientIcon::guessed(&known.name)),
+                    doing: doing(known, sender.as_deref(), speaker.as_deref()),
+                    may: known.may(),
+                })
+                .collect(),
+        )
+    }
+
+    /// The page of one device that reaches this PC, or the one that pairs
+    /// one more. Returns whether to go back to `back_to`: the person asked,
+    /// or there is nothing left to show.
+    pub fn show_client(
+        &mut self,
+        ui: &mut Ui,
+        opened: &Opened,
+        icons: &mut BTreeMap<String, ClientIcon>,
+        back_to: &str,
+    ) -> bool {
+        if self.devices_read.elapsed() >= DEVICES_EVERY {
+            self.read_devices();
+        }
+        let State::Beside(companion, ..) = &self.state else { return true };
+        let back = widgets::back_button(ui, back_to).clicked();
+        ui.add_space(4.0);
+        ui.ctx().request_repaint_after(GLANCE);
+        match opened {
+            Opened::Pairing => {
+                self.registered.pairing(ui, companion.apollo());
+                back
+            }
+            Opened::Client(key) => {
+                let (sender, speaker) = (companion.sender(), companion.speaker());
+                let doing = self
+                    .registered
+                    .listed(&self.devices)
+                    .iter()
+                    .find(|known| known.key() == key)
+                    .and_then(|known| doing(known, sender.as_deref(), speaker.as_deref()));
+                let apollo = companion.apollo();
+                let gone =
+                    self.registered.page(ui, apollo, &self.devices, key, doing.as_deref(), icons);
+                back || gone
+            }
+        }
+    }
+
     /// The screen. `share` is the setting. Returns whether the person asked
     /// to go back to `back_to`.
     pub fn show(&mut self, ui: &mut Ui, share: &mut bool, back_to: &str) -> bool {
@@ -186,8 +262,9 @@ impl Sharing {
                     ui.add(
                         egui::Label::new(widgets::dim(
                             "Your devices reach this PC through Leto. For now Leto works \
-                             beside Apollo or Sunshine, which stream the screen, and takes \
-                             what they do not: the camera and the microphone of your \
+                             beside Apollo or Sunshine, which stream the screen: it shows \
+                             the devices they are paired with and what each may do, and \
+                             takes what they do not, the camera and the microphone of your \
                              devices.",
                         ))
                         .wrap(),
@@ -241,15 +318,28 @@ impl Sharing {
                     ui.add(
                         egui::Label::new(widgets::dim(format!(
                             "Devices are the ones Apollo is paired with. Its settings are read \
-                             from {} and never changed.",
+                             from {}, where Leto never writes.",
                             companion.apollo().folder().display()
                         )))
                         .wrap(),
                     );
                 });
                 let sender = companion.sender();
-                let speaker = companion.speaker();
-                devices(ui, &self.devices, sender.as_deref(), speaker.as_deref());
+                card(ui, "Registered clients", |ui| {
+                    let line = match self.devices.len() {
+                        0 => "Apollo is paired with no device yet.".to_owned(),
+                        1 => "Apollo is paired with 1 device.".to_owned(),
+                        count => format!("Apollo is paired with {count} devices."),
+                    };
+                    ui.label(line);
+                    ui.add(
+                        egui::Label::new(widgets::dim(
+                            "Each has its card on the first screen, under your PCs: its icon, \
+                             what it may do, and the way to rename or unpair it.",
+                        ))
+                        .wrap(),
+                    );
+                });
                 camera(ui, companion, sender.as_deref(), handing.given(), &mut self.camera);
                 microphone(ui, companion, voicing);
                 if cfg!(windows) {
@@ -292,52 +382,29 @@ fn is_here(address: &str) -> bool {
         .is_ok_and(|address| !address.is_loopback() && UdpSocket::bind((address, 0)).is_ok())
 }
 
-/// The devices Apollo is paired with, and which may send a camera and a
+/// What a device is doing at this moment, when it does anything: `sender`
+/// and `speaker` are the names of the devices that send a camera and a
 /// microphone.
-fn devices(ui: &mut Ui, devices: &[Device], sender: Option<&str>, speaker: Option<&str>) {
-    card(ui, "Devices", |ui| {
-        if devices.is_empty() {
-            ui.label(widgets::dim("Apollo is paired with no device yet. Pair one from Leto."));
+fn doing(known: &registered::Known, sender: Option<&str>, speaker: Option<&str>) -> Option<String> {
+    let name = Some(known.name.as_str());
+    let sends = match (sender == name, speaker == name) {
+        (true, true) => Some("sending its camera and its microphone"),
+        (true, false) => Some("sending its camera"),
+        (false, true) => Some("sending its microphone"),
+        (false, false) => None,
+    };
+    match (known.streaming, sends) {
+        (true, Some(sends)) => Some(format!("Streaming, {sends}")),
+        (true, None) => Some("Streaming".to_owned()),
+        (false, Some(sends)) => {
+            let mut said = sends.to_owned();
+            if let Some(first) = said.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            Some(said)
         }
-        for device in devices {
-            let name = if device.name.is_empty() { "A device" } else { &device.name };
-            ui.horizontal(|ui| {
-                ui.label(name);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let name = Some(device.name.as_str());
-                    let sending = match (sender == name, speaker == name) {
-                        (true, true) => Some("Sending its camera and its microphone"),
-                        (true, false) => Some("Sending its camera"),
-                        (false, true) => Some("Sending its microphone"),
-                        (false, false) => None,
-                    };
-                    if let Some(sending) = sending {
-                        ui.label(RichText::new(sending).color(theme::sun()));
-                    } else if device.trusted() {
-                        ui.label(widgets::dim("May send its camera and its microphone"));
-                    } else {
-                        ui.label(widgets::dim("No camera, no microphone")).on_hover_text(
-                            "Apollo does not let this device use the keyboard and the mouse.",
-                        );
-                    }
-                });
-            });
-        }
-        if devices.iter().any(|device| !device.trusted()) {
-            ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(
-                    widgets::dim(
-                        "A device may send its camera and its microphone once Apollo lets it \
-                         use the keyboard and the mouse: tick both for it on Apollo's page, \
-                         under PIN.",
-                    )
-                    .size(theme::SMALL),
-                )
-                .wrap(),
-            );
-        }
-    });
+        (false, None) => None,
+    }
 }
 
 /// What the camera that is being sent sees.

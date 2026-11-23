@@ -10,9 +10,16 @@
 //!   companion shows the same certificate and takes the same devices.
 //! - [`camera`] answers Leto's API and takes the pictures of a camera.
 //! - [`Companion`] puts the two together.
+//! - [`pages`] asks Apollo's own pages for what its owner changes about a
+//!   device, so that Leto never writes Apollo's folder.
+//! - [`server`] is a host of its own: pairing, the apps, and the stream, with
+//!   the pictures and the sound it is given. The stand-in of the tests is
+//!   made of it, and so is the host that will stand where Apollo does.
 
 pub mod apollo;
 pub mod camera;
+pub mod pages;
+pub mod server;
 
 use std::{
     io,

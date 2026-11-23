@@ -43,6 +43,69 @@ const KEYBOARD: u32 = 1 << 12;
 /// Sunshine, which keeps none.
 const EVERYTHING: u32 = u32::MAX;
 
+/// Every permission Apollo has a word for (`_all` in its `crypto.h`).
+pub const EVERY_RIGHT: u32 = 0x071F_1F00;
+
+/// One thing Apollo lets a device do, or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Right {
+    /// Where Apollo keeps it among a device's permissions.
+    pub bit: u32,
+    pub name: &'static str,
+    /// The permissions that bring this one with them: a device that may
+    /// start apps may watch a stream, and one that may watch may list.
+    pub comes_with: u32,
+}
+
+impl Right {
+    /// Whether a device with these `permissions` has this one, said or
+    /// brought by another.
+    pub const fn held_by(&self, permissions: u32) -> bool {
+        permissions & (self.bit | self.comes_with) != 0
+    }
+
+    /// Whether another of these `permissions` brings this one, so that
+    /// taking it away alone changes nothing.
+    pub const fn brought_to(&self, permissions: u32) -> bool {
+        permissions & self.comes_with != 0
+    }
+}
+
+const LIST: u32 = 1 << 24;
+const VIEW: u32 = 1 << 25;
+const LAUNCH: u32 = 1 << 26;
+
+/// What Apollo lets the owner of the PC decide for each device, in the
+/// groups and the order of its own page (`pin.html`).
+pub const RIGHTS: [(&str, &[Right]); 3] = [
+    (
+        "Apps",
+        &[
+            Right { bit: LIST, name: "List the apps", comes_with: VIEW | LAUNCH },
+            Right { bit: VIEW, name: "Watch a stream", comes_with: LAUNCH },
+            Right { bit: LAUNCH, name: "Start apps", comes_with: 0 },
+        ],
+    ),
+    (
+        "On the PC",
+        &[
+            Right { bit: 1 << 16, name: "Write the clipboard", comes_with: 0 },
+            Right { bit: 1 << 17, name: "Read the clipboard", comes_with: 0 },
+            Right { bit: 1 << 20, name: "Run commands", comes_with: 0 },
+        ],
+    ),
+    (
+        "Input",
+        &[
+            Right { bit: 1 << 8, name: "Gamepad", comes_with: 0 },
+            Right { bit: 1 << 9, name: "Touch", comes_with: 0 },
+            Right { bit: 1 << 10, name: "Pen", comes_with: 0 },
+            Right { bit: MOUSE, name: "Mouse", comes_with: 0 },
+            Right { bit: KEYBOARD, name: "Keyboard", comes_with: 0 },
+        ],
+    ),
+];
+
 /// Why what Apollo keeps could not be read.
 #[derive(Debug)]
 pub enum Error {
@@ -73,6 +136,8 @@ impl std::error::Error for Error {}
 /// A device Apollo is paired with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    /// What Apollo knows it by. Empty for a device of an old Sunshine.
+    pub id: String,
     /// The name its owner gave it on Apollo's pages.
     pub name: String,
     /// Its certificate, DER encoded: what it shows when it connects.
@@ -96,6 +161,8 @@ pub struct Apollo {
     folder: PathBuf,
     port: u16,
     state: PathBuf,
+    /// Apollo's certificate, DER encoded.
+    certificate: Vec<u8>,
     tls: Arc<ServerConfig>,
 }
 
@@ -141,6 +208,7 @@ impl Apollo {
             "EC PRIVATE KEY" => PrivateKeyDer::Sec1(PrivateSec1KeyDer::from(key.into_contents())),
             _ => return Err(Error::Unexpected(key_file)),
         };
+        let certificate = certificate.into_contents();
 
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let verifier = AnyDevice { algorithms: provider.signature_verification_algorithms };
@@ -148,13 +216,14 @@ impl Apollo {
             .with_safe_default_protocol_versions()
             .map_err(|_| Error::Unexpected(key_file.clone()))?
             .with_client_cert_verifier(Arc::new(verifier))
-            .with_single_cert(vec![CertificateDer::from(certificate.into_contents())], key)
+            .with_single_cert(vec![CertificateDer::from(certificate.clone())], key)
             .map_err(|_| Error::Unexpected(key_file))?;
 
         let apollo = Self {
             folder: folder.to_owned(),
             port: settings.port.unwrap_or(DEFAULT_PORT),
             state,
+            certificate,
             tls: Arc::new(tls),
         };
         // Read once now, so that a folder that is not an Apollo's is refused
@@ -171,6 +240,17 @@ impl Apollo {
     /// The port Apollo counts its other ports from.
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The port of Apollo's own pages: the one after its own.
+    pub fn pages_port(&self) -> u16 {
+        self.port.saturating_add(1)
+    }
+
+    /// The certificate Apollo shows, to its devices and on its pages, DER
+    /// encoded.
+    pub fn certificate(&self) -> &[u8] {
+        &self.certificate
     }
 
     /// A TLS setup that shows Apollo's certificate and asks a device for its
@@ -190,10 +270,11 @@ impl Apollo {
         let root = tree.get("root").ok_or_else(unexpected)?;
 
         let mut devices = Vec::new();
-        let mut keep = |name: &str, certificate: &str, permissions: u32| {
+        let mut keep = |id: &str, name: &str, certificate: &str, permissions: u32| {
             // A certificate Apollo could not read back is no device.
             if let Ok(certificate) = pem::parse(certificate) {
                 devices.push(Device {
+                    id: id.to_owned(),
                     name: name.to_owned(),
                     certificate: certificate.into_contents(),
                     permissions,
@@ -209,12 +290,12 @@ impl Apollo {
                 .get("perm")
                 .and_then(Value::as_u64)
                 .map_or(EVERYTHING, |permissions| permissions as u32);
-            keep(text("name"), text("cert"), permissions);
+            keep(text("uuid"), text("name"), text("cert"), permissions);
         }
         // What a Sunshine wrote before it named devices.
         for device in root.get("devices").and_then(Value::as_array).into_iter().flatten() {
             for certificate in device.get("certs").and_then(Value::as_array).into_iter().flatten() {
-                keep("", certificate.as_str().unwrap_or(""), EVERYTHING);
+                keep("", "", certificate.as_str().unwrap_or(""), EVERYTHING);
             }
         }
         Ok(devices)
@@ -361,11 +442,36 @@ mod tests {
 
     #[test]
     fn a_device_is_trusted_when_it_may_use_the_keyboard_and_the_mouse() {
-        let device = |permissions| Device { name: String::new(), certificate: vec![], permissions };
+        let device = |permissions| Device {
+            id: String::new(),
+            name: String::new(),
+            certificate: vec![],
+            permissions,
+        };
         // What Apollo gives a new device: list the apps and watch.
         assert!(!device(0x0300_0000).trusted());
         assert!(!device(MOUSE).trusted());
         assert!(device(MOUSE | KEYBOARD).trusted());
         assert!(device(EVERYTHING).trusted());
+    }
+
+    #[test]
+    fn a_right_is_held_when_said_or_brought_by_another() {
+        let [(_, apps), (_, on_the_pc), (_, input)] = RIGHTS;
+        let [list, view, launch] = apps else { panic!("three rights about apps") };
+        // What Apollo gives a new device: list the apps and watch.
+        let new = 0x0300_0000;
+        assert!(list.held_by(new) && view.held_by(new) && !launch.held_by(new));
+        assert!(list.brought_to(new) && !view.brought_to(new));
+        // Starting apps brings the two others.
+        assert!(list.held_by(LAUNCH) && view.held_by(LAUNCH) && view.brought_to(LAUNCH));
+        assert!(!list.held_by(0) && !list.held_by(MOUSE));
+        // Every right is one Apollo has a word for, and no two are the same.
+        let all: Vec<u32> =
+            apps.iter().chain(on_the_pc).chain(input).map(|right| right.bit).collect();
+        assert_eq!(all.len(), 11);
+        assert_eq!(all.iter().fold(0, |every, bit| every | bit) & !EVERY_RIGHT, 0);
+        assert_eq!(all.iter().map(|bit| bit.count_ones()).sum::<u32>(), 11);
+        assert_eq!(all.iter().fold(0, |every, bit| every | bit).count_ones(), 11);
     }
 }

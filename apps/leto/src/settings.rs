@@ -10,6 +10,7 @@ use leto_core::{
     model::HostId,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The picture sizes offered besides the screen's own, as in Moonlight.
 pub const RESOLUTIONS: [[u32; 2]; 4] = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160]];
@@ -116,6 +117,60 @@ pub struct Settings {
     /// This PC is shared: Leto is its host too, from the moment it starts.
     /// Only a desktop has the screen that turns it on.
     pub share_this_pc: bool,
+    /// The icon the owner gave each device that reaches this PC, by what
+    /// the PC knows the device by. One without is guessed from its name.
+    pub client_icons: BTreeMap<String, ClientIcon>,
+}
+
+/// What a device that reaches this PC is, for the icon of its card.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientIcon {
+    #[default]
+    Computer,
+    Laptop,
+    Phone,
+    Tablet,
+    Television,
+    Console,
+}
+
+// Only a desktop shares its PC and has devices to give an icon to.
+#[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+impl ClientIcon {
+    pub const ALL: [Self; 6] =
+        [Self::Computer, Self::Laptop, Self::Phone, Self::Tablet, Self::Television, Self::Console];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Computer => "Computer",
+            Self::Laptop => "Laptop",
+            Self::Phone => "Phone",
+            Self::Tablet => "Tablet",
+            Self::Television => "Television",
+            Self::Console => "Console",
+        }
+    }
+
+    /// What a device with this name most likely is, until its owner says.
+    pub fn guessed(name: &str) -> Self {
+        let name = name.to_lowercase();
+        let named = |words: &[&str]| words.iter().any(|word| name.contains(word));
+        // A tablet before a phone, for "Galaxy Tab"; a phone before a
+        // television, for "téléphone".
+        if named(&["ipad", "tablet", "galaxy tab"]) {
+            Self::Tablet
+        } else if named(&["phone", "pixel", "galaxy", "oneplus", "xiaomi", "redmi", "mobile"]) {
+            Self::Phone
+        } else if named(&["tv", "télé", "televis", "shield", "chromecast", "bravia"]) {
+            Self::Television
+        } else if named(&["deck", "xbox", "switch", "console", "rog ally", "playstation"]) {
+            Self::Console
+        } else if named(&["laptop", "book", "portable", "thinkpad", "surface"]) {
+            Self::Laptop
+        } else {
+            Self::Computer
+        }
+    }
 }
 
 /// The camera, microphone and speakers Leto uses, by the names the system
@@ -209,6 +264,7 @@ impl Default for Settings {
             statistics: false,
             devices: DeviceChoices::default(),
             share_this_pc: false,
+            client_icons: BTreeMap::new(),
         }
     }
 }
@@ -537,6 +593,21 @@ mod tests {
         let chosen = Settings { statistics: true, devices: devices.clone(), ..Settings::default() };
         assert_eq!(chosen.defaults(), Settings { devices, ..Settings::default() });
         assert_eq!(Settings::default().defaults(), Settings::default());
+    }
+
+    #[test]
+    fn a_device_without_an_icon_gets_one_from_its_name() {
+        for (name, icon) in [
+            ("Pixel 9 Pro", ClientIcon::Phone),
+            ("Fire TV Stick", ClientIcon::Television),
+            ("Portable MH", ClientIcon::Laptop),
+            ("Galaxy Tab S9", ClientIcon::Tablet),
+            ("Téléphone de MH", ClientIcon::Phone),
+            ("Steam Deck", ClientIcon::Console),
+            ("armand-desktop", ClientIcon::Computer),
+        ] {
+            assert_eq!(ClientIcon::guessed(name), icon, "{name}");
+        }
     }
 
     #[test]
