@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6](https://github.com/armandleopold/Leto/compare/v0.0.5...v0.0.6) (2026-11-23)
+
+
+### Features
+
+* **host:** a card for each device of Apollo on the first screen, with its own page ([#76](https://github.com/armandleopold/Leto/issues/76)) ([e8ccd3d](https://github.com/armandleopold/Leto/commit/e8ccd3d83da46c3cb77b07be9a95834a7e6798e1))
+
 ## [0.0.5](https://github.com/armandleopold/Leto/compare/v0.0.4...v0.0.5) (2026-11-22)
 
 
