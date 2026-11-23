@@ -51,7 +51,7 @@ pub use microphone::Microphone;
 pub use sound::SoundDecoder;
 pub use speaker::Speaker;
 pub use video::{Pane, Picture, VideoDecoder, decodable};
-pub use voice::{VOICE_FRAME, VOICE_RATE, VoiceEncoder};
+pub use voice::{PCM_FRAME, VOICE_FRAME, VOICE_RATE, VoiceCoding, VoiceEncoder, pcm24_samples};
 
 /// What can go wrong with pictures and sound.
 #[derive(Debug, thiserror::Error)]

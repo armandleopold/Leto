@@ -16,6 +16,8 @@
 //!   the pictures and the sound it is given. The stand-in of the tests is
 //!   made of it, and so is the host that will stand where Apollo does.
 
+/// The packets of a microphone, and how their frames are coded.
+pub use leto_return::voice;
 pub mod apollo;
 pub mod camera;
 pub mod pages;
@@ -123,9 +125,9 @@ impl Companion {
         devices.into_iter().find(|device| device.certificate == certificate).map(|d| d.name)
     }
 
-    /// From now on the companion takes a microphone too, and hands its Opus
+    /// From now on the companion takes a microphone too, and hands its
     /// frames to whoever holds what this returns: see [`Cameras::hear`].
-    pub fn hear(&self) -> mpsc::Receiver<Vec<u8>> {
+    pub fn hear(&self) -> mpsc::Receiver<leto_return::voice::Frame> {
         self.cameras.hear()
     }
 }

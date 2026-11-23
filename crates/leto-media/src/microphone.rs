@@ -5,6 +5,7 @@ use std::sync::{
     Arc, Mutex, PoisonError,
     atomic::{AtomicBool, AtomicU32, Ordering},
 };
+use std::time::Duration;
 
 use cpal::{
     BufferSize, ErrorKind, FromSample, SampleFormat, SizedSample, StreamConfig,
@@ -14,7 +15,7 @@ use cpal::{
 
 use crate::{
     Error, endpoints,
-    voice::{VOICE_RATE, VoiceEncoder},
+    voice::{VOICE_RATE, VoiceCoding, VoiceEncoder},
 };
 
 /// Captures the system's default input and encodes it for a PC.
@@ -26,12 +27,13 @@ pub struct Microphone {
     level: Arc<AtomicU32>,
     /// Set by the input when it can no longer capture.
     lost: Arc<AtomicBool>,
+    coding: VoiceCoding,
     /// Capturing stops when this is dropped.
     _stream: cpal::Stream,
 }
 
 /// Takes each frame of the microphone, encoded.
-type Packets = Box<dyn FnMut(&[u8]) + Send>;
+type Packets = Box<dyn FnMut(Duration, &[u8]) + Send>;
 
 /// What the input's thread works with.
 struct Capture {
@@ -44,11 +46,13 @@ struct Capture {
 
 impl Microphone {
     /// Opens the input named `name`, or the default one, and hands `packet`
-    /// every frame of it, encoded as [`VoiceEncoder`] does, on a thread of
-    /// the system's.
+    /// every frame of it, encoded as [`VoiceEncoder`] does in `coding`, with
+    /// how long after the first frame it starts, on a thread of the
+    /// system's.
     pub fn open(
         name: Option<&str>,
-        packet: impl FnMut(&[u8]) + Send + 'static,
+        coding: VoiceCoding,
+        packet: impl FnMut(Duration, &[u8]) + Send + 'static,
     ) -> Result<Self, Error> {
         let device = endpoints::input(name)?;
         // The rate a PC takes when the microphone has it, which most do.
@@ -63,7 +67,7 @@ impl Microphone {
         let level = Arc::new(AtomicU32::new(0));
         let lost = Arc::new(AtomicBool::new(false));
         let capture = Arc::new(Mutex::new(Capture {
-            voice: VoiceEncoder::new(rate, channels)?,
+            voice: VoiceEncoder::new(rate, channels, coding)?,
             samples: Vec::new(),
             packet: Box::new(packet),
             level: Arc::clone(&level),
@@ -88,7 +92,8 @@ impl Microphone {
                         "the microphone captures {channels} channels as {} at {rate} Hz",
                         chosen.sample_format(),
                     );
-                    return Ok(Self { level, lost, _stream: stream });
+                    log::info!("the microphone goes to the PC as {coding:?}");
+                    return Ok(Self { level, lost, coding, _stream: stream });
                 }
                 Err(error) => failure = Some(error),
             }
@@ -100,6 +105,11 @@ impl Microphone {
     /// a microphone gets.
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    /// How what it captures is coded.
+    pub fn coding(&self) -> VoiceCoding {
+        self.coding
     }
 
     /// Whether the microphone stopped capturing on its own, for example

@@ -1,33 +1,48 @@
 //! From what a microphone captures to what a PC takes.
 //!
-//! A PC that takes a microphone wants one channel at 48 kHz, as Opus frames
-//! of twenty milliseconds. A microphone gives whatever it is built for:
-//! often two channels, often 44.1 kHz, sometimes 16 kHz on a headset. This
-//! mixes the channels into one, brings the samples to 48 kHz, cuts them into
-//! frames and encodes each.
+//! A PC that takes a microphone wants one channel at 48 kHz: as Opus frames
+//! of twenty milliseconds, or, beside Leto, as the samples themselves (see
+//! [`VoiceCoding`]). A microphone gives whatever it is built for: often two
+//! channels, often 44.1 kHz, sometimes 16 kHz on a headset. This mixes the
+//! channels into one, brings the samples to 48 kHz, cuts them into frames
+//! and encodes each.
 
 use std::time::Duration;
 
+pub use leto_core::model::VoiceCoding;
 use opus_rs::{Application, OpusEncoder};
 
 use crate::Error;
 
 /// The rate a PC takes a microphone at, in samples per second.
 pub const VOICE_RATE: u32 = 48_000;
-/// How long one frame of the microphone lasts.
+/// How long one Opus frame of the microphone lasts.
 pub const VOICE_FRAME: Duration = Duration::from_millis(20);
-/// Samples in one frame.
+/// How long one frame of samples lasts: short, so that one fits a packet.
+pub const PCM_FRAME: Duration = Duration::from_millis(5);
+/// Samples in one Opus frame.
 const FRAME: usize = (VOICE_RATE as usize / 1000) * VOICE_FRAME.as_millis() as usize;
+/// Samples in one frame of samples.
+const PCM_SAMPLES: usize = (VOICE_RATE as usize / 1000) * PCM_FRAME.as_millis() as usize;
+/// Bytes per sample of a frame of samples: 24 bits, little endian.
+pub const PCM_BYTES: usize = 3;
 
-/// Bits per second. Plenty for a voice on one channel, and little next to
-/// the pictures going the other way.
-const BIT_RATE: i32 = 48_000;
+/// Bits per second of Opus: as much as a voice on one channel gains from,
+/// and little next to the pictures going the other way.
+const BIT_RATE: i32 = 128_000;
 /// No Opus frame is longer than this.
 const LARGEST_PACKET: usize = 1275;
 
 /// Encodes what a microphone captures, in order.
 pub struct VoiceEncoder {
-    encoder: OpusEncoder,
+    /// `None` when the samples go as they are.
+    encoder: Option<OpusEncoder>,
+    /// Samples in a frame.
+    frame: usize,
+    /// How long a frame lasts.
+    lasts: Duration,
+    /// Frames handed over so far.
+    frames: u32,
     channels: usize,
     /// How far the capture advances for each sample at 48 kHz.
     step: f64,
@@ -45,17 +60,27 @@ pub struct VoiceEncoder {
 impl VoiceEncoder {
     /// An encoder for a microphone that captures `channels` channels at
     /// `rate` samples per second.
-    pub fn new(rate: u32, channels: usize) -> Result<Self, Error> {
+    pub fn new(rate: u32, channels: usize, coding: VoiceCoding) -> Result<Self, Error> {
         if rate == 0 || channels == 0 {
             return Err(Error::Microphone("the microphone says it captures nothing".to_owned()));
         }
         // The low-delay mode: the same kind of frames a host sends its own
         // sound in, which every Opus decoder is at home with.
-        let mut encoder = OpusEncoder::new(VOICE_RATE as i32, 1, Application::RestrictedLowDelay)
-            .map_err(|error| Error::Microphone(error.to_owned()))?;
-        encoder.bitrate_bps = BIT_RATE;
+        let (encoder, frame, lasts) = match coding {
+            VoiceCoding::Opus => {
+                let mut encoder =
+                    OpusEncoder::new(VOICE_RATE as i32, 1, Application::RestrictedLowDelay)
+                        .map_err(|error| Error::Microphone(error.to_owned()))?;
+                encoder.bitrate_bps = BIT_RATE;
+                (Some(encoder), FRAME, VOICE_FRAME)
+            }
+            VoiceCoding::Pcm => (None, PCM_SAMPLES, PCM_FRAME),
+        };
         Ok(Self {
             encoder,
+            frame,
+            lasts,
+            frames: 0,
             channels,
             step: f64::from(rate) / f64::from(VOICE_RATE),
             position: 1.0,
@@ -67,8 +92,9 @@ impl VoiceEncoder {
     }
 
     /// Takes what was captured since the last call, the samples of all
-    /// channels interleaved, and hands each frame it completes to `packet`.
-    pub fn push(&mut self, captured: &[f32], mut packet: impl FnMut(&[u8])) {
+    /// channels interleaved, and hands each frame it completes to `packet`,
+    /// with how long after the first frame it starts.
+    pub fn push(&mut self, captured: &[f32], mut packet: impl FnMut(Duration, &[u8])) {
         let moments = captured.len() / self.channels;
         let moment = |index: usize| {
             let start = index * self.channels;
@@ -95,12 +121,23 @@ impl VoiceEncoder {
             self.position -= moments as f64;
         }
 
-        let mut frames = self.waiting.chunks_exact(FRAME);
+        let mut frames = self.waiting.chunks_exact(self.frame);
         for frame in &mut frames {
             self.level = loudness(frame);
-            match self.encoder.encode(frame, FRAME, &mut self.packet) {
-                Ok(length) => packet(&self.packet[..length]),
-                Err(error) => log::debug!("a moment of the microphone was not encoded: {error}"),
+            let at = self.lasts * self.frames;
+            self.frames = self.frames.wrapping_add(1);
+            match &mut self.encoder {
+                Some(encoder) => match encoder.encode(frame, FRAME, &mut self.packet) {
+                    Ok(length) => packet(at, &self.packet[..length]),
+                    Err(error) => {
+                        log::debug!("a moment of the microphone was not encoded: {error}");
+                    }
+                },
+                None => {
+                    self.packet.clear();
+                    self.packet.extend(frame.iter().flat_map(|sample| pcm24(*sample)));
+                    packet(at, &self.packet);
+                }
             }
         }
         let left = frames.remainder().len();
@@ -116,6 +153,23 @@ impl VoiceEncoder {
 }
 
 /// How loud `samples` are: 1 for a tone that reaches the limits.
+/// One sample as 24 bits, little endian: what a sound card gives at best.
+fn pcm24(sample: f32) -> [u8; PCM_BYTES] {
+    // Rounded, and kept inside what 24 bits hold.
+    let value = (sample.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32;
+    let bytes = value.to_le_bytes();
+    [bytes[0], bytes[1], bytes[2]]
+}
+
+/// The samples of a frame of [`VoiceCoding::Pcm`], back between -1 and 1.
+pub fn pcm24_samples(frame: &[u8]) -> impl Iterator<Item = f32> + '_ {
+    frame.chunks_exact(PCM_BYTES).map(|bytes| {
+        // The sign is the top bit of the third byte, carried by the shift.
+        let value = i32::from_le_bytes([0, bytes[0], bytes[1], bytes[2]]) >> 8;
+        value as f32 / 8_388_607.0
+    })
+}
+
 fn loudness(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -135,7 +189,7 @@ mod tests {
     /// `channels` channels at `rate` would capture it, in pieces of `piece`
     /// samples per channel. Returns the packets it made.
     fn capture(rate: u32, channels: usize, piece: usize) -> (Vec<Vec<u8>>, f32) {
-        let mut voice = VoiceEncoder::new(rate, channels).expect("an encoder");
+        let mut voice = VoiceEncoder::new(rate, channels, VoiceCoding::Opus).expect("an encoder");
         let captured: Vec<f32> = (0..rate)
             .flat_map(|index| {
                 let time = index as f32 / rate as f32;
@@ -145,7 +199,7 @@ mod tests {
             .collect();
         let mut packets = Vec::new();
         for piece in captured.chunks(piece * channels) {
-            voice.push(piece, |packet| packets.push(packet.to_vec()));
+            voice.push(piece, |_, packet| packets.push(packet.to_vec()));
         }
         (packets, voice.level())
     }
@@ -197,7 +251,7 @@ mod tests {
         // Claps, a knock, a word that starts hard: what an encoder treats
         // unlike a steady tone. A quiet room, with a burst every tenth of a
         // second, each a little later in its frame than the one before.
-        let mut voice = VoiceEncoder::new(48_000, 1).expect("an encoder");
+        let mut voice = VoiceEncoder::new(48_000, 1, VoiceCoding::Opus).expect("an encoder");
         let captured: Vec<f32> = (0..48_000 * 3)
             .map(|index: u32| {
                 let since_burst = index % 4_937;
@@ -207,7 +261,7 @@ mod tests {
             .collect();
         let mut packets = Vec::new();
         for piece in captured.chunks(480) {
-            voice.push(piece, |packet| packets.push(packet.to_vec()));
+            voice.push(piece, |_, packet| packets.push(packet.to_vec()));
         }
         assert_eq!(packets.len(), 150);
 
@@ -225,16 +279,38 @@ mod tests {
 
     #[test]
     fn silence_is_silent_and_nothing_makes_nothing() {
-        let mut voice = VoiceEncoder::new(48_000, 2).expect("an encoder");
+        let mut voice = VoiceEncoder::new(48_000, 2, VoiceCoding::Opus).expect("an encoder");
         let mut packets = 0;
-        voice.push(&[], |_| packets += 1);
-        voice.push(&[0.0; 960], |_| packets += 1);
+        voice.push(&[], |_, _| packets += 1);
+        voice.push(&[0.0; 960], |_, _| packets += 1);
         assert_eq!(packets, 0, "half a frame is not a frame");
-        voice.push(&[0.0; 960], |_| packets += 1);
+        voice.push(&[0.0; 960], |_, _| packets += 1);
         assert_eq!(packets, 1);
         assert_eq!(voice.level(), 0.0);
 
-        assert!(VoiceEncoder::new(0, 1).is_err());
-        assert!(VoiceEncoder::new(48_000, 0).is_err());
+        assert!(VoiceEncoder::new(0, 1, VoiceCoding::Opus).is_err());
+        assert!(VoiceEncoder::new(48_000, 0, VoiceCoding::Pcm).is_err());
+    }
+
+    #[test]
+    fn samples_go_as_they_are_in_frames_of_five_milliseconds() {
+        let mut voice = VoiceEncoder::new(48_000, 1, VoiceCoding::Pcm).expect("an encoder");
+        // A ramp from one end to the other, a second long.
+        let captured: Vec<f32> = (0..48_000).map(|index| index as f32 / 24_000.0 - 1.0).collect();
+        let mut frames = Vec::new();
+        for piece in captured.chunks(441) {
+            voice.push(piece, |at, frame| frames.push((at, frame.to_vec())));
+        }
+        assert_eq!(frames.len(), 200);
+        assert!(frames.iter().all(|(_, frame)| frame.len() == PCM_SAMPLES * PCM_BYTES));
+        assert_eq!(frames[3].0, Duration::from_millis(15));
+        // Nothing lost but what 24 bits cannot hold.
+        let heard: Vec<f32> = frames.iter().flat_map(|(_, frame)| pcm24_samples(frame)).collect();
+        for (index, sample) in heard.iter().enumerate() {
+            let sent = captured[index];
+            assert!((sample - sent).abs() < 2.0e-7, "{sample} for {sent} at {index}");
+        }
+        assert_eq!(pcm24(1.5), pcm24(1.0));
+        assert_eq!(pcm24_samples(&pcm24(-1.0)).next(), Some(-1.0));
     }
 }

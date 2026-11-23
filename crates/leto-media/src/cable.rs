@@ -7,7 +7,12 @@
 //! on that output. Leto plays the voice of a device on the output, and the
 //! apps of the PC pick the microphone.
 
-use crate::{Error, endpoints, sound::SoundDecoder, speaker::Speaker, voice::VOICE_RATE};
+use crate::{
+    Error, endpoints,
+    sound::SoundDecoder,
+    speaker::Speaker,
+    voice::{VOICE_RATE, VoiceCoding, pcm24_samples},
+};
 
 /// The cables Leto knows: part of the name of their sound output, and the
 /// microphone the apps of the PC pick to hear it.
@@ -31,20 +36,34 @@ pub fn find() -> Option<Found> {
     among(&endpoints::speakers())
 }
 
-fn among(outputs: &[String]) -> Option<Found> {
+/// The first cable Leto knows among `outputs`.
+pub fn among(outputs: &[String]) -> Option<Found> {
     KNOWN.iter().find_map(|(part, microphone)| {
-        let output = outputs.iter().find(|name| name.contains(part))?;
+        let output = outputs.iter().find(|name| holds(name, part))?;
         Some(Found { output: output.clone(), microphone: (*microphone).to_owned() })
     })
 }
 
-/// The sound output of this name as a cable, when the PC has it: for one
-/// Leto does not know.
+/// Whether `name` holds `part`, whatever their case: a system or a driver
+/// may spell a device's name its own way.
+fn holds(name: &str, part: &str) -> bool {
+    name.to_lowercase().contains(&part.to_lowercase())
+}
+
+/// The sound output of this name as a cable, when the PC has it: one the
+/// person chose, which Leto may not know.
 pub fn named(output: &str) -> Option<Found> {
-    endpoints::speakers()
+    endpoints::speakers().iter().any(|name| name == output).then(|| chosen(output))
+}
+
+/// The output of this name as a cable, heard by the microphone that goes
+/// with it when Leto knows the cable, and by a name that says so when not.
+fn chosen(output: &str) -> Found {
+    let microphone = KNOWN
         .iter()
-        .any(|name| name == output)
-        .then(|| Found { output: output.to_owned(), microphone: output.to_owned() })
+        .find(|(part, _)| holds(output, part))
+        .map_or_else(|| format!("the microphone of {output}"), |(_, mic)| (*mic).to_owned());
+    Found { output: output.to_owned(), microphone }
 }
 
 /// A voice on its way into a cable.
@@ -68,17 +87,25 @@ impl Cable {
         })
     }
 
-    /// Plays one Opus frame of a voice: one channel at 48 kHz. Returns how
-    /// loud it was, from 0 to 1, or `None` once the cable is gone: it is
-    /// not looked for again, since what would be found by its name could be
-    /// the speakers.
-    pub fn play(&mut self, frame: &[u8]) -> Option<f32> {
+    /// Plays one frame of a voice, one channel at 48 kHz, in `coding`.
+    /// Returns how loud it was, from 0 to 1, or `None` once the cable is
+    /// gone: it is not looked for again, since what would be found by its
+    /// name could be the speakers.
+    pub fn play(&mut self, coding: VoiceCoding, frame: &[u8]) -> Option<f32> {
         if self.speaker.is_lost() {
             return None;
         }
-        let Ok(samples) = self.decoder.decode(frame) else {
-            // Damaged on the way: a moment of silence.
-            return Some(0.0);
+        let pcm: Vec<f32>;
+        let samples = match coding {
+            VoiceCoding::Opus => match self.decoder.decode(frame) {
+                Ok(samples) => samples,
+                // Damaged on the way: a moment of silence.
+                Err(_) => return Some(0.0),
+            },
+            VoiceCoding::Pcm => {
+                pcm = pcm24_samples(frame).collect();
+                &pcm
+            }
         };
         let loudest = samples.iter().fold(0.0f32, |loudest, sample| loudest.max(sample.abs()));
         self.stereo.clear();
@@ -114,6 +141,24 @@ mod tests {
             among(&outputs(&["Speakers (Steam Streaming Microphone)"]))
                 .map(|found| found.microphone),
             Some("Microphone (Steam Streaming Microphone)".to_owned())
+        );
+        // Whatever the case of the name.
+        assert_eq!(
+            among(&outputs(&["Haut-parleurs (STEAM Streaming Microphone)"]))
+                .map(|found| found.microphone),
+            Some("Microphone (Steam Streaming Microphone)".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_chosen_output_is_heard_by_its_own_microphone_when_leto_knows_it() {
+        assert_eq!(
+            chosen("Haut-parleurs (Steam Streaming Microphone)").microphone,
+            "Microphone (Steam Streaming Microphone)"
+        );
+        assert_eq!(
+            chosen("Voicemeeter Input (VB-Audio Voicemeeter VAIO)").microphone,
+            "the microphone of Voicemeeter Input (VB-Audio Voicemeeter VAIO)"
         );
     }
 }

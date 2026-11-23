@@ -117,6 +117,10 @@ pub struct Settings {
     /// This PC is shared: Leto is its host too, from the moment it starts.
     /// Only a desktop has the screen that turns it on.
     pub share_this_pc: bool,
+    /// The sound output of this PC that a device's microphone plays on,
+    /// for the apps of this PC to hear it: one side of a virtual cable.
+    /// `None`: the first cable Leto knows.
+    pub cable: Option<String>,
     /// The icon the owner gave each device that reaches this PC, by what
     /// the PC knows the device by. One without is guessed from its name.
     pub client_icons: BTreeMap<String, ClientIcon>,
@@ -264,6 +268,7 @@ impl Default for Settings {
             statistics: false,
             devices: DeviceChoices::default(),
             share_this_pc: false,
+            cable: None,
             client_icons: BTreeMap::new(),
         }
     }
