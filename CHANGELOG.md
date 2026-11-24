@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.8](https://github.com/armandleopold/Leto/compare/v0.0.7...v0.0.8) (2026-11-24)
+
+
+### Features
+
+* **android:** the app draws as fast as its screen shows, 120 Hz on a Pixel ([#83](https://github.com/armandleopold/Leto/issues/83)) ([f7f6f45](https://github.com/armandleopold/Leto/commit/f7f6f452c00b608ed802afb76c5b3f4accad0fc1))
+* starting Leto again shows the one that runs instead of a second ([#85](https://github.com/armandleopold/Leto/issues/85)) ([04280e3](https://github.com/armandleopold/Leto/commit/04280e3fb14a0bcc667dafc2d04e971f285cef19))
+
+
+### Bug fixes
+
+* **app:** draw the logo from its SVG so it stays sharp ([#84](https://github.com/armandleopold/Leto/issues/84)) ([c70be47](https://github.com/armandleopold/Leto/commit/c70be4728cfe76b427e1f6de569b230f4bb18fbe))
+
 ## [0.0.7](https://github.com/armandleopold/Leto/compare/v0.0.6...v0.0.7) (2026-11-23)
 
 
