@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.9](https://github.com/armandleopold/Leto/compare/v0.0.8...v0.0.9) (2026-11-24)
+
+
+### Bug fixes
+
+* a stream on a shaky network shows what arrives and warns only after ten seconds ([#87](https://github.com/armandleopold/Leto/issues/87)) ([ad59866](https://github.com/armandleopold/Leto/commit/ad59866ec08187f7eda1eb31adbdc0c1b91a902b))
+
 ## [0.0.8](https://github.com/armandleopold/Leto/compare/v0.0.7...v0.0.8) (2026-11-24)
 
 
