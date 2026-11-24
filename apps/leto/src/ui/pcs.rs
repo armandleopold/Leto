@@ -649,7 +649,7 @@ impl Badge {
                     Vec2::splat(Self::LOGO),
                 );
                 egui::Image::new(egui::include_image!(
-                    "../../../../assets/wireguard/wireguard.png"
+                    "../../../../assets/wireguard/wireguard.svg"
                 ))
                 .paint_at(ui, rect);
             }
