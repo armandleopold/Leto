@@ -28,8 +28,9 @@ use crate::{
 /// gets the time to reach the PC before the app is gone.
 const CLOSES_AFTER_LEAVING: f64 = 0.3;
 
-/// Displayed size of the logo in the top bar, in points. The image is larger,
-/// so it stays sharp on high-density screens.
+/// Displayed size of the logo in the top bar, in points. The logo is drawn
+/// from its SVG at the screen's own pixel size, so it stays sharp at any
+/// scale.
 const LOGO: Vec2 = Vec2::new(98.0, 28.0);
 
 /// State of the Leto window.
@@ -775,9 +776,9 @@ fn top_bar(ui: &mut egui::Ui) {
     line_ui.add_space(margin);
     // The moon of the logo is ivory by night and ink by day.
     let logo = if theme::by_day() {
-        egui::include_image!("../../../assets/brand/png/leto-logo-on-light.png")
+        egui::include_image!("../../../assets/brand/svg/leto-logo-on-light.svg")
     } else {
-        egui::include_image!("../../../assets/brand/png/leto-logo.png")
+        egui::include_image!("../../../assets/brand/svg/leto-logo.svg")
     };
     line_ui.add(egui::Image::new(logo).fit_to_exact_size(LOGO));
     ui.advance_cursor_after_rect(bar);
