@@ -41,10 +41,25 @@ pub fn plugged() -> Option<Mode> {
     None
 }
 
+/// Tells the system that the window drawn on `window` (on Android its
+/// `ANativeWindow`) wants as many pictures a second as its screen can show:
+/// a Pixel's own screen otherwise stays at 60 while the app moves, although
+/// it shows 120, and the app's menus look less smooth than the phone's own.
+/// A screen with nothing new to show still slows down, as the system wants.
+/// Cheap to call every frame: the system is told only when the window or
+/// the screen changed. Nothing off Android, nor before Android 11.
+pub fn draw_at_screen_pace(window: *mut std::ffi::c_void) {
+    #[cfg(target_os = "android")]
+    android::draw_at_screen_pace(window);
+    #[cfg(not(target_os = "android"))]
+    let _ = window;
+}
+
 #[cfg(target_os = "android")]
 mod android {
     use std::{
-        sync::{Mutex, PoisonError},
+        ffi::c_void,
+        sync::{Mutex, OnceLock, PoisonError},
         time::{Duration, Instant},
     };
 
@@ -95,25 +110,7 @@ mod android {
             // a stream asks Android for (`Screen.pace`), so the one to ask
             // the PC for.
             if id != OWN_SCREEN {
-                let modes = env
-                    .call_method(
-                        &display,
-                        "getSupportedModes",
-                        "()[Landroid/view/Display$Mode;",
-                        &[],
-                    )?
-                    .l()?;
-                let modes = jni::objects::JObjectArray::from(modes);
-                for at in 0..env.get_array_length(&modes)? {
-                    let other = env.get_object_array_element(&modes, at)?;
-                    let same = env.call_method(&other, "getPhysicalWidth", "()I", &[])?.i()?
-                        == width
-                        && env.call_method(&other, "getPhysicalHeight", "()I", &[])?.i()? == height;
-                    if same {
-                        hz = hz.max(env.call_method(&other, "getRefreshRate", "()F", &[])?.f()?);
-                    }
-                    env.delete_local_ref(other)?;
-                }
+                hz = hz.max(fastest(env, &display, width, height)?);
             }
             Ok(Some((width, height, hz, id)))
         });
@@ -143,6 +140,130 @@ mod android {
                 log::warn!("the screen's mode is unknown: {error}");
                 None
             }
+        }
+    }
+
+    /// The most pictures a second among the modes of `display` that have
+    /// `width` by `height` pixels; 0 when it lists none.
+    fn fastest(
+        env: &mut JNIEnv<'_>,
+        display: &JObject<'_>,
+        width: i32,
+        height: i32,
+    ) -> Result<f32> {
+        let modes = env
+            .call_method(display, "getSupportedModes", "()[Landroid/view/Display$Mode;", &[])?
+            .l()?;
+        let modes = jni::objects::JObjectArray::from(modes);
+        let mut hz: f32 = 0.0;
+        for at in 0..env.get_array_length(&modes)? {
+            let other = env.get_object_array_element(&modes, at)?;
+            let same = env.call_method(&other, "getPhysicalWidth", "()I", &[])?.i()? == width
+                && env.call_method(&other, "getPhysicalHeight", "()I", &[])?.i()? == height;
+            if same {
+                hz = hz.max(env.call_method(&other, "getRefreshRate", "()F", &[])?.f()?);
+            }
+            env.delete_local_ref(other)?;
+        }
+        Ok(hz)
+    }
+
+    /// The most pictures a second the screen the activity is on shows with
+    /// the pixels it has now.
+    fn fastest_here() -> Option<f32> {
+        let read = with_java(|env, activity| {
+            let display = display(env, activity)?;
+            if display.is_null() {
+                return Ok(0.0);
+            }
+            let mode =
+                env.call_method(&display, "getMode", "()Landroid/view/Display$Mode;", &[])?.l()?;
+            let width = env.call_method(&mode, "getPhysicalWidth", "()I", &[])?.i()?;
+            let height = env.call_method(&mode, "getPhysicalHeight", "()I", &[])?.i()?;
+            let now = env.call_method(&mode, "getRefreshRate", "()F", &[])?.f()?;
+            Ok(now.max(fastest(env, &display, width, height)?))
+        });
+        match read {
+            Ok(hz) if hz >= 1.0 => Some(hz),
+            Ok(_) => None,
+            Err(error) => {
+                log::warn!("how fast the screen goes is unknown: {error}");
+                None
+            }
+        }
+    }
+
+    /// `ANativeWindow_setFrameRate`, which came with Android 11 (API 30):
+    /// looked up while the app runs, as it also runs on earlier versions.
+    type SetFrameRate = unsafe extern "C" fn(*mut c_void, f32, i8) -> i32;
+
+    /// `ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT`: the window draws as
+    /// fast as it can up to the pace asked, and a screen that is not
+    /// exactly at it is fine.
+    const ANY_PACE_UP_TO: i8 = 0;
+
+    fn set_frame_rate() -> Option<SetFrameRate> {
+        static FOUND: OnceLock<Option<usize>> = OnceLock::new();
+        let found = *FOUND.get_or_init(|| {
+            // SAFETY: a library of the system's own, which every app has
+            // loaded already, and a name ending with a zero.
+            let library = unsafe { libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOW) };
+            if library.is_null() {
+                return None;
+            }
+            // SAFETY: as above.
+            let symbol = unsafe { libc::dlsym(library, c"ANativeWindow_setFrameRate".as_ptr()) };
+            (!symbol.is_null()).then_some(symbol as usize)
+        });
+        // SAFETY: the NDK's own function, which has this signature.
+        found.map(|symbol| unsafe { std::mem::transmute::<usize, SetFrameRate>(symbol) })
+    }
+
+    /// How often the screen's pace is asked again while the window stays.
+    const ASKED_EVERY: Duration = Duration::from_secs(2);
+
+    /// The window told, the pace it was told, and when the screen was last
+    /// asked.
+    struct Told {
+        window: usize,
+        hz: f32,
+        asked: Instant,
+    }
+
+    pub fn draw_at_screen_pace(window: *mut c_void) {
+        static TOLD: Mutex<Option<Told>> = Mutex::new(None);
+        if window.is_null() {
+            return;
+        }
+        let mut told = TOLD.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(last) = told.as_ref()
+            && last.window == window as usize
+            && last.asked.elapsed() < ASKED_EVERY
+        {
+            return;
+        }
+        let Some(hz) = fastest_here() else {
+            return;
+        };
+        if let Some(last) = told.as_mut()
+            && last.window == window as usize
+            && last.hz == hz
+        {
+            last.asked = Instant::now();
+            return;
+        }
+        *told = Some(Told { window: window as usize, hz, asked: Instant::now() });
+        let Some(set_frame_rate) = set_frame_rate() else {
+            log::info!("this Android cannot be told how fast the window draws");
+            return;
+        };
+        // SAFETY: the window Android gave the activity, alive while the app
+        // draws on it, which is when this is called.
+        let error = unsafe { set_frame_rate(window, hz, ANY_PACE_UP_TO) };
+        if error == 0 {
+            log::info!("the window draws up to {hz} pictures a second, as fast as its screen");
+        } else {
+            log::warn!("Android was not told the window draws at {hz} pictures a second: {error}");
         }
     }
 

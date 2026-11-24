@@ -70,6 +70,10 @@ pub fn run_desktop() -> eframe::Result {
 #[cfg(target_os = "android")]
 pub use winit::platform::android::activity::AndroidApp;
 
+/// The activity the app runs in, once it started.
+#[cfg(target_os = "android")]
+pub(crate) static ACTIVITY: std::sync::OnceLock<AndroidApp> = std::sync::OnceLock::new();
+
 /// Runs the app in an Android activity until the system ends it. The
 /// settings, pairings and logs go in the app's own folder.
 #[cfg(target_os = "android")]
@@ -81,6 +85,8 @@ pub fn run_android(activity: AndroidApp) -> eframe::Result {
         leto_client::logs::start("leto", &settings);
     }
     let settings = settings::load();
+    // Its window is told how fast to draw, as it comes and goes.
+    let _ = ACTIVITY.set(activity.clone());
     // Gamepads, which winit would make touches and unknown keys of.
     winit::platform::android::set_input_hook(leto_system::gamepad::hear);
 

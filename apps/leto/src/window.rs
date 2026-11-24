@@ -123,6 +123,16 @@ mod desktop {
         Some(ScreenMode { width, height, refresh_hz: 60 })
     }
 
+    /// Has the window drawn as fast as its screen shows, rather than at the
+    /// 60 pictures a second Android leaves an app it was told nothing of:
+    /// a Pixel's own screen shows 120. Cheap to call every frame.
+    pub fn draw_at_screen_pace() {
+        #[cfg(target_os = "android")]
+        if let Some(window) = crate::ACTIVITY.get().and_then(|activity| activity.native_window()) {
+            display::draw_at_screen_pace(window.ptr().as_ptr().cast());
+        }
+    }
+
     /// Whether the window is on a screen plugged into this device, rather
     /// than on its own: a phone's desktop on a monitor.
     pub fn on_plugged_screen() -> bool {
