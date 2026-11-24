@@ -61,7 +61,11 @@ of the stream's bar is open, and the log says so.
 
 Leto is one program, host and client: the app shares the PC it runs on
 from its "This PC" screen (`apps/leto/src/host.rs`), and there is no
-separate host program. The first piece of the host is the companion: beside
+separate host program. Only one app runs at a time for one settings
+folder (`leto_system::instance`): started again, it asks the one that runs
+to show its window, even put away beside the clock, and ends. On Linux,
+give a second one its own `XDG_CONFIG_HOME` to run two. The first piece of
+the host is the companion: beside
 an Apollo or a Sunshine, it takes the camera of the devices they are paired
 with (`crates/leto-host`). It reads their settings folder and never writes
 there. `leto-cli companion` runs it without a window. No Apollo at hand?

@@ -31,10 +31,27 @@ const STATUS_ID: &str = "leto_status";
 /// Runs the desktop app until its window closes.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn run_desktop() -> eframe::Result {
+    use leto_system::instance;
+
     // The app has no terminal on Windows: what it says goes to a file.
     if let Ok(settings) = leto_client::default_directory() {
         leto_client::logs::start("leto", &settings);
     }
+
+    // One Leto at a time: started again, it shows the one that runs, even
+    // put away beside the clock, and opens no window of its own.
+    let first = match leto_client::default_directory().map(|folder| instance::claim(&folder)) {
+        Ok(Ok(instance::Claim::Other)) => {
+            log::info!("Leto already runs: its window was shown instead");
+            return Ok(());
+        }
+        Ok(Ok(instance::Claim::First(first))) => Some(first),
+        Ok(Err(problem)) => {
+            log::warn!("cannot tell whether Leto already runs: {problem}");
+            None
+        }
+        Err(_) => None,
+    };
 
     // V-Sync is chosen once, before the window opens.
     let settings = settings::load();
@@ -62,8 +79,36 @@ pub fn run_desktop() -> eframe::Result {
     eframe::run_native(
         leto_core::brand::NAME,
         options,
-        Box::new(move |cc| Ok(Box::new(app::LetoApp::new(cc, settings)))),
+        Box::new(move |cc| {
+            if let Some(first) = first {
+                first.listen(shower(cc));
+            }
+            Ok(Box::new(app::LetoApp::new(cc, settings)))
+        }),
     )
+}
+
+/// What brings Leto's window back in front, when Leto is started again.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn shower(cc: &eframe::CreationContext<'_>) -> impl Fn() + Send + 'static {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let ctx = cc.egui_ctx.clone();
+    // Windows draws nothing in a window it hid: Windows itself shows it.
+    let window = match cc.window_handle().map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Win32(handle)) => Some(handle.hwnd.get()),
+        _ => None,
+    };
+    move || {
+        if let Some(window) = window {
+            leto_system::shown::show(window);
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        ctx.request_repaint();
+    }
 }
 
 /// The Android activity the app runs in, as `apps/leto-android` is given it.
