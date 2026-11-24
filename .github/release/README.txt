@@ -51,8 +51,14 @@ Good to know
 
 - Leto is in development. What has been tried on a real PC is listed on
   https://leto.re, under "Where Leto stands".
-- The files are not signed. Windows SmartScreen may warn on the first start:
-  "More info", then "Run anyway". On macOS: right-click leto, then "Open".
+- Windows SmartScreen may warn on the first start while the files are not
+  signed, or are signed but still new to it: "More info", then "Run
+  anyway". On macOS, when the files are not signed: right-click leto, then
+  "Open".
+- Each file of a release comes with a GitHub attestation that GitHub built
+  it from Leto's source, at that version. With the GitHub command line:
+  gh attestation verify <file> --repo armandleopold/leto
+  SHA256SUMS.txt, next to the files, gives their fingerprints too.
 - The macOS and Linux builds have never been tried by hand.
 - On Linux, sound goes through ALSA and gamepads through udev (the libasound2
   and libudev1 packages, present on most systems).

@@ -30,3 +30,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 leto-testhost = { workspace = true }
+
+[build-dependencies]
+embed-resource = "3"
