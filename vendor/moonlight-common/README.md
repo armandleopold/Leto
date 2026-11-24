@@ -56,6 +56,11 @@ Each is marked with a comment that starts with `Leto:`.
   times it asked for a keyframe because none came. Leto reads them to say
   why a stream has no picture, and to ask for it again. The commit kept no
   such count.
+- `src/stream/proto/control/peer.rs` (`connect`): a client waits ten
+  seconds at least for a host that went silent before it gives the control
+  connection up, as moonlight-common-c does (`enet_peer_timeout`). The
+  commit kept ENet's five seconds, which a network that comes and goes
+  reaches with a stream that would have come back by itself.
 - `src/stream/std/driver.rs` and `src/stream/std/mod.rs`: the control
   connection is told the time before the application sends over it
   (`stream_mut_now`). The commit only told it when a packet arrived or a
