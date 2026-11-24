@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.10](https://github.com/armandleopold/Leto/compare/v0.0.9...v0.0.10) (2026-11-24)
+
+
+### Features
+
+* Android releases are signed with one key, so phones update without uninstalling ([#90](https://github.com/armandleopold/Leto/issues/90)) ([a569eda](https://github.com/armandleopold/Leto/commit/a569eda7f2c47a69a5f78032860d354258462d0c))
+
 ## [0.0.9](https://github.com/armandleopold/Leto/compare/v0.0.8...v0.0.9) (2026-11-24)
 
 
