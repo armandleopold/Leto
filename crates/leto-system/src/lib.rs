@@ -26,6 +26,7 @@ pub mod egl;
 pub mod elevate;
 #[cfg(target_os = "android")]
 pub mod gamepad;
+pub mod instance;
 pub mod keyboard;
 #[cfg(target_os = "android")]
 pub mod opus;
