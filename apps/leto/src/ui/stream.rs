@@ -61,10 +61,12 @@ const FILLS_ON_CONNECT: bool = cfg!(not(target_arch = "wasm32"));
 /// Seconds between two updates of the statistics.
 const STATISTICS_EVERY: f64 = 1.0;
 /// Seconds without a picture after which a stream says that it lost its
-/// PC: one stands still a moment longer on a bad network, or when the
-/// picture does, but a PC sends pictures several times a second all the
-/// same.
-const LOST_AFTER: f64 = 3.0;
+/// PC. A PC sends pictures several times a second, but on a network that
+/// comes and goes, as in a moving train, pictures stop for a few seconds
+/// and come again: until then the stream shows what arrives, without a
+/// sign. Ten seconds is also how long the PC and Moonlight wait before
+/// they give a silent connection up.
+const LOST_AFTER: f64 = 10.0;
 
 /// The quietest sound the microphone's meter shows, in decibels below the
 /// loudest a microphone captures.
@@ -1083,10 +1085,12 @@ fn waiting(ui: &mut Ui, window: Rect, view: &StreamView, problem: Option<&str>) 
     .inner
 }
 
-/// Whether the stream seems to have lost its PC: the engine is getting it
-/// back, or no picture arrived for a while after the first one. `arrived`
-/// counts the pictures that arrived so far, and `changed` keeps what it was
-/// when it last changed, and when.
+/// Whether the stream seems to have lost its PC: no picture arrived for a
+/// while after the first one. While the engine gets a lost stream back, the
+/// sign also waits for that while: the engine gives a stream up sooner than
+/// the person would, and often has it back before then. `arrived` counts
+/// the pictures that arrived so far, and `changed` keeps what it was when it
+/// last changed, and when.
 fn seems_lost(
     view: &StreamView,
     has_picture: bool,
@@ -1098,7 +1102,7 @@ fn seems_lost(
         Some((count, at)) if count == arrived => at,
         _ => changed.insert((arrived, now)).1,
     };
-    view.connected && (view.reconnecting || has_picture && now - since >= LOST_AFTER)
+    view.connected && has_picture && now - since >= LOST_AFTER
 }
 
 /// Says that the stream lost its PC and is getting it back, under the bar
@@ -2116,27 +2120,32 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_says_it_lost_its_pc_after_three_seconds_without_a_picture() {
+    fn a_stream_says_it_lost_its_pc_after_ten_seconds_without_a_picture() {
         let mut view = view(InputAllowed::ALL);
         let mut changed = None;
         assert!(!seems_lost(&view, true, 10, 0.0, &mut changed));
-        assert!(!seems_lost(&view, true, 10, 2.9, &mut changed));
-        assert!(seems_lost(&view, true, 10, 3.0, &mut changed));
+        // A few seconds without a picture, as in a train: no sign yet.
+        assert!(!seems_lost(&view, true, 10, 3.0, &mut changed));
+        assert!(!seems_lost(&view, true, 10, 9.9, &mut changed));
+        assert!(seems_lost(&view, true, 10, 10.0, &mut changed));
         // A picture comes: all is well again.
-        assert!(!seems_lost(&view, true, 11, 3.5, &mut changed));
-        assert!(!seems_lost(&view, true, 11, 6.4, &mut changed));
-        assert!(seems_lost(&view, true, 11, 6.6, &mut changed));
+        assert!(!seems_lost(&view, true, 11, 10.5, &mut changed));
+        assert!(!seems_lost(&view, true, 11, 20.4, &mut changed));
+        assert!(seems_lost(&view, true, 11, 20.6, &mut changed));
 
         // Before the first picture, the stream waits for it instead.
         let mut changed = None;
         assert!(!seems_lost(&view, false, 0, 0.0, &mut changed));
         assert!(!seems_lost(&view, false, 0, 10.0, &mut changed));
 
-        // Once Leto knows, it says so at once, picture or not.
+        // While Leto gets the stream back, the sign waits all the same.
+        let mut changed = None;
         view.reconnecting = true;
-        assert!(seems_lost(&view, false, 0, 10.1, &mut changed));
+        assert!(!seems_lost(&view, true, 30, 0.0, &mut changed));
+        assert!(!seems_lost(&view, true, 30, 9.0, &mut changed));
+        assert!(seems_lost(&view, true, 30, 10.0, &mut changed));
         view.connected = false;
-        assert!(!seems_lost(&view, false, 0, 10.2, &mut changed));
+        assert!(!seems_lost(&view, true, 30, 10.2, &mut changed));
     }
 
     #[test]

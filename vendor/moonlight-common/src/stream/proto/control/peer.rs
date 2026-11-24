@@ -8,6 +8,10 @@ use rusty_enet::{Packet, PeerID, PeerState};
 use sans_io_time::Instant;
 use tracing::{Level, debug, instrument, trace, warn};
 
+/// Leto: the least time, in milliseconds, a client waits for a host that
+/// went silent before it gives the connection up.
+const PEER_TIMEOUT_MINIMUM_MS: u32 = 10_000;
+
 use crate::{
     error::Error,
     stream::{
@@ -225,6 +229,16 @@ impl ControlHost {
         // This cannot fail because we just created that peer
         #[allow(clippy::unwrap_used)]
         self.configure_peer(id, config.config).unwrap();
+
+        // Leto: a host that goes silent is given up after ten seconds at
+        // least, as moonlight-common-c does (`enet_peer_timeout` in
+        // `ControlStream.c`). ENet's own minimum is five seconds, which a
+        // network that comes and goes, as in a moving train, often reaches
+        // with a stream that would have come back by itself. The limit and
+        // the maximum stay ENet's.
+        if let Some(peer) = self.host.peer_mut(id.0) {
+            peer.set_timeout(0, PEER_TIMEOUT_MINIMUM_MS, 0);
+        }
 
         self.host.service();
 

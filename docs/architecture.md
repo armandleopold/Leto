@@ -171,10 +171,14 @@ says so (`Event::Reconnecting`) and asks the PC for the stream again, after 1,
 PC answers in a way that asking again will not change (`Event::PlayFailed`).
 A PC that does not answer, or answers as one still busy with the stream it
 lost, is asked again (`service.rs`, `passing`). The window keeps the last
-picture and puts "Connection lost. Reconnecting…" over it, from the moment
-the engine says so or once three seconds pass without a new picture,
-whichever comes first: a PC that goes silent can take the connection ten
-seconds or more to notice. The camera sent to the PC stops with the stream
+picture and puts "Connection lost. Reconnecting…" over it once ten seconds
+pass without a new picture, whether the engine is asking again or not. On a
+network that comes and goes, as in a moving train, pictures stop for a few
+seconds and come again: the stream shows what arrives without a sign, and
+the sign does not come and go with each gap. The control connection waits
+ten seconds at least before it gives a silent PC up, as Moonlight does
+(`vendor/moonlight-common`, `ControlHost::connect`), so a short gap keeps the
+same stream rather than asking the PC for a new one. The camera sent to the PC stops with the stream
 and starts again when it is back. The stand-in host's `drop` breaks a stream
 and `busy` makes it refuse new ones, which is how the tests lose a PC. A
 browser that loses its bridge still ends the stream: only the bridge asks a
