@@ -2345,7 +2345,7 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "leto"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "arboard",
  "eframe",
@@ -2375,7 +2375,7 @@ dependencies = [
 
 [[package]]
 name = "leto-android"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "jni 0.21.1",
  "leto",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "leto-bridge"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "futures-util",
  "gethostname",
@@ -2406,7 +2406,7 @@ dependencies = [
 
 [[package]]
 name = "leto-cli"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "clap",
  "image",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "leto-client"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "directories",
  "env_logger",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "leto-core"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "leto-host"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "leto-client",
  "leto-core",
@@ -2481,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "leto-media"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "cpal",
  "glow",
@@ -2499,14 +2499,14 @@ dependencies = [
 
 [[package]]
 name = "leto-protocol"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "leto-return"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aes-gcm",
  "serde",
@@ -2515,7 +2515,7 @@ dependencies = [
 
 [[package]]
 name = "leto-system"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "android-activity",
  "jni 0.21.1",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "leto-testhost"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "image",
  "leto-core",
@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "leto-tunnel"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "base64 0.22.1",
  "boringtun",
@@ -6081,7 +6081,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.0.7"
+version = "0.0.8"
 
 [[package]]
 name = "yasna"
