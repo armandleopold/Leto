@@ -350,6 +350,8 @@ impl eframe::App for LetoApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, window: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::window::draw_at_screen_pace();
         if !matches!(&self.state.screen, Screen::Stream(view) if view.connected) {
             self.follow_focus(ui.ctx());
         }
