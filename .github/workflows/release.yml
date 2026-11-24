@@ -337,7 +337,9 @@ jobs:
         run: |
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner
           "$apksigner" verify --verbose --print-certs dist/android/leto.apk | tee "$RUNNER_TEMP/certs.txt"
-          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/certs.txt")
+          # "Signer #1 certificate …" or "V3.0 Signer: certificate …",
+          # depending on the schemes the APK is signed with.
+          actual=$(grep -m 1 'certificate SHA-256 digest: ' "$RUNNER_TEMP/certs.txt" | sed 's/.*digest: //')
           if [ "$HAS_RELEASE_KEY" != true ]; then
             echo "::warning::No release key, in GitHub's secrets or Infisical: this APK has a key of its own, and phones cannot update to it."
           fi
