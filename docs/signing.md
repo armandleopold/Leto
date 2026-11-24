@@ -29,6 +29,29 @@ without uninstalling it.
   `keytool -list -v` prints it. A release whose APK is signed with another
   key then fails instead of reaching phones.
 
+### Or from Infisical
+
+The three can live in an [Infisical](https://infisical.com) project
+instead, under the same names, at the root path of one environment. The
+Android job fetches them when these are set in GitHub:
+
+- Variable `INFISICAL_PROJECT_SLUG`: the project's slug ("Copy Project Slug").
+- Variable `INFISICAL_ENV_SLUG`: the environment, `prod` when unset.
+- Variable `INFISICAL_DOMAIN`: `https://eu.infisical.com` for the EU
+  region, a self-hosted address, or unset for `https://app.infisical.com`.
+- To sign in, either:
+  - OIDC, with no secret at all: variable `INFISICAL_IDENTITY_ID`, the
+    machine identity's ID. Its "OIDC Auth" method takes the discovery URL
+    and issuer `https://token.actions.githubusercontent.com`, the audience
+    `https://github.com/armandleopold`, and a subject naming this
+    repository; `gh api repos/armandleopold/leto/actions/oidc/customization/sub`
+    shows its exact form.
+  - Universal Auth: secrets `INFISICAL_CLIENT_ID` and
+    `INFISICAL_CLIENT_SECRET` of the machine identity.
+
+The identity needs a role in the project that can read that environment.
+Values found in Infisical win over GitHub's secrets.
+
 `cargo xtask android` signs with the same key when `LETO_ANDROID_KEYSTORE`
 names the keystore and `LETO_ANDROID_KEY_PASSWORD` holds its password.
 

@@ -272,9 +272,15 @@ jobs:
     name: Build (Android)
     needs: version
     runs-on: ubuntu-latest
+    # The OIDC token lets the job sign in to Infisical without a secret.
+    permissions:
+      contents: read
+      id-token: write
     env:
       KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      EXPECTED_CERT: ${{ vars.ANDROID_CERT_SHA256 }}
+      INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -284,28 +290,58 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install the headers
         run: sudo apt-get update && sudo apt-get install --yes libasound2-dev libudev-dev libclang-dev
+      # The key can live in Infisical instead of GitHub's secrets: its
+      # ANDROID_KEYSTORE_BASE64, ANDROID_KEY_PASSWORD and ANDROID_CERT_SHA256
+      # become environment variables of the next steps. docs/signing.md
+      # says which variables point the job at it.
+      - name: Fetch the release key from Infisical (OIDC)
+        if: vars.INFISICAL_IDENTITY_ID != ''
+        uses: Infisical/secrets-action@v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          domain: ${{ vars.INFISICAL_DOMAIN || 'https://app.infisical.com' }}
+          project-slug: ${{ vars.INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ vars.INFISICAL_ENV_SLUG || 'prod' }}
+      - name: Fetch the release key from Infisical (client secret)
+        if: vars.INFISICAL_IDENTITY_ID == '' && env.INFISICAL_CLIENT_ID != ''
+        uses: Infisical/secrets-action@v1.0.16
+        with:
+          method: universal
+          client-id: ${{ secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          domain: ${{ vars.INFISICAL_DOMAIN || 'https://app.infisical.com' }}
+          project-slug: ${{ vars.INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ vars.INFISICAL_ENV_SLUG || 'prod' }}
       - name: Use the release key, when there is one
-        if: env.KEYSTORE_BASE64 != ''
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/leto.keystore"
+          keystore="${ANDROID_KEYSTORE_BASE64:-$KEYSTORE_BASE64}"
+          password="${ANDROID_KEY_PASSWORD:-$KEY_PASSWORD}"
+          expected="${ANDROID_CERT_SHA256:-$EXPECTED_CERT}"
+          echo "EXPECTED_CERT=$expected" >> "$GITHUB_ENV"
+          if [ -z "$keystore" ]; then
+            echo "HAS_RELEASE_KEY=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "$keystore" | base64 --decode > "$RUNNER_TEMP/leto.keystore"
+          echo "::add-mask::$password"
+          echo "HAS_RELEASE_KEY=true" >> "$GITHUB_ENV"
           echo "LETO_ANDROID_KEYSTORE=$RUNNER_TEMP/leto.keystore" >> "$GITHUB_ENV"
-          echo "LETO_ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          echo "LETO_ANDROID_KEY_PASSWORD=$password" >> "$GITHUB_ENV"
       - name: Build the APK
         run: cargo xtask android
       # The SHA-256 of the certificate is what a phone compares between two
-      # versions. With the ANDROID_CERT_SHA256 variable set, a release whose
+      # versions. With ANDROID_CERT_SHA256 set (variable or Infisical), a release whose
       # APK is signed with another key fails here instead of reaching phones.
       - name: Check the APK's signature
-        env:
-          EXPECTED: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner
           "$apksigner" verify --verbose --print-certs dist/android/leto.apk | tee "$RUNNER_TEMP/certs.txt"
           actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/certs.txt")
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: this APK has a key of its own, and phones cannot update to it."
+          if [ "$HAS_RELEASE_KEY" != true ]; then
+            echo "::warning::No release key, in GitHub's secrets or Infisical: this APK has a key of its own, and phones cannot update to it."
           fi
-          expected=$(echo "$EXPECTED" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
+          expected=$(echo "$EXPECTED_CERT" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
           if [ -n "$expected" ] && [ "$actual" != "$expected" ]; then
             echo "::error::The APK is signed with $actual, not the release key $expected."
             exit 1
