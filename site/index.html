@@ -165,7 +165,7 @@
         <p>Each desktop archive holds the app, the command line and the web client. Its README.txt explains how to get started.</p>
         <ul>
           <li>The Windows and macOS files are not signed yet: Windows SmartScreen may warn on the first start ("More info", then "Run anyway"). On macOS, right-click leto, then "Open". See the <a href="#code-signing">code signing policy</a>.</li>
-          <li>Of the desktop builds, only Windows has been tried on a real PC. The Android app has been tried on one phone. The macOS and Linux builds have never been tried by hand. The APK installs outside the Play Store: allow installs from your browser when Android asks.</li>
+          <li>Of the desktop builds, only Windows has been tried on a real PC. The Android app has been tried on one phone. The macOS and Linux builds have never been tried by hand. The APK installs outside the Play Store: allow installs from your browser when Android asks. From the version after 0.0.9, every APK is signed with the same Leto key, so the next ones install over it; a Leto installed before then has to be uninstalled once.</li>
           <li>To check a file, compare its fingerprint with <a data-release-sums href="downloads/SHA256SUMS.txt">SHA256SUMS.txt</a>. From the version after 0.0.9, each file also comes with a GitHub attestation that proves GitHub built it from Leto's source; the README.txt says how to check it.</li>
         </ul>
       </div>
