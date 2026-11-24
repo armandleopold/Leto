@@ -115,8 +115,16 @@ jobs:
             platform: macos-arm64
             exe: ""
     runs-on: ${{ matrix.os }}
+    # SignPath fetches the unsigned Windows files from this run's artifacts.
+    permissions:
+      contents: read
+      actions: read
     env:
       ARCHIVE: leto-${{ needs.version.outputs.version }}-${{ matrix.platform }}
+      # Signing is skipped where its secrets are not set. docs/signing.md
+      # says how to get each of them.
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -140,6 +148,99 @@ jobs:
           Add-Content $env:GITHUB_PATH "C:\Program Files\NASM"
       - name: Build
         run: cargo build --locked --release --package leto --package leto-cli
+      # Windows: SignPath signs leto.exe and leto-cli.exe with Authenticode,
+      # with a certificate of the SignPath Foundation, once a maintainer has
+      # approved the request on signpath.io. The job waits for it.
+      - name: Hand the Windows files to SignPath
+        id: unsigned
+        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-unsigned
+          path: |
+            target/release/leto.exe
+            target/release/leto-cli.exe
+          if-no-files-found: error
+      - name: Sign them (approve the request on signpath.io)
+        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'leto' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # A day, so the request can wait for its approval.
+          wait-for-completion-timeout-in-seconds: 86400
+          output-artifact-directory: signed
+      - name: Use the signed files
+        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
+        shell: pwsh
+        run: Copy-Item signed\leto.exe, signed\leto-cli.exe target\release\ -Force
+      - name: Check the Windows signatures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($file in "target\release\leto.exe", "target\release\leto-cli.exe") {
+            $signature = Get-AuthenticodeSignature $file
+            Write-Output "$file`: $($signature.Status) $($signature.SignerCertificate.Subject)"
+            if ($env:SIGNPATH_API_TOKEN -and $signature.Status -ne 'Valid') {
+              Write-Output "::error::$file is not signed."
+              exit 1
+            }
+          }
+          if (-not $env:SIGNPATH_API_TOKEN) {
+            Write-Output "::warning::No SIGNPATH_API_TOKEN secret: the Windows files are not signed."
+          }
+      # macOS: signed with a Developer ID certificate and the hardened
+      # runtime, then notarized by Apple. Bare programs cannot carry the
+      # notarization ticket, so Gatekeeper asks Apple on the first start.
+      - name: Sign and notarize the macOS files
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          keychain="$RUNNER_TEMP/leto.keychain-db"
+          password=$(openssl rand -hex 16)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -n 1)
+          if [ -z "$identity" ]; then
+            echo "::error::The certificate in APPLE_CERTIFICATE_P12_BASE64 is not a Developer ID Application one."
+            exit 1
+          fi
+          for file in target/release/leto target/release/leto-cli; do
+            codesign --force --options runtime --timestamp \
+              --entitlements .github/release/macos.entitlements \
+              --sign "$identity" "$file"
+            codesign --verify --strict --verbose=2 "$file"
+          done
+          echo "$APPLE_API_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          zip -qj "$RUNNER_TEMP/notarize.zip" target/release/leto target/release/leto-cli
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            --wait --timeout 1h --output-format json | tee "$RUNNER_TEMP/notary.json"
+          rm "$RUNNER_TEMP/notary.p8"
+          if ! grep -q '"status":"Accepted"' "$RUNNER_TEMP/notary.json"; then
+            id=$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' "$RUNNER_TEMP/notary.json")
+            xcrun notarytool log "$id" --key "$RUNNER_TEMP/notary.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" || true
+            echo "::error::Apple did not notarize the macOS files."
+            exit 1
+          fi
+      - name: No macOS signature
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE == ''
+        run: |
+          echo "::warning::No APPLE_CERTIFICATE_P12_BASE64 secret: the macOS files are only signed ad hoc."
       - uses: actions/download-artifact@v8
         with:
           name: web
@@ -191,6 +292,24 @@ jobs:
           echo "LETO_ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
       - name: Build the APK
         run: cargo xtask android
+      # The SHA-256 of the certificate is what a phone compares between two
+      # versions. With the ANDROID_CERT_SHA256 variable set, a release whose
+      # APK is signed with another key fails here instead of reaching phones.
+      - name: Check the APK's signature
+        env:
+          EXPECTED: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner
+          "$apksigner" verify --verbose --print-certs dist/android/leto.apk | tee "$RUNNER_TEMP/certs.txt"
+          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/certs.txt")
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: this APK has a key of its own, and phones cannot update to it."
+          fi
+          expected=$(echo "$EXPECTED" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
+          if [ -n "$expected" ] && [ "$actual" != "$expected" ]; then
+            echo "::error::The APK is signed with $actual, not the release key $expected."
+            exit 1
+          fi
       - name: Name it after the version
         run: cp dist/android/leto.apk "leto-${{ needs.version.outputs.version }}-android.apk"
       - uses: actions/upload-artifact@v7
@@ -205,6 +324,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # For the attestations, which need no secret.
+      id-token: write
+      attestations: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
@@ -225,6 +347,13 @@ jobs:
           git archive --format=tar.gz --prefix="leto-$VERSION/" -o "out/leto-$VERSION-source.tar.gz" HEAD
           (cd out && sha256sum * > SHA256SUMS.txt)
           ls -l out
+      # Every file gets a signed statement, kept by GitHub, that it was built
+      # by this workflow from this tag: `gh attestation verify <file>
+      # --repo armandleopold/leto` checks it, on any system.
+      - name: Attest where the files come from
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: out/*
       # Release Please has already written the release and its notes. Made
       # by hand, the release gets notes from the merged pull requests.
       - name: Attach them

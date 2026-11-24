@@ -164,11 +164,22 @@
       <div class="dl-notes" data-release-notes hidden>
         <p>Each desktop archive holds the app, the command line and the web client. Its README.txt explains how to get started.</p>
         <ul>
-          <li>The files are not signed. Windows SmartScreen may warn on the first start ("More info", then "Run anyway"). On macOS, right-click leto, then "Open".</li>
+          <li>The Windows and macOS files are not signed yet: Windows SmartScreen may warn on the first start ("More info", then "Run anyway"). On macOS, right-click leto, then "Open". See the <a href="#code-signing">code signing policy</a>.</li>
           <li>Of the desktop builds, only Windows has been tried on a real PC. The Android app has been tried on one phone. The macOS and Linux builds have never been tried by hand. The APK installs outside the Play Store: allow installs from your browser when Android asks.</li>
-          <li>To check a file, compare its fingerprint with <a data-release-sums href="downloads/SHA256SUMS.txt">SHA256SUMS.txt</a>.</li>
+          <li>To check a file, compare its fingerprint with <a data-release-sums href="downloads/SHA256SUMS.txt">SHA256SUMS.txt</a>. From the version after 0.0.9, each file also comes with a GitHub attestation that proves GitHub built it from Leto's source; the README.txt says how to check it.</li>
         </ul>
       </div>
+    </section>
+
+    <section id="code-signing" class="wrap">
+      <h2>Code signing policy</h2>
+      <p>Free code signing provided by <a href="https://about.signpath.io">SignPath.io</a>, certificate by <a href="https://signpath.org">SignPath Foundation</a>.</p>
+      <div class="dl-notes"><ul>
+        <li>Only the Windows programs built by Leto's release workflow on GitHub, from the published source code of a tag, are signed. Nothing built elsewhere is.</li>
+        <li>Committers and reviewers: <a href="https://github.com/armandleopold">armandleopold</a>. Approver of every signing request: <a href="https://github.com/armandleopold">armandleopold</a>.</li>
+        <li>Every member of the team must sign in to GitHub and SignPath with two-factor authentication.</li>
+        <li>Privacy: this program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.</li>
+      </ul></div>
     </section>
 
     <section class="wrap story">

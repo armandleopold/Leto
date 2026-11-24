@@ -206,10 +206,13 @@ those notes, builds Windows, Linux, macOS, the web client and the Android APK
 - Do not change the version by hand: Release Please owns it.
 - The Release builds workflow can be started by hand from the Actions tab
   with a tag, to rebuild the files of a release or make the first one.
-- The APK is signed with the keystore in the `ANDROID_KEYSTORE_BASE64` and
-  `ANDROID_KEY_PASSWORD` secrets when they are set. Without them each
-  release has a key of its own, and a phone cannot update from one to the
-  next without uninstalling.
+- Release files are signed where their secrets are set, and skipped with a
+  warning where they are not: the APK with the release keystore, the
+  Windows programs through SignPath, the macOS ones with a Developer ID and
+  Apple's notarization. Every file gets a GitHub attestation, which needs
+  no secret. `docs/signing.md` lists the secrets and how each is made.
+  Without the APK's secrets each release has a key of its own, and a phone
+  cannot update from one to the next without uninstalling.
 
 ## Where things go
 
