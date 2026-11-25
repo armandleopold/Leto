@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.11](https://github.com/armandleopold/Leto/compare/v0.0.10...v0.0.11) (2026-11-25)
+
+
+### Bug fixes
+
+* **windows:** a stream in full screen covers the taskbar's place too ([#93](https://github.com/armandleopold/Leto/issues/93)) ([bcb8d7a](https://github.com/armandleopold/Leto/commit/bcb8d7a84b5e90331094e480ddeaf71b065b46cb))
+
 ## [0.0.10](https://github.com/armandleopold/Leto/compare/v0.0.9...v0.0.10) (2026-11-24)
 
 
