@@ -556,7 +556,7 @@ pub fn show(
         && let Some(statistics) = &mut player.statistics
     {
         statistics.update(status.counts, player.shown, now);
-        let panel = statistics_panel(ui.ctx(), statistics, status, view.encrypted);
+        let panel = statistics_panel(ui.ctx(), statistics, status, view.encrypted, player.drawn);
         player.over.push(panel);
         // The numbers change even while the picture stands still.
         ui.ctx().request_repaint_after_secs(STATISTICS_EVERY as f32 / 2.0);
@@ -908,8 +908,14 @@ fn statistics_panel(
     statistics: &Statistics,
     status: Status<'_>,
     encrypted: Option<Encrypted>,
+    drawn: Option<([usize; 2], [u32; 2])>,
 ) -> Rect {
     let mut lines = statistics_lines(statistics, status.counts, status.round_trip);
+    if let Some(drawn) = drawn {
+        // Right under the size the PC sends.
+        let at = usize::from(lines.first().is_some_and(|(name, _)| *name == "Video"));
+        lines.insert(at, ("On screen", drawn_line(drawn)));
+    }
     if let Some(encrypted) = encrypted {
         lines.push(("Encrypted", encrypted_line(encrypted)));
     }
@@ -943,6 +949,25 @@ fn statistics_panel(
         })
         .response
         .rect
+}
+
+/// How the pictures are drawn, on one line of the statistics: one pixel of
+/// the screen for each of theirs, or resized, which makes them less sharp
+/// than the PC made them. A window smaller than the screen asked of the PC
+/// resizes them.
+fn drawn_line(([width, height], [across, down]): ([usize; 2], [u32; 2])) -> String {
+    let (across_, down_) = (across as usize, down as usize);
+    if (across_, down_) == (width, height) {
+        return "Pixel for pixel".to_owned();
+    }
+    let how = if across_ <= width && down_ <= height {
+        "made smaller"
+    } else if across_ >= width && down_ >= height {
+        "made larger"
+    } else {
+        "resized"
+    };
+    format!("{across} × {down} pixels, {how}: less sharp")
 }
 
 /// What travels encrypted, on one line of the statistics.
@@ -1709,6 +1734,33 @@ mod tests {
         let note = bar_note(&view, Hands::Pointer, true, Some(News::Encrypted)).expect("a note");
         assert_eq!(note.text, encrypted_words(&view, clear));
         assert_eq!(encrypted_line(clear), "Picture no, sound yes, input yes");
+    }
+
+    #[test]
+    fn the_statistics_say_when_pictures_are_resized() {
+        // A screen of 2880 by 1800 pixels at 200 %: the whole screen shows
+        // the PC's pictures pixel for pixel; the place above a taskbar of
+        // 48 points makes them smaller.
+        let picture = vec2(2880.0, 1800.0);
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1440.0, 900.0));
+        assert_eq!(on_screen(fit(picture, screen), 2.0), [2880, 1800]);
+        let above_taskbar = Rect::from_min_size(pos2(0.0, 0.0), vec2(1440.0, 852.0));
+        assert_eq!(on_screen(fit(picture, above_taskbar), 2.0), [2726, 1704]);
+
+        assert_eq!(drawn_line(([2880, 1800], [2880, 1800])), "Pixel for pixel");
+        // A window above the taskbar of a screen at 200 %.
+        assert_eq!(
+            drawn_line(([2880, 1800], [2726, 1704])),
+            "2726 × 1704 pixels, made smaller: less sharp"
+        );
+        assert_eq!(
+            drawn_line(([1920, 1080], [2880, 1620])),
+            "2880 × 1620 pixels, made larger: less sharp"
+        );
+        assert_eq!(
+            drawn_line(([1920, 1080], [2000, 1000])),
+            "2000 × 1000 pixels, resized: less sharp"
+        );
     }
 
     #[test]
