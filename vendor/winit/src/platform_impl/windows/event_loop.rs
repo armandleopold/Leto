@@ -1168,7 +1168,19 @@ unsafe fn public_window_callback_inner(
 
             let params = unsafe { &mut *(lparam as *mut NCCALCSIZE_PARAMS) };
 
-            if util::is_maximized(window) {
+            // Leto: a window that fills its screen keeps the whole of it, the
+            // place of the taskbar too. Without this, a window maximized
+            // before it was made to fill the screen kept the work area only:
+            // a taskbar that does not hide itself left its height of black
+            // under the window's pictures, and the pictures shrank to fit.
+            let fills_screen = window_flags.intersects(
+                WindowFlags::MARKER_EXCLUSIVE_FULLSCREEN
+                    | WindowFlags::MARKER_BORDERLESS_FULLSCREEN,
+            );
+            if fills_screen {
+                // The client area is the window's whole rectangle, which
+                // `set_fullscreen` made the monitor's.
+            } else if util::is_maximized(window) {
                 // Limit the window size when maximized to the current monitor.
                 // Otherwise it would include the non-existent decorations.
                 //

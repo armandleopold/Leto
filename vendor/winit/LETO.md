@@ -1,7 +1,14 @@
 # winit, copied for Leto
 
-winit 0.30.13 from crates.io, unchanged but for an input hook on Android,
-marked with comments that start with `Leto:`:
+winit 0.30.13 from crates.io, unchanged but for an input hook on Android
+and one fix on Windows, marked with comments that start with `Leto:`:
+
+- `src/platform_impl/windows/event_loop.rs`: `WM_NCCALCSIZE`. A window
+  without the system's frame that was maximized, then made to fill the
+  screen, kept the work area as its client area: with a taskbar that does
+  not hide itself, a stream showed a black band of the taskbar's height
+  under its pictures, and black on the sides as the pictures shrank to fit.
+  A window that fills its screen now keeps the whole of it.
 
 - `src/platform/android.rs`: `InputHook` and `set_input_hook`.
 - `src/platform_impl/android/mod.rs`: `INPUT_HOOK`, asked first in
@@ -26,7 +33,8 @@ events whose source is a gamepad or a joystick.
 
 Leto can go back to winit from crates.io once it tells of gamepads on
 Android, or lets an app see the input events first, and tells of a mouse
-as a mouse.
+as a mouse, and gives a window without a frame the whole screen when it
+fills it after being maximized.
 - `src/platform_impl/android/mod.rs`: `mouse_moved`. A mouse the window
   keeps for itself (Android's pointer capture, source `MouseRelative`)
   gives `DeviceEvent::MouseMotion` and its buttons and wheel, and no
