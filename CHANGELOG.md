@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.12](https://github.com/armandleopold/Leto/compare/v0.0.11...v0.0.12) (2026-11-25)
+
+
+### Features
+
+* the statistics say whether the picture is drawn pixel for pixel ([#95](https://github.com/armandleopold/Leto/issues/95)) ([80b1bb3](https://github.com/armandleopold/Leto/commit/80b1bb3ce76d80b6266007d54dad3f803e88f591))
+
 ## [0.0.11](https://github.com/armandleopold/Leto/compare/v0.0.10...v0.0.11) (2026-11-25)
 
 
